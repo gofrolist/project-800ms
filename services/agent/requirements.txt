@@ -1,0 +1,8 @@
+# Pipecat + transports and services used by the agent.
+# Extras pull in the concrete SDKs (livekit, faster-whisper, piper, openai, silero).
+pipecat-ai[livekit,whisper,piper,openai,silero]==0.0.105
+livekit-api==0.8.2
+loguru==0.7.2
+
+# Pinned transitively-critical versions — avoids CUDA wheel drift.
+faster-whisper==1.0.3

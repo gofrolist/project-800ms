@@ -1,0 +1,31 @@
+# LiveKit server config — dev profile.
+# Docs: https://docs.livekit.io/home/self-hosting/deployment/
+#
+# For prod: set `rtc.use_external_ip: true` and bind to the instance EIP,
+# widen `port_range_end` to 60000, and move `keys` to a secret store.
+
+port: 7880
+
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50099
+  use_external_ip: false
+
+# Dev keys — loaded from env via docker compose, matched by apps/api and agent.
+# These MUST match LIVEKIT_API_KEY / LIVEKIT_API_SECRET in .env.
+# In dev we allow a static pair; in prod, rotate via secret manager.
+keys:
+  devkey: devsecret_change_me_at_least_32_characters_long_xxxxxx
+
+log_level: info
+
+# Disable turn for dev — we're on localhost, no NAT to traverse.
+turn:
+  enabled: false
+
+room:
+  # Automatically close empty rooms after 5 minutes of inactivity.
+  empty_timeout: 300
+  # Max participants per room — low for a single-box MVP.
+  max_participants: 4

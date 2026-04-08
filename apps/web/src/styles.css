@@ -1,0 +1,58 @@
+:root {
+  color-scheme: dark;
+  font-family: -apple-system, system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #0b0b0f;
+  color: #f5f5f7;
+  display: grid;
+  place-items: center;
+}
+
+.app {
+  text-align: center;
+  padding: 2rem;
+}
+
+.app h1 {
+  font-size: 1.75rem;
+  margin-bottom: 1.5rem;
+  letter-spacing: -0.02em;
+}
+
+.start-btn {
+  background: #2563eb;
+  color: white;
+  border: 0;
+  padding: 0.9rem 1.8rem;
+  font-size: 1rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: transform 0.1s ease, background 0.1s ease;
+}
+
+.start-btn:hover {
+  background: #1d4ed8;
+}
+
+.start-btn:active {
+  transform: scale(0.97);
+}
+
+.start-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.status {
+  margin-top: 1rem;
+  font-size: 0.9rem;
+  color: #9ca3af;
+}
+
+.error {
+  color: #f87171;
+}

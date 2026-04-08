@@ -1,0 +1,4 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic-settings==2.6.1
+livekit-api==0.8.2

@@ -1,0 +1,187 @@
+# project-800ms full stack — dev + single-box prod use the same file.
+#
+# Prereqs (host):
+#   - Docker + Compose v2
+#   - NVIDIA Container Toolkit (`nvidia-ctk --version`)
+#   - `nvidia-smi` reports your GPU
+#
+# Bring-up:
+#   cp infra/.env.example infra/.env   # then edit
+#   docker compose --env-file infra/.env -f infra/docker-compose.yml up -d
+#
+# Verify GPU wiring:
+#   docker compose logs -f vllm        # wait for "Uvicorn running on http://0.0.0.0:8000"
+#   curl http://localhost:8001/v1/models
+#
+# Notes:
+#   - LiveKit needs a wide UDP range for WebRTC media. The range here (50000-50099)
+#     is intentionally small for dev; widen to 50000-60000 in prod.
+#   - On Linux, `network_mode: host` gives LiveKit the cleanest NAT behavior.
+#     We use bridge + port mapping here for macOS/WSL compatibility. Switch to
+#     host mode in prod by uncommenting the relevant line.
+
+name: project-800ms
+
+x-gpu: &gpu
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: 1
+            capabilities: [gpu]
+
+services:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Transport: LiveKit WebRTC SFU
+  # ─────────────────────────────────────────────────────────────────────────
+  livekit:
+    image: livekit/livekit-server:v1.8
+    restart: unless-stopped
+    # network_mode: host   # enable on Linux prod for best WebRTC behavior
+    command: --config /etc/livekit.yaml --dev
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7880:7880"               # signaling (HTTP/WS)
+      - "7881:7881"               # TCP fallback for RTC
+      - "50000-50099:50000-50099/udp"  # media
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7880"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # State
+  # ─────────────────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-voice}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-voice}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-voice} -d ${POSTGRES_DB:-voice}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # GPU inference: vLLM (OpenAI-compatible)
+  #
+  # Model: Qwen2.5-7B-Instruct-AWQ — strong EN+RU, ~5GB weights.
+  # gpu_memory_utilization=0.55 on 16GB RTX 5080 → ~8.8GB for vLLM
+  # (weights + KV cache), leaving ~7GB for Whisper + OS/headroom.
+  # ─────────────────────────────────────────────────────────────────────────
+  vllm:
+    image: vllm/vllm-openai:v0.6.4
+    restart: unless-stopped
+    <<: *gpu
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - HF_HOME=/root/.cache/huggingface
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+    ports:
+      - "8001:8000"
+    ipc: host
+    command:
+      - --model=Qwen/Qwen2.5-7B-Instruct-AWQ
+      - --quantization=awq_marlin
+      - --dtype=float16
+      - --max-model-len=4096
+      - --gpu-memory-utilization=0.55
+      - --enable-prefix-caching
+      - --served-model-name=qwen2.5-7b
+      - --host=0.0.0.0
+      - --port=8000
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()\" || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 300s  # model download + load can take minutes on first run
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # FastAPI: auth, sessions, LiveKit token minting
+  # ─────────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ../apps/api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-voice}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-voice}
+      - REDIS_URL=redis://redis:6379/0
+      - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_PUBLIC_URL=${LIVEKIT_PUBLIC_URL:-ws://localhost:7880}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
+      - DEMO_ROOM=${DEMO_ROOM:-demo}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Agent worker: Pipecat pipeline (VAD → Whisper → vLLM → TTS)
+  # Uses GPU for Faster-Whisper in-process.
+  # ─────────────────────────────────────────────────────────────────────────
+  agent:
+    build:
+      context: ../services/agent
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    <<: *gpu
+    environment:
+      - LIVEKIT_URL=ws://livekit:7880
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
+      - LIVEKIT_ROOM=${DEMO_ROOM:-demo}
+      - VLLM_BASE_URL=http://vllm:8000/v1
+      - VLLM_MODEL=qwen2.5-7b
+      - TTS_VOICE=${TTS_VOICE:-ru_RU-ruslan-medium}
+      - HF_HOME=/root/.cache/huggingface
+      - PIPER_VOICES_DIR=/root/.cache/piper
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+      - piper_voices:/root/.cache/piper
+    depends_on:
+      livekit:
+        condition: service_healthy
+      vllm:
+        condition: service_healthy
+
+volumes:
+  pg_data:
+  redis_data:
+  hf_cache:
+  piper_voices:
