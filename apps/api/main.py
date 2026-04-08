@@ -6,6 +6,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import datetime
 import uuid
 
 from fastapi import FastAPI
@@ -60,7 +61,7 @@ def create_session() -> SessionResponse:
                 can_publish_data=True,
             )
         )
-        .with_ttl(settings.session_ttl_seconds)
+        .with_ttl(datetime.timedelta(seconds=settings.session_ttl_seconds))
         .to_jwt()
     )
     return SessionResponse(

@@ -46,6 +46,11 @@ export function App() {
         audio
         video={false}
         onDisconnected={endCall}
+        options={{
+          // Pipecat's Python LiveKit transport doesn't decode RED-wrapped
+          // Opus, so disable redundant audio encoding on publish.
+          publishDefaults: { red: false, dtx: false },
+        }}
       >
         <RoomAudioRenderer />
         <StartAudio label="Click to enable audio" />

@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -19,6 +20,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
+from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.piper.tts import PiperTTSService
 from pipecat.services.whisper.stt import Model as WhisperModel
@@ -61,9 +63,29 @@ def build_task(cfg: AgentConfig) -> tuple[PipelineTask, LiveKitTransport]:
         params=LiveKitParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
-            vad_analyzer=SileroVADAnalyzer(),
+            # Force the resampler + downstream VAD to 16 kHz mono. Silero VAD
+            # only supports 8 kHz / 16 kHz; if we leave this None, the StartFrame
+            # propagates LiveKit's native 48 kHz to the VAD analyzer, while the
+            # transport resamples actual audio to 16 kHz — mismatch → no detection.
+            audio_in_sample_rate=16000,
+            audio_in_channels=1,
+            # NOTE: don't pass vad_analyzer here — it's deprecated since 0.0.101
+            # and the modern transport input does NOT emit VADUserStarted/Stopped
+            # frames even if it's set. We use a dedicated VADProcessor below.
         ),
     )
+
+    # Single VAD instance, shared between the upstream VADProcessor (which
+    # gates Whisper) and the LLM user aggregator (which uses VAD frames for
+    # turn-taking). Tuned for low-gain mics (browser AGC off / quiet input):
+    # default confidence=0.7, min_volume=0.6 are both too aggressive.
+    vad_params = VADParams(
+        confidence=0.3,
+        start_secs=0.15,
+        stop_secs=0.6,
+        min_volume=0.05,
+    )
+    vad_processor = VADProcessor(vad_analyzer=SileroVADAnalyzer(params=vad_params))
 
     stt = WhisperSTTService(
         model=cfg.whisper_model,
@@ -94,12 +116,15 @@ def build_task(cfg: AgentConfig) -> tuple[PipelineTask, LiveKitTransport]:
     context = LLMContext()
     user_agg, assistant_agg = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+        user_params=LLMUserAggregatorParams(
+            vad_analyzer=SileroVADAnalyzer(params=vad_params),
+        ),
     )
 
     pipeline = Pipeline(
         [
             transport.input(),
+            vad_processor,  # emits VADUserStarted/Stopped frames so Whisper can segment
             stt,
             user_agg,
             llm,

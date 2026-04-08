@@ -7,6 +7,7 @@ enough to prove the latency target. Per-call dispatch is a follow-up.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import os
 import sys
 
@@ -18,7 +19,7 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipeline import AgentConfig, build_task
 
 AGENT_IDENTITY = "agent-bot"
-AGENT_TOKEN_TTL_SECONDS = 24 * 60 * 60  # 24h — agent is long-running
+AGENT_TOKEN_TTL = datetime.timedelta(hours=24)  # agent is long-running
 
 
 def _env(name: str, default: str | None = None) -> str:
@@ -44,7 +45,7 @@ def _mint_agent_token(api_key: str, api_secret: str, room: str) -> str:
                 can_publish_data=True,
             )
         )
-        .with_ttl(AGENT_TOKEN_TTL_SECONDS)
+        .with_ttl(AGENT_TOKEN_TTL)
         .to_jwt()
     )
 
