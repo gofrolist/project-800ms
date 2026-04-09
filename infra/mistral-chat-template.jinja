@@ -1,0 +1,28 @@
+{# Mistral-style template that merges consecutive same-role messages.     #}
+{# Pipecat's context aggregator can produce back-to-back assistant (or    #}
+{# user) messages; the stock Mistral template rejects those.              #}
+{# Uses namespace strings instead of list.append (blocked by sandbox).    #}
+{{- bos_token -}}
+{%- set ns = namespace(last_role="", pending="") -%}
+{%- for message in messages -%}
+  {%- if message.role == ns.last_role -%}
+    {%- set ns.pending = ns.pending + "\n" + message.content -%}
+  {%- else -%}
+    {%- if ns.last_role == "user" -%}
+      {{- "[INST] " + ns.pending + " [/INST]" -}}
+    {%- elif ns.last_role == "assistant" -%}
+      {{- " " + ns.pending + eos_token -}}
+    {%- elif ns.last_role == "system" -%}
+      {{- "[INST] " + ns.pending + " [/INST]" -}}
+    {%- endif -%}
+    {%- set ns.last_role = message.role -%}
+    {%- set ns.pending = message.content -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- if ns.last_role == "user" -%}
+  {{- "[INST] " + ns.pending + " [/INST]" -}}
+{%- elif ns.last_role == "assistant" -%}
+  {{- " " + ns.pending + eos_token -}}
+{%- elif ns.last_role == "system" -%}
+  {{- "[INST] " + ns.pending + " [/INST]" -}}
+{%- endif -%}

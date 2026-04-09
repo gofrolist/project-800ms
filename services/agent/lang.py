@@ -1,16 +1,9 @@
-"""Tiny language detector for routing TTS to the right Piper voice.
+"""Tiny language detector — Russian-only for now.
 
-We only support English and Russian today, so this is intentionally a
-hand-rolled cyrillic-vs-latin classifier rather than a heavyweight
-language-detection library:
-
+Hand-rolled cyrillic classifier:
 - Pure stdlib, ~5 microseconds per call → no impact on the latency budget.
 - Zero dependencies → no extra wheels to ship in the Docker image.
-- Deterministic on short LLM-streamed chunks (where probabilistic
-  detectors trained on full sentences tend to flip-flop).
-
-When we add a third language, swap this for `lingua` (or similar) and
-keep the same `detect_language(text, fallback)` signature.
+- Deterministic on short LLM-streamed chunks.
 """
 
 from __future__ import annotations
@@ -20,66 +13,60 @@ from enum import Enum
 CYRILLIC_START = "\u0400"
 CYRILLIC_END = "\u04ff"
 
+# CJK Unified Ideographs — some models occasionally leak Chinese.
+CJK_RANGES = (
+    ("\u4e00", "\u9fff"),   # CJK Unified Ideographs
+    ("\u3400", "\u4dbf"),   # CJK Extension A
+    ("\u3000", "\u303f"),   # CJK Symbols and Punctuation
+)
+
 
 class Language(str, Enum):
-    """Supported TTS output languages.
+    """Supported TTS output languages."""
 
-    `str`-mixin so the value compares equal to "en" / "ru" — useful when
-    serialising into env vars, logs, or pipecat frame metadata.
-    """
-
-    EN = "en"
     RU = "ru"
 
 
-def detect_language(text: str, fallback: Language = Language.EN) -> Language:
-    """Classify a text chunk as English or Russian.
+def _is_cjk(ch: str) -> bool:
+    return any(start <= ch <= end for start, end in CJK_RANGES)
 
-    Heuristic, in order of precedence:
-        1. Any Cyrillic character → Russian. (Mixed strings like
-           "Hello мир" route to the Russian voice; Piper RU pronounces
-           Latin filler reasonably and we'd rather err that way than
-           hand "мир" to a Russian-voice with English phonemes.)
-        2. Any Latin alphabet character → English.
-        3. Otherwise (punctuation, digits, whitespace only) → fallback.
-           This covers LLM-streamed chunks like "." or "  " that carry
-           no language signal of their own — the caller should pass the
-           previously-detected language as `fallback` so the chunk
-           routes to the same voice as its neighbours.
+
+def detect_language(text: str, fallback: Language = Language.RU) -> Language | None:
+    """Classify a text chunk as Russian or unsupported.
+
+    Returns ``None`` when the text contains CJK characters that
+    the Piper voice can't pronounce.
+
+    Heuristic:
+        1. Any CJK character → ``None`` (unsupported script).
+        2. Otherwise → Russian (our only language).
     """
-    has_cyrillic = False
-    has_latin = False
     for ch in text:
-        if CYRILLIC_START <= ch <= CYRILLIC_END:
-            has_cyrillic = True
-            break  # cyrillic wins immediately
-        if ("a" <= ch <= "z") or ("A" <= ch <= "Z"):
-            has_latin = True
-    if has_cyrillic:
-        return Language.RU
-    if has_latin:
-        return Language.EN
-    return fallback
+        if _is_cjk(ch):
+            return None
+    return Language.RU
 
 
 class LanguageRouter:
     """Stateful wrapper around `detect_language`.
 
-    Remembers the last language it returned so that subsequent
-    language-signal-free chunks (punctuation, digits, whitespace)
-    inherit it instead of always defaulting to English. Pull this out
-    of the FrameProcessor so the routing logic can be unit-tested
-    without pipecat's frame machinery.
+    Keeps the same interface for compatibility with the pipeline,
+    but always returns Russian for supported text.
     """
 
-    def __init__(self, default: Language = Language.EN) -> None:
+    def __init__(self, default: Language = Language.RU) -> None:
         self._last = default
 
     @property
     def last(self) -> Language:
         return self._last
 
-    def route(self, text: str) -> Language:
-        """Detect the language of `text`, remember it, return it."""
-        self._last = detect_language(text, fallback=self._last)
-        return self._last
+    def route(self, text: str) -> Language | None:
+        """Detect the language of `text`, remember it, return it.
+
+        Returns ``None`` for unsupported scripts (CJK).
+        """
+        detected = detect_language(text, fallback=self._last)
+        if detected is not None:
+            self._last = detected
+        return detected

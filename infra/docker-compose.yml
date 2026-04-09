@@ -49,7 +49,7 @@ services:
     environment:
       # LiveKit reads keys from this env var (one per line, "key: secret").
       # Keeps secrets out of the committed livekit.yaml.
-      - LIVEKIT_KEYS=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
+      - "LIVEKIT_KEYS=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}"
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
     ports:
@@ -114,9 +114,10 @@ services:
   # ─────────────────────────────────────────────────────────────────────────
   # GPU inference: vLLM (OpenAI-compatible)
   #
-  # Model: Qwen2.5-7B-Instruct-AWQ — strong EN+RU, ~5GB weights.
-  # gpu_memory_utilization=0.55 on 16GB RTX 5080 → ~8.8GB for vLLM
-  # (weights + KV cache), leaving ~7GB for Whisper + OS/headroom.
+  # Model: Mistral-7B-Instruct-v0.3-AWQ — strong EN+RU, no Chinese
+  # leakage. ~4GB weights. gpu_memory_utilization=0.40 on 16GB RTX
+  # 5080 → ~6.4GB for vLLM (weights + KV cache), leaving headroom
+  # for Whisper (~2GB) + XTTS (~2-3GB) + OS.
   # ─────────────────────────────────────────────────────────────────────────
   vllm:
     image: vllm/vllm-openai:v0.19.0
@@ -126,7 +127,11 @@ services:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
       - HF_HOME=/root/.cache/huggingface
     volumes:
-      - hf_cache:/root/.cache/huggingface
+      # Dedicated HF cache for vLLM. Don't share with the agent: vllm runs
+      # as root, the agent runs as non-root appuser, and a shared volume
+      # leaves cache files root-owned and unwritable for the agent.
+      - hf_cache_vllm:/root/.cache/huggingface
+      - ./mistral-chat-template.jinja:/etc/vllm/chat-template.jinja:ro
     ports:
       # Loopback only — vLLM has no built-in rate limiting and (until the
       # api-key flag below) accepts arbitrary prompts. Reachable from the
@@ -136,13 +141,16 @@ services:
     # container-escape amplifier. 16 GB is plenty for single-GPU workloads.
     shm_size: "16gb"
     command:
-      - --model=Qwen/Qwen2.5-7B-Instruct-AWQ
+      # Model as a positional arg — `--model=` is deprecated since vLLM
+      # 0.11 and will be removed in v0.13.
+      - solidrust/Mistral-7B-Instruct-v0.3-AWQ
       - --quantization=awq_marlin
       - --dtype=float16
       - --max-model-len=4096
       - --gpu-memory-utilization=0.55
       - --enable-prefix-caching
-      - --served-model-name=qwen2.5-7b
+      - --served-model-name=mistral-7b
+      - --chat-template=/etc/vllm/chat-template.jinja
       - --host=0.0.0.0
       - --port=8000
       # Require an API key on every request — even on loopback. The agent
@@ -188,7 +196,28 @@ services:
       retries: 10
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Agent worker: Pipecat pipeline (VAD → Whisper → vLLM → TTS)
+  # TTS: XTTS-v2 streaming server (GPU)
+  #
+  # Single model handles EN + RU natively — no voice switching logic
+  # needed. ~2-3GB VRAM. Language is set per request by the agent.
+  # ─────────────────────────────────────────────────────────────────────────
+  xtts:
+    image: ghcr.io/coqui-ai/xtts-streaming-server:latest-cuda121
+    restart: unless-stopped
+    <<: *gpu
+    environment:
+      - COQUI_TOS_AGREED=1
+    ports:
+      - "127.0.0.1:8002:80"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:80/languages"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 120s  # model download on first run
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Agent worker: Pipecat pipeline (VAD → Whisper → vLLM → XTTS)
   # Uses GPU for Faster-Whisper in-process.
   # ─────────────────────────────────────────────────────────────────────────
   agent:
@@ -203,12 +232,9 @@ services:
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
       - LIVEKIT_ROOM=${DEMO_ROOM:-demo}
       - VLLM_BASE_URL=http://vllm:8000/v1
-      - VLLM_MODEL=qwen2.5-7b
+      - VLLM_MODEL=mistral-7b
       - VLLM_API_KEY=${VLLM_API_KEY:?VLLM_API_KEY is required}
-      # Two voices loaded simultaneously; the agent picks per utterance.
-      - TTS_VOICE_EN=${TTS_VOICE_EN:-en_US-amy-medium}
-      - TTS_VOICE_RU=${TTS_VOICE_RU:-ru_RU-ruslan-medium}
-      # Cache paths match the non-root user's home in the agent Dockerfile.
+      - TTS_VOICE=${TTS_VOICE:-ru_RU-denis-medium}
       - HF_HOME=/home/appuser/.cache/huggingface
       - PIPER_VOICES_DIR=/home/appuser/.cache/piper
       # INFO by default — DEBUG logs full STT transcripts and LLM
@@ -216,7 +242,9 @@ services:
       # docker logs. Set LOG_LEVEL=DEBUG in .env when actively debugging.
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
-      - hf_cache:/home/appuser/.cache/huggingface
+      # Dedicated HF cache for the agent (Faster-Whisper weights). See
+      # vllm.volumes above for why this is split from the vllm cache.
+      - hf_cache_agent:/home/appuser/.cache/huggingface
       - piper_voices:/home/appuser/.cache/piper
     depends_on:
       livekit:
@@ -227,5 +255,6 @@ services:
 volumes:
   pg_data:
   redis_data:
-  hf_cache:
+  hf_cache_vllm:
+  hf_cache_agent:
   piper_voices:

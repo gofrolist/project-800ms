@@ -11,20 +11,21 @@ import asyncio
 import datetime
 import os
 import sys
+from pathlib import Path
 
 from livekit import api as lkapi
 from loguru import logger
-from pipecat.frames.frames import TTSSpeakFrame
+import json
+
+from pipecat.frames.frames import InterruptionTaskFrame, TTSSpeakFrame
 from pipecat.pipeline.runner import PipelineRunner
 
 from env import MissingEnvError, require_env
 from pipeline import AgentConfig, build_task
 
+GREETING = "Привет! Чем могу помочь?"
+
 AGENT_IDENTITY = "agent-bot"
-# Short TTL — the agent restarts on Docker container restart and re-mints
-# its own token via require_env() at startup. A leaked agent token can be
-# replayed for the TTL window, so keep it tight. The LiveKit Go SDK that
-# pipecat uses re-authenticates on reconnect using the original credentials.
 AGENT_TOKEN_TTL = datetime.timedelta(hours=2)
 
 
@@ -59,17 +60,16 @@ async def run() -> None:
         livekit_token=_mint_agent_token(api_key, api_secret, room),
         room_name=room,
         vllm_base_url=require_env("VLLM_BASE_URL"),
-        vllm_model=require_env("VLLM_MODEL", "qwen2.5-7b"),
-        tts_voice_en=require_env("TTS_VOICE_EN", "en_US-amy-medium"),
-        tts_voice_ru=require_env("TTS_VOICE_RU", "ru_RU-ruslan-medium"),
+        vllm_model=require_env("VLLM_MODEL", "mistral-7b"),
+        tts_voice=require_env("TTS_VOICE", "ru_RU-denis-medium"),
         vllm_api_key=require_env("VLLM_API_KEY", "not-used"),
+        piper_voices_dir=Path(require_env("PIPER_VOICES_DIR", "/home/appuser/.cache/piper")),
     )
     logger.info(
-        "Agent joining room={room} model={model} en_voice={en} ru_voice={ru}",
+        "Agent joining room={room} model={model} voice={voice}",
         room=cfg.room_name,
         model=cfg.vllm_model,
-        en=cfg.tts_voice_en,
-        ru=cfg.tts_voice_ru,
+        voice=cfg.tts_voice,
     )
 
     task, transport = build_task(cfg)
@@ -77,17 +77,15 @@ async def run() -> None:
     @transport.event_handler("on_first_participant_joined")
     async def _on_join(_transport, participant_id):  # noqa: ANN001
         logger.info(f"Participant joined: {participant_id}")
-        # Bilingual greeting: two separate frames so the TTS router picks
-        # the right voice for each. The cyrillic-vs-latin classifier in
-        # services/agent/lang.py routes "Hi!" to en_voice and "Привет!"
-        # to ru_voice automatically.
-        await task.queue_frame(TTSSpeakFrame("Hi! How can I help you?"))
-        await task.queue_frame(TTSSpeakFrame("Привет! Чем могу помочь?"))
+        await transport.send_message(
+            json.dumps({"role": "assistant", "text": GREETING}, ensure_ascii=False)
+        )
+        await task.queue_frame(TTSSpeakFrame(GREETING))
 
     @transport.event_handler("on_participant_left")
     async def _on_leave(_transport, participant_id, _reason):  # noqa: ANN001
         logger.info(f"Participant left: {participant_id}")
-        # Don't end the task — stay in the room waiting for the next caller.
+        await task.queue_frame(InterruptionTaskFrame())
 
     await PipelineRunner().run(task)
     logger.info("Agent runner exited")

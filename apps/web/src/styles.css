@@ -56,3 +56,48 @@ body {
 .error {
   color: #f87171;
 }
+
+.call-layout {
+  width: 100%;
+  max-width: 480px;
+}
+
+.transcript {
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 1rem 0;
+  padding: 0.75rem;
+  background: #16161b;
+  border-radius: 12px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.msg-role {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.msg-user .msg-role {
+  color: #60a5fa;
+}
+
+.msg-assistant .msg-role {
+  color: #34d399;
+}
+
+.msg-text {
+  font-size: 0.9rem;
+  line-height: 1.4;
+  color: #e5e7eb;
+}

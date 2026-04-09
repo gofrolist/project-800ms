@@ -1,10 +1,11 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState, useEffect } from "react";
 import {
   LiveKitRoom,
   RoomAudioRenderer,
   StartAudio,
   BarVisualizer,
   useVoiceAssistant,
+  useDataChannel,
 } from "@livekit/components-react";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -12,6 +13,8 @@ const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 type Session = { url: string; token: string; room: string; identity: string };
 
 type Status = "idle" | "connecting" | "live" | "error";
+
+type Message = { role: "user" | "assistant"; text: string };
 
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -47,8 +50,6 @@ export function App() {
         video={false}
         onDisconnected={endCall}
         options={{
-          // Pipecat's Python LiveKit transport doesn't decode RED-wrapped
-          // Opus, so disable redundant audio encoding on publish.
           publishDefaults: { red: false, dtx: false },
         }}
       >
@@ -72,11 +73,38 @@ export function App() {
 
 function CallView({ onEnd, identity }: { onEnd: () => void; identity: string }) {
   const { state, audioTrack } = useVoiceAssistant();
+  const [messages, setMessages] = useState<Message[]>([]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useDataChannel((msg) => {
+    try {
+      const text = new TextDecoder().decode(msg.payload);
+      const parsed = JSON.parse(text) as Message;
+      if (parsed.role && parsed.text) {
+        setMessages((prev) => [...prev, parsed]);
+      }
+    } catch {
+      // ignore non-JSON data messages
+    }
+  });
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight);
+  }, [messages]);
+
   return (
-    <div className="app">
+    <div className="app call-layout">
       <h1>In call</h1>
       <div style={{ width: 240, height: 120, margin: "0 auto 1rem" }}>
         <BarVisualizer state={state} trackRef={audioTrack} barCount={12} />
+      </div>
+      <div className="transcript" ref={scrollRef}>
+        {messages.map((m, i) => (
+          <div key={i} className={`msg msg-${m.role}`}>
+            <span className="msg-role">{m.role === "user" ? "Вы" : "Ассистент"}</span>
+            <span className="msg-text">{m.text}</span>
+          </div>
+        ))}
       </div>
       <div className="status">
         you: <code>{identity}</code> · assistant: <code>{state}</code>
