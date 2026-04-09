@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Run on GitHub Merge Queue's speculative branches. Without this, the
+  # merge queue can't gate PRs because no required status checks would
+  # ever start. The same jobs run for both pull_request and merge_group
+  # events — branch protection looks at status check NAMES, not events.
+  merge_group:
   workflow_dispatch:
 
 # Cancel in-flight runs on the same ref when a new commit arrives.
