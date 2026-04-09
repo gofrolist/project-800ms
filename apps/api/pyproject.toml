@@ -16,7 +16,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pytest==8.3.4",
+    "pytest==9.0.3",
     "httpx==0.28.1",
     # Used by tests to inspect/verify the JWTs that /sessions mints. Already
     # a transitive dep via livekit-api, but declared explicitly so test imports
