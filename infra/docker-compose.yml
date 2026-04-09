@@ -205,7 +205,9 @@ services:
       - VLLM_BASE_URL=http://vllm:8000/v1
       - VLLM_MODEL=qwen2.5-7b
       - VLLM_API_KEY=${VLLM_API_KEY:?VLLM_API_KEY is required}
-      - TTS_VOICE=${TTS_VOICE:-ru_RU-ruslan-medium}
+      # Two voices loaded simultaneously; the agent picks per utterance.
+      - TTS_VOICE_EN=${TTS_VOICE_EN:-en_US-amy-medium}
+      - TTS_VOICE_RU=${TTS_VOICE_RU:-ru_RU-ruslan-medium}
       # Cache paths match the non-root user's home in the agent Dockerfile.
       - HF_HOME=/home/appuser/.cache/huggingface
       - PIPER_VOICES_DIR=/home/appuser/.cache/piper

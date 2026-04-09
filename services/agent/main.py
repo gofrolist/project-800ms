@@ -60,17 +60,28 @@ async def run() -> None:
         room_name=room,
         vllm_base_url=require_env("VLLM_BASE_URL"),
         vllm_model=require_env("VLLM_MODEL", "qwen2.5-7b"),
-        tts_voice=require_env("TTS_VOICE", "ru_RU-ruslan-medium"),
+        tts_voice_en=require_env("TTS_VOICE_EN", "en_US-amy-medium"),
+        tts_voice_ru=require_env("TTS_VOICE_RU", "ru_RU-ruslan-medium"),
         vllm_api_key=require_env("VLLM_API_KEY", "not-used"),
     )
-    logger.info(f"Agent joining room={cfg.room_name} model={cfg.vllm_model} voice={cfg.tts_voice}")
+    logger.info(
+        "Agent joining room={room} model={model} en_voice={en} ru_voice={ru}",
+        room=cfg.room_name,
+        model=cfg.vllm_model,
+        en=cfg.tts_voice_en,
+        ru=cfg.tts_voice_ru,
+    )
 
     task, transport = build_task(cfg)
 
     @transport.event_handler("on_first_participant_joined")
     async def _on_join(_transport, participant_id):  # noqa: ANN001
         logger.info(f"Participant joined: {participant_id}")
-        # Short bilingual-friendly greeting. Adjust to taste per user locale.
+        # Bilingual greeting: two separate frames so the TTS router picks
+        # the right voice for each. The cyrillic-vs-latin classifier in
+        # services/agent/lang.py routes "Hi!" to en_voice and "Привет!"
+        # to ru_voice automatically.
+        await task.queue_frame(TTSSpeakFrame("Hi! How can I help you?"))
         await task.queue_frame(TTSSpeakFrame("Привет! Чем могу помочь?"))
 
     @transport.event_handler("on_participant_left")
