@@ -2,10 +2,18 @@
 
 Graph:
     LiveKit mic audio  →  Silero VAD  →  Faster-Whisper (GPU)  →
-    Qwen2.5-7B (vLLM)  →  Piper TTS (CPU, in-process)  →  LiveKit speaker
+    Qwen2.5-7B (vLLM)  →  Bilingual TTS router  →  LiveKit speaker
+                                       │
+                                       ├──→ Piper EN voice (CPU)
+                                       └──→ Piper RU voice (CPU)
 
 Everything streams. First audio out should land ~700ms after end-of-speech on
 the RTX 5080 / L4 target hardware.
+
+Whisper auto-detects language per utterance, the LLM is told to reply in the
+same language, and the TTS router below picks the matching Piper voice based
+on a cheap cyrillic-vs-latin classifier (see `lang.py`). Two voice models are
+loaded simultaneously (~50 MB each, CPU-resident).
 """
 
 from __future__ import annotations
@@ -14,6 +22,8 @@ from dataclasses import dataclass
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import Frame, TextFrame, TTSSpeakFrame
+from pipecat.pipeline.parallel_pipeline import ParallelPipeline
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -22,11 +32,14 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.processors.audio.vad_processor import VADProcessor
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.piper.tts import PiperTTSService
 from pipecat.services.whisper.stt import Model as WhisperModel
 from pipecat.services.whisper.stt import WhisperSTTService
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
+
+from lang import Language, LanguageRouter
 
 SYSTEM_PROMPT = (
     "You are a helpful voice assistant. Your replies are spoken aloud, so: "
@@ -45,7 +58,10 @@ class AgentConfig:
     room_name: str
     vllm_base_url: str
     vllm_model: str
-    tts_voice: str  # e.g. "ru_RU-ruslan-medium"
+    # Two Piper voices, one per supported output language. Both are loaded
+    # at startup; the bilingual router below picks per utterance.
+    tts_voice_en: str  # e.g. "en_US-amy-medium"
+    tts_voice_ru: str  # e.g. "ru_RU-ruslan-medium"
     # vLLM doesn't authenticate by default, but the OpenAI client requires
     # a non-empty string. Override via VLLM_API_KEY when vLLM is fronted by
     # an auth proxy (e.g. an api gateway in prod).
@@ -53,6 +69,35 @@ class AgentConfig:
     whisper_model: WhisperModel = WhisperModel.LARGE_V3_TURBO
     whisper_device: str = "cuda"
     whisper_compute_type: str = "int8_float16"
+
+
+class LanguageFilter(FrameProcessor):
+    """Drops TextFrames / TTSSpeakFrames whose language doesn't match.
+
+    Sits at the head of one branch of a `ParallelPipeline`. Both branches
+    receive every frame; this filter drops anything destined for the
+    other branch's voice. Non-text frames (lifecycle, audio, control)
+    pass through unchanged so the downstream TTS can keep its state in
+    sync with the rest of the pipeline.
+
+    Stateful: short LLM-streamed chunks like "." or " " carry no language
+    signal of their own, so we remember the last detected language and
+    use it as the fallback. Both branches see the same frames in the
+    same order, so their states stay in lock-step.
+    """
+
+    def __init__(self, target: Language) -> None:
+        super().__init__()
+        self._target = target
+        self._router = LanguageRouter()
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+        await super().process_frame(frame, direction)
+        if isinstance(frame, (TextFrame, TTSSpeakFrame)) and frame.text:
+            if self._router.route(frame.text) != self._target:
+                # Drop: this frame belongs to the other language's branch.
+                return
+        await self.push_frame(frame, direction)
 
 
 def build_task(cfg: AgentConfig) -> tuple[PipelineTask, LiveKitTransport]:
@@ -114,11 +159,15 @@ def build_task(cfg: AgentConfig) -> tuple[PipelineTask, LiveKitTransport]:
         ),
     )
 
-    tts = PiperTTSService(
-        settings=PiperTTSService.Settings(
-            voice=cfg.tts_voice,
-        ),
-        use_cuda=False,  # CPU is plenty for Piper; keep GPU for LLM + Whisper
+    # Two Piper voices, one per language. CPU-only — Piper is fast enough
+    # on CPU and we want to keep the GPU free for vLLM + Whisper.
+    tts_en = PiperTTSService(
+        settings=PiperTTSService.Settings(voice=cfg.tts_voice_en),
+        use_cuda=False,
+    )
+    tts_ru = PiperTTSService(
+        settings=PiperTTSService.Settings(voice=cfg.tts_voice_ru),
+        use_cuda=False,
     )
 
     context = LLMContext()
@@ -136,7 +185,15 @@ def build_task(cfg: AgentConfig) -> tuple[PipelineTask, LiveKitTransport]:
             stt,
             user_agg,
             llm,
-            tts,
+            # Bilingual TTS routing. Both branches receive every frame;
+            # each LanguageFilter drops the frames meant for the other
+            # voice, so only one Piper actually synthesises any given
+            # sentence. The merged audio comes out the other side and
+            # flows to transport.output() unchanged.
+            ParallelPipeline(
+                [LanguageFilter(Language.EN), tts_en],
+                [LanguageFilter(Language.RU), tts_ru],
+            ),
             transport.output(),
             assistant_agg,
         ]
