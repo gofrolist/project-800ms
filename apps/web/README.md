@@ -4,8 +4,8 @@ Minimal React client: one button, LiveKit voice room, agent audio visualizer.
 
 ```bash
 cd apps/web
-npm install          # or pnpm / bun
-npm run dev          # http://localhost:5173
+bun install          # https://bun.sh
+bun run dev          # http://localhost:5173
 ```
 
 The dev server talks to the API at `VITE_API_URL` (default `http://localhost:8000`).

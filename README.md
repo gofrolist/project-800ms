@@ -105,11 +105,43 @@ infra/
 
 ```bash
 cd apps/web
-npm install
-npm run dev       # http://localhost:5173
+bun install       # https://bun.sh
+bun run dev       # http://localhost:5173
 ```
 
 The backend stack must already be up (`docker compose -f infra/docker-compose.yml up`).
+
+## Development setup
+
+After cloning, install [pre-commit](https://pre-commit.com/) and enable the hooks once:
+
+```bash
+# macOS:    brew install pre-commit
+# pip:      pipx install pre-commit
+# Then, in the repo root:
+pre-commit install
+```
+
+This wires up file-hygiene checks, [`ruff`](https://docs.astral.sh/ruff/) lint+format,
+[`gitleaks`](https://github.com/gitleaks/gitleaks) secret scanning,
+[`actionlint`](https://github.com/rhysd/actionlint), and JSON-Schema validation
+of `.github/workflows/` and `dependabot.yml`. The same checks run in CI, so
+catching them locally saves a round trip.
+
+To run the hooks against the whole tree (e.g. after pulling new commits):
+
+```bash
+pre-commit run --all-files
+```
+
+The Python services use [`uv`](https://docs.astral.sh/uv/) for dependency management:
+
+```bash
+cd apps/api && uv sync           # install deps
+cd apps/api && uv run pytest     # run tests
+```
+
+Same for `services/agent/`.
 
 ## Current status
 

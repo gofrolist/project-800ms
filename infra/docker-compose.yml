@@ -19,6 +19,9 @@
 #   - On Linux, `network_mode: host` gives LiveKit the cleanest NAT behavior.
 #     We use bridge + port mapping here for macOS/WSL compatibility. Switch to
 #     host mode in prod by uncommenting the relevant line.
+#   - All "internal" services (postgres, redis, vllm) are bound to 127.0.0.1 on
+#     the host so a misconfigured cloud security group can't expose them publicly.
+#     Override LIVEKIT_DEV_FLAG, LOG_LEVEL, etc. in .env for local dev.
 
 name: project-800ms
 
@@ -39,10 +42,19 @@ services:
     image: livekit/livekit-server:v1.9.12
     restart: unless-stopped
     # network_mode: host   # enable on Linux prod for best WebRTC behavior
-    command: --config /etc/livekit.yaml --dev
+    # `--dev` is OFF by default. It disables admin-API auth on port 7880
+    # and is dangerous in any non-localhost deployment. Set
+    # LIVEKIT_DEV_FLAG=--dev in your local .env if you need it for testing.
+    command: ["--config", "/etc/livekit.yaml", "${LIVEKIT_DEV_FLAG:-}"]
+    environment:
+      # LiveKit reads keys from this env var (one per line, "key: secret").
+      # Keeps secrets out of the committed livekit.yaml.
+      - LIVEKIT_KEYS=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro
     ports:
+      # Signaling/HTTP are intentionally bound to all interfaces — browsers
+      # connect from outside the host network for WebRTC.
       - "7880:7880"               # signaling (HTTP/WS)
       - "7881:7881"               # TCP fallback for RTC
       - "50000-50099:50000-50099/udp"  # media
@@ -65,7 +77,10 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      # Loopback only — postgres has a password but should never be exposed
+      # to the public internet. The api/agent containers reach it via the
+      # internal docker network using the service name `postgres`.
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-voice} -d ${POSTGRES_DB:-voice}"]
       interval: 5s
@@ -75,13 +90,23 @@ services:
   redis:
     image: redis:8-alpine
     restart: unless-stopped
-    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    # `requirepass` enforces auth even on localhost. Connections from the
+    # other services use the password from REDIS_URL via env.
+    command:
+      - "redis-server"
+      - "--save"
+      - "60"
+      - "1"
+      - "--loglevel"
+      - "warning"
+      - "--requirepass"
+      - "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"
     volumes:
       - redis_data:/data
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -103,8 +128,13 @@ services:
     volumes:
       - hf_cache:/root/.cache/huggingface
     ports:
-      - "8001:8000"
-    ipc: host
+      # Loopback only — vLLM has no built-in rate limiting and (until the
+      # api-key flag below) accepts arbitrary prompts. Reachable from the
+      # agent container via the internal docker network on `vllm:8000`.
+      - "127.0.0.1:8001:8000"
+    # Private /dev/shm instead of `ipc: host` — sharing host IPC is a known
+    # container-escape amplifier. 16 GB is plenty for single-GPU workloads.
+    shm_size: "16gb"
     command:
       - --model=Qwen/Qwen2.5-7B-Instruct-AWQ
       - --quantization=awq_marlin
@@ -115,6 +145,9 @@ services:
       - --served-model-name=qwen2.5-7b
       - --host=0.0.0.0
       - --port=8000
+      # Require an API key on every request — even on loopback. The agent
+      # passes the same value via VLLM_API_KEY.
+      - --api-key=${VLLM_API_KEY:?VLLM_API_KEY is required}
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()\" || exit 1"]
       interval: 15s
@@ -132,13 +165,16 @@ services:
     restart: unless-stopped
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-voice}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-voice}
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
       - LIVEKIT_URL=ws://livekit:7880
       - LIVEKIT_PUBLIC_URL=${LIVEKIT_PUBLIC_URL:-ws://localhost:7880}
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
       - DEMO_ROOM=${DEMO_ROOM:-demo}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-["*"]}
     ports:
+      # Public — browsers POST /sessions here. Rate-limited at the app
+      # layer (slowapi).
       - "8000:8000"
     depends_on:
       postgres:
@@ -168,13 +204,18 @@ services:
       - LIVEKIT_ROOM=${DEMO_ROOM:-demo}
       - VLLM_BASE_URL=http://vllm:8000/v1
       - VLLM_MODEL=qwen2.5-7b
+      - VLLM_API_KEY=${VLLM_API_KEY:?VLLM_API_KEY is required}
       - TTS_VOICE=${TTS_VOICE:-ru_RU-ruslan-medium}
-      - HF_HOME=/root/.cache/huggingface
-      - PIPER_VOICES_DIR=/root/.cache/piper
-      - LOG_LEVEL=DEBUG
+      # Cache paths match the non-root user's home in the agent Dockerfile.
+      - HF_HOME=/home/appuser/.cache/huggingface
+      - PIPER_VOICES_DIR=/home/appuser/.cache/piper
+      # INFO by default — DEBUG logs full STT transcripts and LLM
+      # prompts/completions, which is a privacy issue if exposed via
+      # docker logs. Set LOG_LEVEL=DEBUG in .env when actively debugging.
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
-      - hf_cache:/root/.cache/huggingface
-      - piper_voices:/root/.cache/piper
+      - hf_cache:/home/appuser/.cache/huggingface
+      - piper_voices:/home/appuser/.cache/piper
     depends_on:
       livekit:
         condition: service_healthy

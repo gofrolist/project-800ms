@@ -1,0 +1,148 @@
+# Dependabot configuration.
+# Docs: https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# Notes on ecosystems used here:
+#   - `uv`          — updates pyproject.toml + uv.lock (added 2024)
+#   - `bun`         — updates package.json + bun.lock (added 2025)
+#   - `docker`      — Dockerfile base images
+#   - `docker-compose` — image tags in infra/docker-compose.yml
+#   - `github-actions` — pins for workflow actions
+#
+# If Dependabot reports an unknown ecosystem on first run, fall back:
+#   uv  → pip   (reads pyproject.toml only, not uv.lock)
+#   bun → npm   (requires package-lock.json; you'd need to regenerate one)
+
+version: 2
+updates:
+  # ─── Python: apps/api ────────────────────────────────────────────────────
+  - package-ecosystem: "uv"
+    directory: "/apps/api"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(api)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "python"
+      - "apps/api"
+    groups:
+      python-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ─── Python: services/agent ──────────────────────────────────────────────
+  - package-ecosystem: "uv"
+    directory: "/services/agent"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(agent)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "python"
+      - "services/agent"
+    # Ignore pipecat-ai major bumps — the frame API and transport hooks
+    # break between majors; review/upgrade manually.
+    ignore:
+      - dependency-name: "pipecat-ai"
+        update-types: ["version-update:semver-major"]
+      # faster-whisper / ctranslate2 majors can require CUDA ABI changes
+      # (the whole reason we're pinned to CUDA 12.x); gate manually.
+      - dependency-name: "faster-whisper"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "ctranslate2"
+        update-types: ["version-update:semver-major"]
+    groups:
+      python-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ─── Web: apps/web ───────────────────────────────────────────────────────
+  - package-ecosystem: "bun"
+    directory: "/apps/web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(web)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "javascript"
+      - "apps/web"
+    groups:
+      web-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ─── Dockerfiles (base image updates) ────────────────────────────────────
+  - package-ecosystem: "docker"
+    directories:
+      - "/apps/api"
+      - "/services/agent"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(docker)"
+    labels:
+      - "dependencies"
+      - "docker"
+    # Do NOT let Dependabot bump nvidia/cuda to 13.x until ctranslate2 ships
+    # CUDA 13 wheels. See services/agent/Dockerfile for the full rationale.
+    ignore:
+      - dependency-name: "nvidia/cuda"
+        update-types: ["version-update:semver-major"]
+
+  # ─── Docker Compose services (livekit, postgres, vllm) ───────────────────
+  - package-ecosystem: "docker-compose"
+    directory: "/infra"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(infra)"
+    labels:
+      - "dependencies"
+      - "docker-compose"
+      - "infra"
+
+  # ─── GitHub Actions (workflow action pins) ───────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(ci)"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      actions-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - "minor"
+          - "patch"

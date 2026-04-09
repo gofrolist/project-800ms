@@ -3,6 +3,31 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Content Security Policy. Tight by default; loosen only as needed.
+        - default-src 'self'         : same-origin only
+        - script-src 'self'          : no inline scripts (Vite emits real files)
+        - style-src 'self' 'unsafe-inline' : LiveKit components inject inline styles
+        - connect-src                : API (http/https) + LiveKit signaling (ws/wss)
+        - media-src 'self' blob:     : MediaStream tracks
+        - img-src 'self' data:       : data: URIs for tiny inline icons
+      For production, replace ws:/wss: with the explicit LiveKit host.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="
+        default-src 'self';
+        script-src 'self';
+        style-src 'self' 'unsafe-inline';
+        connect-src 'self' http: https: ws: wss:;
+        media-src 'self' blob:;
+        img-src 'self' data:;
+        font-src 'self' data:;
+        object-src 'none';
+        base-uri 'self';
+        frame-ancestors 'none';
+      "
+    />
     <title>project-800ms</title>
   </head>
   <body>

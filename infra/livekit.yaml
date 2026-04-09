@@ -1,8 +1,14 @@
 # LiveKit server config — dev profile.
 # Docs: https://docs.livekit.io/home/self-hosting/deployment/
 #
-# For prod: set `rtc.use_external_ip: true` and bind to the instance EIP,
-# widen `port_range_end` to 60000, and move `keys` to a secret store.
+# IMPORTANT: this file contains NO secrets. API key/secret pairs are
+# injected via the LIVEKIT_KEYS environment variable in docker-compose.yml,
+# sourced from infra/.env. Never add a `keys:` block here — it would commit
+# credentials to git history.
+#
+# For prod: set `rtc.use_external_ip: true`, bind to the instance EIP,
+# widen `port_range_end` to 60000, and set strict CORS in front of
+# the signaling port.
 
 port: 7880
 
@@ -11,12 +17,6 @@ rtc:
   port_range_start: 50000
   port_range_end: 50099
   use_external_ip: false
-
-# Dev keys — loaded from env via docker compose, matched by apps/api and agent.
-# These MUST match LIVEKIT_API_KEY / LIVEKIT_API_SECRET in .env.
-# In dev we allow a static pair; in prod, rotate via secret manager.
-keys:
-  devkey: devsecret_change_me_at_least_32_characters_long_xxxxxx
 
 log_level: info
 

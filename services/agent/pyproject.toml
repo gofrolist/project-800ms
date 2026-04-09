@@ -1,0 +1,41 @@
+[project]
+name = "project-800ms-agent"
+version = "0.1.0"
+description = "Pipecat voice agent (STT → LLM → TTS) for project-800ms"
+requires-python = "==3.12.*"
+dependencies = [
+    # Pipecat + the concrete SDKs we use (livekit, faster-whisper, piper, openai, silero).
+    "pipecat-ai[livekit,whisper,piper,openai,silero]==0.0.108",
+    "livekit-api==1.1.0",
+    "loguru==0.7.3",
+    # Pinned transitively-critical. faster-whisper → ctranslate2 is linked against
+    # libcublas.so.12 and libcudnn*.so.9 — the CUDA 12.x Docker base must match.
+    "faster-whisper==1.2.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.3.4",
+]
+
+[tool.uv]
+# `required-environments` declares which platforms `uv lock` must be able to
+# resolve for. Linux x86_64 is the Docker target (NVIDIA CUDA base image).
+# macOS arm64 is fine for editing/typing locally but cannot run Whisper on
+# GPU; uv will still resolve macOS wheels on demand for `uv sync`.
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "tests/.pytest_cache"]
+
+[tool.ruff.format]
+# Defaults are fine; this section makes the contract explicit and lets
+# `ruff format --check .` catch drift in CI.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

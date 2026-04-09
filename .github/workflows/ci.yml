@@ -1,0 +1,182 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel in-flight runs on the same ref when a new commit arrives.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ─── Pre-commit: file hygiene, ruff, gitleaks, actionlint, schemas ──────
+  # Catches commits made with `--no-verify` or by contributors who haven't
+  # installed local hooks. Same hooks devs run via `pre-commit run --all-files`.
+  pre-commit:
+    name: Pre-commit hooks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.12"
+      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd  # v3.0.1
+
+  # ─── Python: lint both services ──────────────────────────────────────────
+  python-lint:
+    name: Lint Python (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [apps/api, services/agent]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8.0.0
+        with:
+          version: "0.11.4"
+          enable-cache: true
+          cache-dependency-glob: ${{ matrix.service }}/uv.lock
+
+      - name: Ruff check
+        working-directory: ${{ matrix.service }}
+        run: uvx ruff@0.13.3 check .
+
+      - name: Ruff format check
+        working-directory: ${{ matrix.service }}
+        run: uvx ruff@0.13.3 format --check .
+
+  # ─── Python: unit tests ──────────────────────────────────────────────────
+  # Both services have leaf-module test suites that don't require GPU. The
+  # agent tests target services/agent/env.py directly; full pipeline tests
+  # need a GPU runner and live in a separate (future) workflow.
+  python-test:
+    name: Test Python (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: python-lint
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [apps/api, services/agent]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8.0.0
+        with:
+          version: "0.11.4"
+          enable-cache: true
+          cache-dependency-glob: ${{ matrix.service }}/uv.lock
+
+      - name: Sync deps (incl. dev)
+        working-directory: ${{ matrix.service }}
+        run: uv sync --frozen
+
+      - name: Run pytest
+        working-directory: ${{ matrix.service }}
+        run: uv run pytest -v
+
+  # ─── Web: install + type check + build ───────────────────────────────────
+  web:
+    name: Web (bun install + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2.2.0
+        with:
+          bun-version: "1.3.9"
+
+      - name: Install (frozen lockfile)
+        working-directory: apps/web
+        run: bun install --frozen-lockfile
+
+      - name: Type check & build
+        # `bun run build` runs `tsc -b && vite build` — this also serves as
+        # the type-check step for TS/TSX.
+        working-directory: apps/web
+        run: bun run build
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
+        with:
+          name: web-dist
+          path: apps/web/dist
+          retention-days: 7
+          if-no-files-found: error
+
+  # ─── Docker: apps/api ─────────────────────────────────────────────────────
+  docker-api:
+    name: Docker build (apps/api)
+    runs-on: ubuntu-latest
+    needs: python-lint
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+
+      - name: Build api image
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7.0.0
+        with:
+          context: apps/api
+          push: false
+          load: true
+          tags: project-800ms-api:ci
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
+
+      - name: Smoke-test api container
+        run: |
+          docker run --rm -d --name api-smoke \
+            -p 8000:8000 \
+            -e LIVEKIT_API_KEY=ci-test \
+            -e LIVEKIT_API_SECRET=ci-test-secret-min-32-chars-long-xx \
+            -e LIVEKIT_URL=ws://localhost:7880 \
+            project-800ms-api:ci
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+            if curl -fsS http://localhost:8000/health; then
+              echo
+              echo "api is healthy"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::api container did not become healthy"
+          docker logs api-smoke
+          exit 1
+
+  # ─── Docker: services/agent ──────────────────────────────────────────────
+  # CUDA base image is ~6 GB — free disk on the runner before building.
+  docker-agent:
+    name: Docker build (services/agent)
+    runs-on: ubuntu-latest
+    needs: python-lint
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet \
+                      /usr/local/lib/android \
+                      /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af || true
+          df -h
+
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+
+      - name: Build agent image
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7.0.0
+        with:
+          context: services/agent
+          push: false
+          tags: project-800ms-agent:ci
+          cache-from: type=gha,scope=agent
+          cache-to: type=gha,scope=agent,mode=max

@@ -1,0 +1,48 @@
+[project]
+name = "project-800ms-api"
+version = "0.1.0"
+description = "FastAPI control plane for the project-800ms voice assistant"
+requires-python = "==3.12.*"
+dependencies = [
+    "fastapi==0.115.5",
+    "uvicorn[standard]==0.32.1",
+    "pydantic-settings==2.6.1",
+    "livekit-api==0.8.2",
+    # Per-IP rate limiting on /sessions and /health. /sessions mints LiveKit
+    # tokens with no auth, so an unrate-limited flood would burn GPU compute
+    # on Whisper + vLLM. See SECURITY.md / F-01, F-02.
+    "slowapi==0.1.9",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.3.4",
+    "httpx==0.28.1",
+    # Used by tests to inspect/verify the JWTs that /sessions mints. Already
+    # a transitive dep via livekit-api, but declared explicitly so test imports
+    # don't depend on dependency drift.
+    "pyjwt==2.10.1",
+]
+
+[tool.uv]
+# `required-environments` declares which platforms `uv lock` must be able to
+# resolve for. We deploy to linux x86_64 (Docker), so the lock file is
+# guaranteed to install there. macOS devs can still run `uv sync` locally —
+# uv will resolve macOS-specific wheels on the fly without modifying the
+# lock file.
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "tests/.pytest_cache"]
+
+[tool.ruff.format]
+# Defaults are fine; this section makes the contract explicit and lets
+# `ruff format --check .` catch drift in CI.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

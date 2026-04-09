@@ -4,6 +4,7 @@ MVP model: one long-running agent joins a fixed demo room and stays. The API
 mints caller tokens for the same room. Single-tenant, single-agent — good
 enough to prove the latency target. Per-call dispatch is a follow-up.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -13,21 +14,18 @@ import sys
 
 from livekit import api as lkapi
 from loguru import logger
-from pipecat.frames.frames import EndFrame, TTSSpeakFrame
+from pipecat.frames.frames import TTSSpeakFrame
 from pipecat.pipeline.runner import PipelineRunner
 
+from env import MissingEnvError, require_env
 from pipeline import AgentConfig, build_task
 
 AGENT_IDENTITY = "agent-bot"
-AGENT_TOKEN_TTL = datetime.timedelta(hours=24)  # agent is long-running
-
-
-def _env(name: str, default: str | None = None) -> str:
-    value = os.environ.get(name, default)
-    if value is None:
-        logger.error(f"Missing required env var: {name}")
-        sys.exit(2)
-    return value
+# Short TTL — the agent restarts on Docker container restart and re-mints
+# its own token via require_env() at startup. A leaked agent token can be
+# replayed for the TTL window, so keep it tight. The LiveKit Go SDK that
+# pipecat uses re-authenticates on reconnect using the original credentials.
+AGENT_TOKEN_TTL = datetime.timedelta(hours=2)
 
 
 def _mint_agent_token(api_key: str, api_secret: str, room: str) -> str:
@@ -51,23 +49,21 @@ def _mint_agent_token(api_key: str, api_secret: str, room: str) -> str:
 
 
 async def run() -> None:
-    livekit_url = _env("LIVEKIT_URL")
-    api_key = _env("LIVEKIT_API_KEY")
-    api_secret = _env("LIVEKIT_API_SECRET")
-    room = _env("LIVEKIT_ROOM", "demo")
+    livekit_url = require_env("LIVEKIT_URL")
+    api_key = require_env("LIVEKIT_API_KEY")
+    api_secret = require_env("LIVEKIT_API_SECRET")
+    room = require_env("LIVEKIT_ROOM", "demo")
 
     cfg = AgentConfig(
         livekit_url=livekit_url,
         livekit_token=_mint_agent_token(api_key, api_secret, room),
         room_name=room,
-        vllm_base_url=_env("VLLM_BASE_URL"),
-        vllm_model=_env("VLLM_MODEL", "qwen2.5-7b"),
-        tts_voice=_env("TTS_VOICE", "ru_RU-ruslan-medium"),
+        vllm_base_url=require_env("VLLM_BASE_URL"),
+        vllm_model=require_env("VLLM_MODEL", "qwen2.5-7b"),
+        tts_voice=require_env("TTS_VOICE", "ru_RU-ruslan-medium"),
+        vllm_api_key=require_env("VLLM_API_KEY", "not-used"),
     )
-    logger.info(
-        f"Agent joining room={cfg.room_name} model={cfg.vllm_model} "
-        f"voice={cfg.tts_voice}"
-    )
+    logger.info(f"Agent joining room={cfg.room_name} model={cfg.vllm_model} voice={cfg.tts_voice}")
 
     task, transport = build_task(cfg)
 
@@ -93,6 +89,9 @@ def main() -> None:
         asyncio.run(run())
     except KeyboardInterrupt:
         logger.info("Shutting down")
+    except MissingEnvError as exc:
+        logger.error(str(exc))
+        sys.exit(2)
 
 
 if __name__ == "__main__":

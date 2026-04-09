@@ -7,6 +7,7 @@ Graph:
 Everything streams. First audio out should land ~700ms after end-of-speech on
 the RTX 5080 / L4 target hardware.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -45,6 +46,10 @@ class AgentConfig:
     vllm_base_url: str
     vllm_model: str
     tts_voice: str  # e.g. "ru_RU-ruslan-medium"
+    # vLLM doesn't authenticate by default, but the OpenAI client requires
+    # a non-empty string. Override via VLLM_API_KEY when vLLM is fronted by
+    # an auth proxy (e.g. an api gateway in prod).
+    vllm_api_key: str = "not-used"
     whisper_model: WhisperModel = WhisperModel.LARGE_V3_TURBO
     whisper_device: str = "cuda"
     whisper_compute_type: str = "int8_float16"
@@ -77,15 +82,18 @@ def build_task(cfg: AgentConfig) -> tuple[PipelineTask, LiveKitTransport]:
 
     # Single VAD instance, shared between the upstream VADProcessor (which
     # gates Whisper) and the LLM user aggregator (which uses VAD frames for
-    # turn-taking). Tuned for low-gain mics (browser AGC off / quiet input):
-    # default confidence=0.7, min_volume=0.6 are both too aggressive.
+    # turn-taking). Two analyzers would load the Silero ONNX model twice and
+    # could drift in their speech/silence decisions. Tuned for low-gain mics
+    # (browser AGC off / quiet input): defaults of confidence=0.7,
+    # min_volume=0.6 are both too aggressive.
     vad_params = VADParams(
         confidence=0.3,
         start_secs=0.15,
         stop_secs=0.6,
         min_volume=0.05,
     )
-    vad_processor = VADProcessor(vad_analyzer=SileroVADAnalyzer(params=vad_params))
+    vad_analyzer = SileroVADAnalyzer(params=vad_params)
+    vad_processor = VADProcessor(vad_analyzer=vad_analyzer)
 
     stt = WhisperSTTService(
         model=cfg.whisper_model,
@@ -99,7 +107,7 @@ def build_task(cfg: AgentConfig) -> tuple[PipelineTask, LiveKitTransport]:
     # vLLM speaks the OpenAI API — point the OpenAI client at it.
     llm = OpenAILLMService(
         base_url=cfg.vllm_base_url,
-        api_key="not-used",  # vLLM doesn't check, but the client requires a non-empty string
+        api_key=cfg.vllm_api_key,
         model=cfg.vllm_model,
         settings=OpenAILLMService.Settings(
             system_instruction=SYSTEM_PROMPT,
@@ -117,7 +125,7 @@ def build_task(cfg: AgentConfig) -> tuple[PipelineTask, LiveKitTransport]:
     user_agg, assistant_agg = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
-            vad_analyzer=SileroVADAnalyzer(params=vad_params),
+            vad_analyzer=vad_analyzer,
         ),
     )
 
