@@ -4,9 +4,9 @@ version = "0.1.0"
 description = "FastAPI control plane for the project-800ms voice assistant"
 requires-python = "==3.14.*"
 dependencies = [
-    "fastapi==0.115.5",
-    "uvicorn[standard]==0.32.1",
-    "pydantic-settings==2.6.1",
+    "fastapi==0.135.3",
+    "uvicorn[standard]==0.44.0",
+    "pydantic-settings==2.13.1",
     "livekit-api==0.8.2",
     # Per-IP rate limiting on /sessions and /health. /sessions mints LiveKit
     # tokens with no auth, so an unrate-limited flood would burn GPU compute
@@ -21,7 +21,7 @@ dev = [
     # Used by tests to inspect/verify the JWTs that /sessions mints. Already
     # a transitive dep via livekit-api, but declared explicitly so test imports
     # don't depend on dependency drift.
-    "pyjwt==2.10.1",
+    "pyjwt==2.12.1",
 ]
 
 [tool.uv]
