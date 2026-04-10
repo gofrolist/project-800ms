@@ -1,0 +1,63 @@
+# TLS overlay — adds Caddy as a reverse proxy and swaps the LiveKit config
+# to advertise the public IP in ICE candidates.
+#
+# Apply on top of docker-compose.yml + docker-compose.prod.yml:
+#
+#   docker compose \
+#     --env-file infra/.env \
+#     -f infra/docker-compose.yml \
+#     -f infra/docker-compose.prod.yml \
+#     -f infra/docker-compose.tls.yml \
+#     up -d
+#
+# Required env vars in infra/.env:
+#   DOMAIN     — base domain (e.g. voice.example.com). Caddy serves
+#                api.$DOMAIN and livekit.$DOMAIN.
+#   TLS_EMAIL  — contact email for Let's Encrypt registration.
+#
+# DNS: create two A records pointing to the instance EIP:
+#   api.$DOMAIN     -> <eip>
+#   livekit.$DOMAIN -> <eip>
+
+name: project-800ms
+
+services:
+  livekit:
+    # Prod overlay advertises the public IP in ICE candidates.
+    volumes:
+      - ./livekit.prod.yaml:/etc/livekit.yaml:ro
+    # Replace base ports entirely: drop 7880/7881 (Caddy fronts them on 443)
+    # and keep only 50000-50099/udp (media bypasses Caddy).
+    ports: !override
+      - "50000-50099:50000-50099/udp"
+
+  api:
+    # Caddy hits api:8000 over the docker network — no host port needed.
+    ports: !reset null
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      - DOMAIN=${DOMAIN:?DOMAIN is required when TLS is enabled}
+      - TLS_EMAIL=${TLS_EMAIL:?TLS_EMAIL is required when TLS is enabled}
+    volumes:
+      - ./Caddyfile.prod:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    depends_on:
+      - api
+      - livekit
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  caddy_data:
+  caddy_config:

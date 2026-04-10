@@ -1,0 +1,82 @@
+# Caddy reverse-proxy for project-800ms with automatic Let's Encrypt TLS.
+#
+# Fronts two hostnames:
+#   api.${DOMAIN}     -> api:8000     (FastAPI)
+#   livekit.${DOMAIN} -> livekit:7880 (LiveKit signaling / WebSocket)
+#
+# WebRTC media (UDP 50000-50099) bypasses Caddy entirely — the browser sends
+# RTP directly to the instance's EIP. SRTP already encrypts media, so this
+# is fine.
+#
+# The TLS_EMAIL env var is used for Let's Encrypt account registration so
+# you get expiry notifications. DOMAIN is the base domain (e.g. voice.example.com).
+
+{
+	email {$TLS_EMAIL}
+
+	# Uncomment to test against Let's Encrypt staging (avoids rate limits
+	# while debugging DNS setup — certs will be untrusted).
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+api.{$DOMAIN} {
+	encode zstd gzip
+
+	# Aggressive TLS — modern clients only.
+	tls {
+		protocols tls1.2 tls1.3
+	}
+
+	# FastAPI handles CORS itself (CORS_ALLOWED_ORIGINS in .env).
+	reverse_proxy api:8000 {
+		header_up Host {http.request.host}
+		header_up X-Real-IP {http.request.remote.host}
+		header_up X-Forwarded-For {http.request.remote.host}
+		header_up X-Forwarded-Proto {http.request.scheme}
+	}
+
+	# Basic security headers.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}
+
+livekit.{$DOMAIN} {
+	tls {
+		protocols tls1.2 tls1.3
+	}
+
+	# LiveKit uses long-lived WebSocket connections for signaling. Disable
+	# Caddy's default proxy buffering and keep the connection open.
+	reverse_proxy livekit:7880 {
+		header_up Host {http.request.host}
+		header_up X-Real-IP {http.request.remote.host}
+		header_up X-Forwarded-For {http.request.remote.host}
+		header_up X-Forwarded-Proto {http.request.scheme}
+
+		# Give LiveKit room for slow WS handshakes.
+		transport http {
+			read_timeout 30s
+			write_timeout 30s
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

@@ -1,0 +1,31 @@
+# LiveKit server config — production / single-box deployment overlay.
+#
+# Differences from infra/livekit.yaml (dev):
+#   - rtc.use_external_ip: true → LiveKit advertises the host's public IP in
+#     ICE candidates, so browsers can reach it for WebRTC media. Required on
+#     any NAT'd / cloud host.
+#   - tcp_port stays at 7881; this is reached via the host network, NOT via
+#     Caddy (Caddy can't proxy arbitrary TCP easily, and TCP is a fallback
+#     for networks that block UDP — so this is only used when all else fails).
+#   - turn.enabled is still false; add TURN/TLS on 5349 if you need to serve
+#     users behind strict firewalls.
+#
+# Secrets stay out of this file. LIVEKIT_KEYS is injected via env from
+# infra/.env in docker-compose.yml.
+
+port: 7880
+
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 50099
+  use_external_ip: true
+
+log_level: info
+
+turn:
+  enabled: false
+
+room:
+  empty_timeout: 300
+  max_participants: 4

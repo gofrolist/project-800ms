@@ -1,0 +1,57 @@
+region        = "us-west-2"
+project_name  = "project-800ms"
+instance_type = "g6.xlarge"
+
+# App source
+git_repo = "https://github.com/gofrolist/project-800ms.git"
+git_ref  = "main"
+
+# GHCR image tag for api/agent. Use "latest" to follow main, or pin to
+# "sha-abc1234" for a reproducible deploy / easy rollback.
+image_tag = "latest"
+
+# -----------------------------------------------------------------------------
+# TLS (strongly recommended)
+#
+# Leave both empty for a plaintext MVP demo on http://<eip>:8000 / ws://<eip>:7880.
+# Set both to enable Caddy + Let's Encrypt, serving:
+#   api.$domain     — FastAPI
+#   livekit.$domain — LiveKit signaling (wss://)
+#
+# After `terraform apply`, create two A records pointing to the EIP output
+# and wait ~1 min for DNS to propagate before hitting the HTTPS endpoints.
+# -----------------------------------------------------------------------------
+domain    = ""  # e.g. "voice.example.com"
+tls_email = ""  # e.g. "you@example.com"
+
+# -----------------------------------------------------------------------------
+# Secrets — generate with:
+#   openssl rand -hex 32
+#
+# All validated in variables.tf:
+#   postgres_password, redis_password, vllm_api_key: min 16 chars
+#   livekit_api_secret:                              min 32 chars
+#   livekit_api_key:                                 min 6 chars, not "devkey"
+#
+# Stored in SSM Parameter Store as SecureString and fetched by the instance
+# at boot. They also live in terraform.tfstate — use an encrypted remote
+# backend (S3 + DynamoDB locking) for any real deployment.
+# -----------------------------------------------------------------------------
+postgres_password      = "REPLACE_ME_openssl_rand_hex_32"
+redis_password         = "REPLACE_ME_openssl_rand_hex_32"
+livekit_api_key        = "REPLACE_ME"
+livekit_api_secret     = "REPLACE_ME_openssl_rand_hex_32"
+vllm_api_key           = "REPLACE_ME_openssl_rand_hex_32"
+hugging_face_hub_token = ""  # optional; required only for gated HF models
+
+# -----------------------------------------------------------------------------
+# Access — narrow these before real use
+# -----------------------------------------------------------------------------
+allowed_app_cidr = "0.0.0.0/0"
+
+# Optional SSH (SSM Session Manager works without this)
+# key_name         = "my-keypair"
+# allowed_ssh_cidr = "1.2.3.4/32"
+
+# Optional: fixed spot price cap. Empty = on-demand price cap (recommended).
+# max_spot_price = "0.40"

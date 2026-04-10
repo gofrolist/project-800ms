@@ -49,6 +49,8 @@ services:
     environment:
       # LiveKit reads keys from this env var (one per line, "key: secret").
       # Keeps secrets out of the committed livekit.yaml.
+      # Quoted because YAML would otherwise parse the unquoted `: ` in the
+      # middle of the value as a nested map and reject the file.
       - "LIVEKIT_KEYS=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}"
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml:ro

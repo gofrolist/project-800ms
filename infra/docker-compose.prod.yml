@@ -1,0 +1,30 @@
+# Production overlay — use prebuilt images from GHCR instead of building
+# from source. Apply on top of docker-compose.yml:
+#
+#   docker compose \
+#     --env-file infra/.env \
+#     -f infra/docker-compose.yml \
+#     -f infra/docker-compose.prod.yml \
+#     pull
+#   docker compose \
+#     --env-file infra/.env \
+#     -f infra/docker-compose.yml \
+#     -f infra/docker-compose.prod.yml \
+#     up -d
+#
+# The image tag is controlled by ${IMAGE_TAG} (default: latest). Pin to a
+# specific commit with IMAGE_TAG=sha-abc1234 in infra/.env for reproducible
+# deploys and easy rollbacks.
+
+name: project-800ms
+
+services:
+  api:
+    image: ghcr.io/gofrolist/project-800ms-api:${IMAGE_TAG:-latest}
+    build: !reset null
+    pull_policy: always
+
+  agent:
+    image: ghcr.io/gofrolist/project-800ms-agent:${IMAGE_TAG:-latest}
+    build: !reset null
+    pull_policy: always
