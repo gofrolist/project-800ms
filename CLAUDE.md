@@ -65,8 +65,8 @@ pre-commit run --all-files  # ruff, gitleaks, file hygiene, actionlint
 
 ## Key Design Decisions
 
-- **Single-tenant MVP**: one agent sits in a fixed "demo" room. Per-call dispatch is a follow-up.
-- **Agent token minting**: agent mints its own LiveKit JWT at startup (30min TTL). API mints caller tokens (15min TTL).
+- **Dynamic rooms**: each /sessions call creates a unique room and dispatches an agent pipeline via POST to the agent's HTTP server (:8001/dispatch). Rooms are isolated — callers can't hear each other.
+- **Agent token minting**: agent mints a LiveKit JWT per room (30min TTL). API mints caller tokens (15min TTL).
 - **Whisper hallucination filter**: `stt_filter.py` drops segments by statistical properties (no_speech_prob, avg_logprob, compression_ratio) instead of a blocklist.
 - **Language routing**: `lang.py` detects CJK characters to reject unsupported scripts; everything else → Russian (single-language MVP).
 - **Transcript forwarding**: `transcript.py` debounces user STT fragments (1s) before sending to the web UI via LiveKit data channel. Assistant responses are buffered between LLMFullResponseStart/End frames.

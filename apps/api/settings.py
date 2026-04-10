@@ -25,8 +25,11 @@ class Settings(BaseSettings):
     # the participant is in the room, LiveKit's session lifecycle takes
     # over. A leaked token can be replayed for the TTL window, so keep it
     # tight.
-    demo_room: str = "demo"
     session_ttl_seconds: int = 15 * 60  # 15m
+
+    # Internal agent dispatch endpoint. The API calls this to tell the agent
+    # to spawn a pipeline for a new room.
+    agent_dispatch_url: str = "http://agent:8001"
 
     # CORS. Default is permissive for local dev (browser at :5173 hits API
     # at :8000). In prod, set CORS_ALLOWED_ORIGINS to a comma-separated list

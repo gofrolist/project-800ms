@@ -12,7 +12,8 @@ import logging
 import os
 import uuid
 
-from fastapi import FastAPI, Request
+import httpx
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from livekit import api as lkapi
 from pydantic import BaseModel
@@ -141,12 +142,9 @@ def health(request: Request) -> dict[str, str]:
 
 @app.post("/sessions", response_model=SessionResponse)
 @limiter.limit("5/minute")
-def create_session(request: Request) -> SessionResponse:
-    """Mint a caller token for the demo room.
-
-    The agent is already sitting in `settings.demo_room`, so the caller
-    just joins and starts talking. Auth/user binding lands in a follow-up.
-    """
+async def create_session(request: Request) -> SessionResponse:
+    """Create a private room and dispatch an agent into it."""
+    room = f"room-{uuid.uuid4().hex[:8]}"
     identity = f"user-{uuid.uuid4().hex[:8]}"
     token = (
         lkapi.AccessToken(settings.livekit_api_key, settings.livekit_api_secret)
@@ -154,7 +152,7 @@ def create_session(request: Request) -> SessionResponse:
         .with_grants(
             lkapi.VideoGrants(
                 room_join=True,
-                room=settings.demo_room,
+                room=room,
                 can_publish=True,
                 can_subscribe=True,
                 can_publish_data=True,
@@ -163,9 +161,22 @@ def create_session(request: Request) -> SessionResponse:
         .with_ttl(datetime.timedelta(seconds=settings.session_ttl_seconds))
         .to_jwt()
     )
+
+    # Tell the agent to spawn a pipeline for this room.
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            resp = await client.post(
+                f"{settings.agent_dispatch_url}/dispatch",
+                json={"room": room},
+            )
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.error("Agent dispatch failed: {err}", err=str(exc))
+            raise HTTPException(status_code=503, detail="Agent unavailable") from exc
+
     return SessionResponse(
         url=settings.livekit_public_url,
         token=token,
-        room=settings.demo_room,
+        room=room,
         identity=identity,
     )

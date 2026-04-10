@@ -8,6 +8,7 @@ dependencies = [
     "pipecat-ai[livekit,whisper,piper,openai,silero]==0.0.108",
     "livekit-api==1.1.0",
     "loguru==0.7.3",
+    "aiohttp>=3.11,<4",
     # Pinned transitively-critical. faster-whisper → ctranslate2 is linked against
     # libcublas.so.12 and libcudnn*.so.9 — the CUDA 12.x Docker base must match.
     "faster-whisper==1.2.1",

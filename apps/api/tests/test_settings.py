@@ -19,7 +19,6 @@ class TestSettingsValidation:
         )
         assert s.livekit_api_key == "abc"
         assert s.livekit_api_secret == VALID_SECRET
-        assert s.demo_room == "demo"
         assert s.session_ttl_seconds == 15 * 60
         assert s.cors_allowed_origins == ["*"]
 

@@ -151,7 +151,6 @@ umask 077
   printf 'VLLM_API_KEY=%s\n' "$VLLM_API_KEY"
   printf 'HUGGING_FACE_HUB_TOKEN=%s\n' "$HUGGING_FACE_HUB_TOKEN"
   printf 'LOG_LEVEL=INFO\n'
-  printf 'DEMO_ROOM=demo\n'
   if [ "$TLS_ENABLED" = "true" ] && [ -n "$DOMAIN" ]; then
     printf 'CORS_ALLOWED_ORIGINS=["https://%s"]\n' "$DOMAIN"
   else

@@ -774,6 +774,7 @@ name = "project-800ms-agent"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "faster-whisper" },
     { name = "livekit-api" },
     { name = "loguru" },
@@ -787,6 +788,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.11,<4" },
     { name = "faster-whisper", specifier = "==1.2.1" },
     { name = "livekit-api", specifier = "==1.1.0" },
     { name = "loguru", specifier = "==0.7.3" },

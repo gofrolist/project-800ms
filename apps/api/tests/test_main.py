@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from unittest.mock import AsyncMock, patch
 
 import jwt
 import pytest
@@ -23,6 +24,25 @@ def _reset_limiter() -> Iterator[None]:
     limiter.reset()
     yield
     limiter.reset()
+
+
+def _mock_dispatch() -> AsyncMock:
+    """Return a mock that simulates a successful agent dispatch response."""
+    mock_response = AsyncMock()
+    mock_response.raise_for_status = lambda: None
+
+    mock_client = AsyncMock()
+    mock_client.post = AsyncMock(return_value=mock_response)
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    return mock_client
+
+
+@pytest.fixture(autouse=True)
+def _mock_agent_dispatch():
+    """Mock httpx.AsyncClient so tests don't need a running agent."""
+    with patch("main.httpx.AsyncClient", return_value=_mock_dispatch()):
+        yield
 
 
 @pytest.fixture()
@@ -53,7 +73,7 @@ class TestCreateSession:
         body = res.json()
         assert set(body.keys()) == {"url", "token", "room", "identity"}
         assert body["url"] == settings.livekit_public_url
-        assert body["room"] == settings.demo_room
+        assert body["room"].startswith("room-")
         assert body["identity"].startswith("user-")
 
     def test_token_is_signed_with_configured_secret(self, client: TestClient) -> None:
@@ -69,12 +89,16 @@ class TestCreateSession:
             settings.livekit_api_secret,
             algorithms=["HS256"],
         )
-        assert decoded["video"]["room"] == settings.demo_room
+        assert decoded["video"]["room"] == body["room"]
         assert decoded["video"]["roomJoin"] is True
 
     def test_each_call_mints_unique_identity(self, client: TestClient) -> None:
         identities = {client.post("/sessions").json()["identity"] for _ in range(5)}
         assert len(identities) == 5
+
+    def test_each_call_creates_unique_room(self, client: TestClient) -> None:
+        rooms = {client.post("/sessions").json()["room"] for _ in range(5)}
+        assert len(rooms) == 5
 
 
 class TestRateLimiting:

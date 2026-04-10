@@ -177,9 +177,9 @@ services:
       - LIVEKIT_PUBLIC_URL=${LIVEKIT_PUBLIC_URL:-ws://localhost:7880}
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
-      - DEMO_ROOM=${DEMO_ROOM:-demo}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-["*"]}
       - ENV=${ENV:-development}
+      - AGENT_DISPATCH_URL=http://agent:8001
     ports:
       # Public — browsers POST /sessions here. Rate-limited at the app
       # layer (slowapi).
@@ -204,22 +204,30 @@ services:
       - LIVEKIT_URL=ws://livekit:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
-      - LIVEKIT_ROOM=${DEMO_ROOM:-demo}
       - VLLM_BASE_URL=${LLM_BASE_URL:-http://vllm:8000/v1}
       - VLLM_MODEL=${LLM_MODEL:-mistral-7b}
       - VLLM_API_KEY=${VLLM_API_KEY:?VLLM_API_KEY is required}
       - TTS_VOICE=${TTS_VOICE:-ru_RU-denis-medium}
       - HF_HOME=/home/appuser/.cache/huggingface
+      - HF_HUB_DISABLE_XET=1
       - PIPER_VOICES_DIR=/home/appuser/.cache/piper
       # INFO by default — DEBUG logs full STT transcripts and LLM
       # prompts/completions, which is a privacy issue if exposed via
       # docker logs. Set LOG_LEVEL=DEBUG in .env when actively debugging.
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      # Internal only — API dispatches rooms via POST /dispatch.
+      - "127.0.0.1:8001:8001"
     volumes:
       # Dedicated HF cache for the agent (Faster-Whisper weights). See
       # vllm.volumes above for why this is split from the vllm cache.
       - hf_cache_agent:/home/appuser/.cache/huggingface
       - piper_voices:/home/appuser/.cache/piper
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health').read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
     depends_on:
       livekit:
         condition: service_healthy
