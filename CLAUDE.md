@@ -76,8 +76,8 @@ pre-commit run --all-files  # ruff, gitleaks, file hygiene, actionlint
 
 ## Linting
 
-- **ruff**: line-length 100, target py312. Runs in pre-commit and CI.
-- **gitleaks**: secret scanning in pre-commit and CI.
+- **ruff**: line-length 100, target py312. Runs in pre-commit (local) and CI.
+- **gitleaks**: secret scanning in pre-commit (local).
 - CI job `Lint Python (services/agent)` runs `ruff check` from `services/agent/` with `--config pyproject.toml`.
 
 ## Conventions

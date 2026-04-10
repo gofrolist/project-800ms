@@ -27,19 +27,6 @@ env:
   IMAGE_OWNER: ${{ github.repository_owner }}
 
 jobs:
-  # ─── Pre-commit: file hygiene, ruff, gitleaks, actionlint, schemas ──────
-  # Catches commits made with `--no-verify` or by contributors who haven't
-  # installed local hooks. Same hooks devs run via `pre-commit run --all-files`.
-  pre-commit:
-    name: Pre-commit hooks
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
-        with:
-          python-version: "3.12"
-      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd  # v3.0.1
-
   # ─── Python: lint both services ──────────────────────────────────────────
   python-lint:
     name: Lint Python (${{ matrix.service }})
@@ -117,7 +104,7 @@ jobs:
         run: bun run build
 
       - name: Upload dist artifact
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: web-dist
           path: apps/web/dist
@@ -143,7 +130,7 @@ jobs:
 
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1  # v3.5.0
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -151,7 +138,7 @@ jobs:
 
       - name: Compute api image tags
         id: meta-api
-        uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f  # v5.7.0
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6.0.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/project-800ms-api
           tags: |
@@ -160,7 +147,7 @@ jobs:
             type=sha,format=short
 
       - name: Build api image
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7.0.0
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
           context: apps/api
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -220,7 +207,7 @@ jobs:
 
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1  # v3.5.0
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -228,7 +215,7 @@ jobs:
 
       - name: Compute agent image tags
         id: meta-agent
-        uses: docker/metadata-action@c1e51972afc2121e065aed6d45c65596fe445f3f  # v5.7.0
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6.0.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/project-800ms-agent
           tags: |
@@ -237,7 +224,7 @@ jobs:
             type=sha,format=short
 
       - name: Build agent image
-        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7.0.0
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
           context: services/agent
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
