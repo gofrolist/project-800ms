@@ -39,12 +39,12 @@ def detect_language(text: str, fallback: Language = Language.RU) -> Language | N
 
     Heuristic:
         1. Any CJK character → ``None`` (unsupported script).
-        2. Otherwise → Russian (our only language).
+        2. Otherwise → *fallback* (Russian by default).
     """
     for ch in text:
         if _is_cjk(ch):
             return None
-    return Language.RU
+    return fallback
 
 
 class LanguageRouter:

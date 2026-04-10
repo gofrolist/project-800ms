@@ -12,7 +12,8 @@ This catches hallucinations regardless of language or content.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 
 import numpy as np
 from loguru import logger
@@ -48,7 +49,7 @@ class FilteredWhisperSTTService(WhisperSTTService):
     Settings = FilteredWhisperSettings
     _settings: Settings
 
-    async def run_stt(self, audio: bytes):
+    async def run_stt(self, audio: bytes) -> AsyncGenerator[ErrorFrame | TranscriptionFrame, None]:
         if not self._model:
             yield ErrorFrame("Whisper model not available")
             return
@@ -73,7 +74,7 @@ class FilteredWhisperSTTService(WhisperSTTService):
                 continue
 
             # Known hallucination compression ratio
-            if seg.compression_ratio == _HALLUCINATION_COMPRESSION_RATIO:
+            if abs(seg.compression_ratio - _HALLUCINATION_COMPRESSION_RATIO) < 1e-9:
                 logger.debug(
                     "Dropped segment (compression_ratio={c}): {t}",
                     c=seg.compression_ratio,
@@ -105,7 +106,7 @@ class FilteredWhisperSTTService(WhisperSTTService):
 
         if text:
             await self._handle_transcription(text, True, self._settings.language)
-            logger.debug(f"Transcription: [{text}]")
+            logger.debug("Transcription: [{text}]", text=text)
             yield TranscriptionFrame(
                 text,
                 self._user_id,

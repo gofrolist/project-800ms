@@ -12,7 +12,6 @@ from pipecat.frames.frames import (
     LLMFullResponseStartFrame,
     TextFrame,
     TranscriptionFrame,
-    UserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transports.livekit.transport import LiveKitTransport
@@ -59,17 +58,19 @@ class UserTranscriptForwarder(FrameProcessor):
         loop = asyncio.get_running_loop()
         self._flush_handle = loop.call_later(
             _USER_TRANSCRIPT_DEBOUNCE_SECS,
-            lambda: asyncio.ensure_future(self._flush()),
+            lambda: loop.create_task(self._flush()),
         )
 
     async def _flush(self):
         """Send the accumulated transcript fragments as one message."""
         self._flush_handle = None
-        if not self._buf:
+        buf, self._buf = self._buf, []
+        if not buf:
             return
-        text = " ".join(self._buf)
-        self._buf.clear()
-        await _send_transcript(self._transport, "user", text)
+        try:
+            await _send_transcript(self._transport, "user", " ".join(buf))
+        except Exception:
+            logger.exception("Failed to forward user transcript")
 
 
 class AssistantTranscriptForwarder(FrameProcessor):

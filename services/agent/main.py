@@ -13,9 +13,10 @@ import os
 import sys
 from pathlib import Path
 
+import json
+
 from livekit import api as lkapi
 from loguru import logger
-import json
 
 from pipecat.frames.frames import InterruptionTaskFrame, TTSSpeakFrame
 from pipecat.pipeline.runner import PipelineRunner
@@ -75,16 +76,16 @@ async def run() -> None:
     task, transport = build_task(cfg)
 
     @transport.event_handler("on_first_participant_joined")
-    async def _on_join(_transport, participant_id):  # noqa: ANN001
-        logger.info(f"Participant joined: {participant_id}")
+    async def _on_join(_transport: object, participant_id: str) -> None:
+        logger.info("Participant joined: {pid}", pid=participant_id)
         await transport.send_message(
             json.dumps({"role": "assistant", "text": GREETING}, ensure_ascii=False)
         )
         await task.queue_frame(TTSSpeakFrame(GREETING))
 
     @transport.event_handler("on_participant_left")
-    async def _on_leave(_transport, participant_id, _reason):  # noqa: ANN001
-        logger.info(f"Participant left: {participant_id}")
+    async def _on_leave(_transport: object, participant_id: str, _reason: object) -> None:
+        logger.info("Participant left: {pid}", pid=participant_id)
         await task.queue_frame(InterruptionTaskFrame())
 
     await PipelineRunner().run(task)
