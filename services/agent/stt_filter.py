@@ -51,9 +51,15 @@ class FilteredWhisperSTTService(WhisperSTTService):
     _settings: Settings
 
     def __init__(self, *, model: object | None = None, **kwargs):
+        self._shared_model = model
         super().__init__(**kwargs)
-        if model is not None:
-            self._model = model
+
+    async def _load(self):
+        """Use the pre-loaded model if available, otherwise load normally."""
+        if self._shared_model is not None:
+            self._model = self._shared_model
+            return
+        await super()._load()
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[ErrorFrame | TranscriptionFrame, None]:
         if not self._model:
