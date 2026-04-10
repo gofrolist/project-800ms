@@ -128,6 +128,7 @@ services:
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
       - HF_HOME=/root/.cache/huggingface
+      - HF_HUB_DISABLE_XET=1
     volumes:
       # Dedicated HF cache for vLLM. Don't share with the agent: different
       # UIDs would leave cache files unwritable for the other service.

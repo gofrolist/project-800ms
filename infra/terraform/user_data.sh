@@ -153,7 +153,7 @@ umask 077
   printf 'LOG_LEVEL=INFO\n'
   printf 'DEMO_ROOM=demo\n'
   if [ "$TLS_ENABLED" = "true" ] && [ -n "$DOMAIN" ]; then
-    printf 'CORS_ALLOWED_ORIGINS=["https://api.%s"]\n' "$DOMAIN"
+    printf 'CORS_ALLOWED_ORIGINS=["https://%s"]\n' "$DOMAIN"
   else
     printf 'CORS_ALLOWED_ORIGINS=["*"]\n'
   fi
