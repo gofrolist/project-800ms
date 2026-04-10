@@ -36,6 +36,7 @@ app = FastAPI(
     openapi_url=None if _is_production else "/openapi.json",
 )
 
+
 # ─── Rate limiting ────────────────────────────────────────────────────────
 # Per-remote-IP limits. /sessions is the high-value endpoint — each call
 # mints a LiveKit token good for `session_ttl_seconds`, so a flood would
