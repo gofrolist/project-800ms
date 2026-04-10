@@ -1,21 +1,60 @@
 # -----------------------------------------------------------------------------
-# Network — use the default VPC for MVP simplicity.
+# Network — dedicated VPC so we don't depend on a pre-existing default VPC.
 # -----------------------------------------------------------------------------
 
-data "aws_vpc" "default" {
-  default = true
+data "aws_availability_zones" "available" {
+  state = "available"
 }
 
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
+resource "aws_vpc" "main" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+
+  tags = {
+    Name    = "${var.project_name}-vpc"
+    Project = var.project_name
+  }
+}
+
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name    = "${var.project_name}-igw"
+    Project = var.project_name
+  }
+}
+
+resource "aws_subnet" "public" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = data.aws_availability_zones.available.names[0]
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name    = "${var.project_name}-public"
+    Project = var.project_name
+  }
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
   }
 
-  filter {
-    name   = "default-for-az"
-    values = ["true"]
+  tags = {
+    Name    = "${var.project_name}-rt-public"
+    Project = var.project_name
   }
+}
+
+resource "aws_route_table_association" "public" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
 }
 
 data "aws_caller_identity" "current" {}
@@ -67,7 +106,7 @@ locals {
 resource "aws_security_group" "main" {
   name        = "${var.project_name}-sg"
   description = "project-800ms voice MVP"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = aws_vpc.main.id
 
   # LiveKit WebRTC media is raw UDP (SRTP-encrypted at the application layer).
   # It cannot be reverse-proxied through Caddy; the browser sends media
@@ -132,7 +171,7 @@ resource "aws_security_group" "main" {
   dynamic "ingress" {
     for_each = local.tls_enabled ? [1] : []
     content {
-      description = "HTTP (Caddy — Let's Encrypt HTTP-01 + 301 to HTTPS)"
+      description = "HTTP (Caddy - Lets Encrypt HTTP-01 + 301 to HTTPS)"
       from_port   = 80
       to_port     = 80
       protocol    = "tcp"
@@ -335,7 +374,7 @@ locals {
 resource "aws_spot_instance_request" "main" {
   ami                  = data.aws_ami.dlami.id
   instance_type        = var.instance_type
-  subnet_id            = tolist(data.aws_subnets.default.ids)[0]
+  subnet_id            = aws_subnet.public.id
   iam_instance_profile = aws_iam_instance_profile.instance.name
   key_name             = var.key_name == "" ? null : var.key_name
 
