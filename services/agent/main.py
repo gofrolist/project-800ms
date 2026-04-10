@@ -22,6 +22,7 @@ from pipecat.frames.frames import InterruptionTaskFrame, TTSSpeakFrame
 from pipecat.pipeline.runner import PipelineRunner
 
 from env import MissingEnvError, require_env
+from models import get_whisper, load_whisper
 from pipeline import AgentConfig, build_task
 
 GREETING = "Привет! Чем могу помочь?"
@@ -71,7 +72,7 @@ async def _run_pipeline(room: str) -> None:
             **_base_config,
         )
 
-        task, transport = build_task(cfg)
+        task, transport = build_task(cfg, whisper_model=get_whisper())
 
         @transport.event_handler("on_first_participant_joined")
         async def _on_join(_transport: object, participant_id: str) -> None:
@@ -133,6 +134,9 @@ def main() -> None:
     except MissingEnvError as exc:
         logger.error(str(exc))
         sys.exit(2)
+
+    # Pre-load heavy GPU/CPU models so the first dispatch is fast.
+    load_whisper()
 
     app = web.Application()
     app.router.add_post("/dispatch", handle_dispatch)

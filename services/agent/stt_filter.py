@@ -43,11 +43,17 @@ class FilteredWhisperSTTService(WhisperSTTService):
     """WhisperSTTService that drops low-confidence segments.
 
     Drop-in replacement — same constructor interface, just uses
-    FilteredWhisperSettings for the extra thresholds.
+    FilteredWhisperSettings for the extra thresholds. Accepts an optional
+    pre-loaded WhisperModel to avoid reloading on each pipeline start.
     """
 
     Settings = FilteredWhisperSettings
     _settings: Settings
+
+    def __init__(self, *, model: object | None = None, **kwargs):
+        super().__init__(**kwargs)
+        if model is not None:
+            self._model = model
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[ErrorFrame | TranscriptionFrame, None]:
         if not self._model:

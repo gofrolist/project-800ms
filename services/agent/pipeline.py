@@ -28,8 +28,10 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.piper.tts import PiperTTSService
-from pipecat.services.whisper.stt import Model as WhisperModel
+from pipecat.services.whisper.stt import Model as WhisperModelSize
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
+
+from faster_whisper import WhisperModel
 
 from stt_filter import FilteredWhisperSTTService
 from transcript import AssistantTranscriptForwarder, UserTranscriptForwarder
@@ -61,12 +63,14 @@ class AgentConfig:
     tts_voice: str  # e.g. "ru_RU-denis-medium"
     vllm_api_key: str
     piper_voices_dir: Path = Path("/home/appuser/.cache/piper")
-    whisper_model: WhisperModel = WhisperModel.LARGE
+    whisper_model: WhisperModelSize = WhisperModelSize.LARGE
     whisper_device: str = "cuda"
     whisper_compute_type: str = "int8_float16"
 
 
-def build_task(cfg: AgentConfig) -> tuple[PipelineTask, LiveKitTransport]:
+def build_task(
+    cfg: AgentConfig, *, whisper_model: WhisperModel | None = None
+) -> tuple[PipelineTask, LiveKitTransport]:
     """Build the Pipecat pipeline + task for one call."""
     transport = LiveKitTransport(
         url=cfg.livekit_url,
@@ -90,6 +94,7 @@ def build_task(cfg: AgentConfig) -> tuple[PipelineTask, LiveKitTransport]:
     vad_processor = VADProcessor(vad_analyzer=vad_analyzer)
 
     stt = FilteredWhisperSTTService(
+        model=whisper_model,
         device=cfg.whisper_device,
         compute_type=cfg.whisper_compute_type,
         settings=FilteredWhisperSTTService.Settings(
