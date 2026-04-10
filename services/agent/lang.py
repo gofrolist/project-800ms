@@ -15,9 +15,9 @@ CYRILLIC_END = "\u04ff"
 
 # CJK Unified Ideographs — some models occasionally leak Chinese.
 CJK_RANGES = (
-    ("\u4e00", "\u9fff"),   # CJK Unified Ideographs
-    ("\u3400", "\u4dbf"),   # CJK Extension A
-    ("\u3000", "\u303f"),   # CJK Symbols and Punctuation
+    ("\u4e00", "\u9fff"),  # CJK Unified Ideographs
+    ("\u3400", "\u4dbf"),  # CJK Extension A
+    ("\u3000", "\u303f"),  # CJK Symbols and Punctuation
 )
 
 
