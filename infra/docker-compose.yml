@@ -215,9 +215,7 @@ services:
       # prompts/completions, which is a privacy issue if exposed via
       # docker logs. Set LOG_LEVEL=DEBUG in .env when actively debugging.
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
-    ports:
-      # Internal only — API dispatches rooms via POST /dispatch.
-      - "127.0.0.1:8001:8001"
+    # No host port needed — API reaches agent via docker network (agent:8001).
     volumes:
       # Dedicated HF cache for the agent (Faster-Whisper weights). See
       # vllm.volumes above for why this is split from the vllm cache.

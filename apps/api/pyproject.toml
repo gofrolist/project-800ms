@@ -12,6 +12,7 @@ dependencies = [
     # tokens with no auth, so an unrate-limited flood would burn GPU compute
     # on Whisper + vLLM. See SECURITY.md / F-01, F-02.
     "slowapi==0.1.9",
+    "httpx>=0.28.1",
 ]
 
 [dependency-groups]
