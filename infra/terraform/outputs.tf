@@ -26,6 +26,7 @@ output "livekit_ws_url" {
 output "dns_records_needed" {
   description = "A records you must create in your DNS provider before the first HTTPS request succeeds. Empty when TLS is disabled."
   value = local.tls_enabled ? {
+    "${var.domain}"         = aws_eip.main.public_ip
     "api.${var.domain}"     = aws_eip.main.public_ip
     "livekit.${var.domain}" = aws_eip.main.public_ip
   } : {}

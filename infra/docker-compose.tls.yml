@@ -1,5 +1,5 @@
-# TLS overlay — adds Caddy as a reverse proxy and swaps the LiveKit config
-# to advertise the public IP in ICE candidates.
+# TLS overlay — adds Caddy as a reverse proxy, the web SPA, and swaps the
+# LiveKit config to advertise the public IP in ICE candidates.
 #
 # Apply on top of docker-compose.yml + docker-compose.prod.yml:
 #
@@ -11,13 +11,14 @@
 #     up -d
 #
 # Required env vars in infra/.env:
-#   DOMAIN     — base domain (e.g. voice.example.com). Caddy serves
-#                api.$DOMAIN and livekit.$DOMAIN.
+#   DOMAIN     — base domain (e.g. coastalai.ai). Caddy serves
+#                ${DOMAIN} (SPA), api.${DOMAIN}, and livekit.${DOMAIN}.
 #   TLS_EMAIL  — contact email for Let's Encrypt registration.
 #
-# DNS: create two A records pointing to the instance EIP:
-#   api.$DOMAIN     -> <eip>
-#   livekit.$DOMAIN -> <eip>
+# DNS: create three A records pointing to the instance EIP:
+#   ${DOMAIN}          -> <eip>
+#   api.${DOMAIN}      -> <eip>
+#   livekit.${DOMAIN}  -> <eip>
 
 name: project-800ms
 
@@ -35,6 +36,15 @@ services:
     # Caddy hits api:8000 over the docker network — no host port needed.
     ports: !reset null
 
+  web:
+    build:
+      context: ../apps/web
+      args:
+        VITE_API_URL: https://api.${DOMAIN}
+    image: project-800ms-web:latest
+    volumes:
+      - web_dist:/dist
+
   caddy:
     image: caddy:2.10-alpine
     restart: unless-stopped
@@ -45,13 +55,18 @@ services:
       - ./Caddyfile.prod:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+      - web_dist:/srv/web:ro
     ports:
       - "80:80"
       - "443:443"
       - "443:443/udp" # HTTP/3
     depends_on:
-      - api
-      - livekit
+      web:
+        condition: service_completed_successfully
+      api:
+        condition: service_started
+      livekit:
+        condition: service_started
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
       interval: 30s
@@ -61,3 +76,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  web_dist:

@@ -127,12 +127,11 @@ services:
     <<: *gpu
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
-      - HF_HOME=/home/vllm/.cache/huggingface
-    user: "1000:1000"
+      - HF_HOME=/root/.cache/huggingface
     volumes:
       # Dedicated HF cache for vLLM. Don't share with the agent: different
       # UIDs would leave cache files unwritable for the other service.
-      - hf_cache_vllm:/home/vllm/.cache/huggingface
+      - hf_cache_vllm:/root/.cache/huggingface
       - ./mistral-chat-template.jinja:/etc/vllm/chat-template.jinja:ro
     ports:
       # Loopback only — vLLM has no built-in rate limiting and (until the

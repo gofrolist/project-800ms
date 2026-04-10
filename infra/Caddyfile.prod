@@ -1,8 +1,10 @@
 # Caddy reverse-proxy for project-800ms with automatic Let's Encrypt TLS.
 #
-# Fronts two hostnames:
+# Fronts three hostnames + www redirect:
+#   ${DOMAIN}         -> SPA (static files)
 #   api.${DOMAIN}     -> api:8000     (FastAPI)
 #   livekit.${DOMAIN} -> livekit:7880 (LiveKit signaling / WebSocket)
+#   www.${DOMAIN}     -> 301 to ${DOMAIN}
 #
 # WebRTC media (UDP 50000-50099) bypasses Caddy entirely — the browser sends
 # RTP directly to the instance's EIP. SRTP already encrypts media, so this
@@ -17,6 +19,39 @@
 	# Uncomment to test against Let's Encrypt staging (avoids rate limits
 	# while debugging DNS setup — certs will be untrusted).
 	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+www.{$DOMAIN} {
+	redir https://{$DOMAIN}{uri} permanent
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	tls {
+		protocols tls1.2 tls1.3
+	}
+
+	root * /srv/web
+
+	# SPA fallback — serve index.html for client-side routes.
+	try_files {path} /index.html
+	file_server
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Content-Security-Policy "default-src 'self'; connect-src 'self' https://api.{$DOMAIN} wss://livekit.{$DOMAIN}; script-src 'self'; style-src 'self' 'unsafe-inline'; media-src 'self' blob:"
+		Permissions-Policy "microphone=(self), camera=(), geolocation=()"
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
 }
 
 api.{$DOMAIN} {
