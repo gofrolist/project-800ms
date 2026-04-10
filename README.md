@@ -1,7 +1,7 @@
 # project-800ms
 
 Self-hosted, low-latency voice assistant. Target: ≤800ms mic-to-speaker round trip.
-No external API dependencies.
+Works with local models (vLLM) or external APIs (Groq, OpenAI, etc.).
 
 ## Stack
 
@@ -11,8 +11,8 @@ Browser (React + LiveKit SDK)
    ▼
 LiveKit (SFU)  ◀──▶  Agent worker (Pipecat)
                        │   ├─ Silero VAD         (CPU, in-process)
-                       │   ├─ Faster-Whisper     (GPU, in-process)
-                       │   ├─ vLLM client ───────┼──▶ vLLM (separate GPU container)
+                       │   ├─ Faster-Whisper     (GPU, large-v3)
+                       │   ├─ LLM client ────────┼──▶ vLLM (local) or Groq/OpenAI (API)
                        │   └─ Piper TTS          (CPU, in-process)
                        ▼
                 FastAPI (auth, sessions, LiveKit tokens)
@@ -99,7 +99,7 @@ infra/
 3. Open `http://localhost:5173` (web) and click **Start call**
 4. Browser: `POST /sessions` → gets `{url, token, room}`
 5. Browser joins the same `demo` room via LiveKit → mic published, agent audio subscribed
-6. Speak (EN or RU). Pipecat runs VAD → Whisper → Qwen2.5 → Piper. Target round trip ≤ 1s.
+6. Speak Russian. Pipecat runs VAD → Whisper (large-v3) → LLM → Piper TTS. Target round trip ≤ 1s.
 
 ## Running the web client (dev)
 
@@ -142,6 +142,25 @@ cd apps/api && uv run pytest     # run tests
 ```
 
 Same for `services/agent/`.
+
+## Using an external LLM (optional)
+
+By default the agent uses the local vLLM container. To use an external
+OpenAI-compatible provider (e.g. Groq), add these to `infra/.env`:
+
+```env
+LLM_BASE_URL=https://api.groq.com/openai/v1
+LLM_MODEL=llama-3.3-70b-versatile
+LLM_API_KEY=gsk_your_key_here
+```
+
+Then recreate the agent:
+
+```bash
+docker compose --env-file infra/.env -f infra/docker-compose.yml up -d agent
+```
+
+Remove or comment out the `LLM_*` lines to switch back to local vLLM.
 
 ## Current status
 
