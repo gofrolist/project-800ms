@@ -116,9 +116,9 @@ services:
   # ─────────────────────────────────────────────────────────────────────────
   # GPU inference: vLLM (OpenAI-compatible)
   #
-  # Model: Mistral-7B-Instruct-v0.3-AWQ — strong EN+RU, no Chinese
-  # leakage. ~4GB weights. gpu_memory_utilization=0.40 on 16GB RTX
-  # 5080 → ~6.4GB for vLLM (weights + KV cache), leaving headroom
+  # Model: Qwen2.5-7B-Instruct-AWQ — best multilingual 7B model,
+  # strong Russian. ~4GB weights. gpu_memory_utilization=0.55 on
+  # 24GB L4 → ~13GB for vLLM (weights + KV cache), leaving headroom
   # for Whisper (~2GB) + OS.
   # ─────────────────────────────────────────────────────────────────────────
   vllm:
@@ -133,7 +133,6 @@ services:
       # Dedicated HF cache for vLLM. Don't share with the agent: different
       # UIDs would leave cache files unwritable for the other service.
       - hf_cache_vllm:/root/.cache/huggingface
-      - ./mistral-chat-template.jinja:/etc/vllm/chat-template.jinja:ro
     ports:
       # Loopback only — vLLM has no built-in rate limiting and (until the
       # api-key flag below) accepts arbitrary prompts. Reachable from the
@@ -143,16 +142,13 @@ services:
     # container-escape amplifier. 16 GB is plenty for single-GPU workloads.
     shm_size: "16gb"
     command:
-      # Model as a positional arg — `--model=` is deprecated since vLLM
-      # 0.11 and will be removed in v0.13.
-      - solidrust/Mistral-7B-Instruct-v0.3-AWQ
+      - Qwen/Qwen2.5-7B-Instruct-AWQ
       - --quantization=awq_marlin
       - --dtype=float16
       - --max-model-len=4096
       - --gpu-memory-utilization=0.55
       - --enable-prefix-caching
-      - --served-model-name=mistral-7b
-      - --chat-template=/etc/vllm/chat-template.jinja
+      - --served-model-name=qwen-7b
       - --host=0.0.0.0
       - --port=8000
       # Require an API key on every request — even on loopback. The agent
@@ -205,7 +201,7 @@ services:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
       - VLLM_BASE_URL=${LLM_BASE_URL:-http://vllm:8000/v1}
-      - VLLM_MODEL=${LLM_MODEL:-mistral-7b}
+      - VLLM_MODEL=${LLM_MODEL:-qwen-7b}
       - VLLM_API_KEY=${VLLM_API_KEY:?VLLM_API_KEY is required}
       - TTS_VOICE=${TTS_VOICE:-ru_RU-denis-medium}
       - HF_HOME=/home/appuser/.cache/huggingface
