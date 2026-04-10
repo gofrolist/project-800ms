@@ -29,10 +29,9 @@ from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.piper.tts import PiperTTSService
 from pipecat.services.whisper.stt import Model as WhisperModel
-from pipecat.services.whisper.stt import WhisperSTTService
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 
-from stt_filter import WhisperHallucinationFilter
+from stt_filter import FilteredWhisperSTTService
 from transcript import AssistantTranscriptForwarder, UserTranscriptForwarder
 
 SYSTEM_PROMPT = (
@@ -43,7 +42,10 @@ SYSTEM_PROMPT = (
     "тире, скобки, кавычки, эмодзи и специальные символы. "
     "Используй только обычные слова и базовую пунктуацию (точка, запятая, "
     "вопросительный знак, восклицательный знак). "
-    "Всегда отвечай только на русском языке."
+    "Всегда отвечай только на русском языке. "
+    "Никогда не используй слова или символы из других языков, "
+    "включая английский, китайский и любые другие. "
+    "Все имена и названия транслитерируй на русский."
 )
 
 
@@ -59,7 +61,7 @@ class AgentConfig:
     tts_voice: str  # e.g. "ru_RU-denis-medium"
     piper_voices_dir: Path = Path("/home/appuser/.cache/piper")
     vllm_api_key: str = "not-used"
-    whisper_model: WhisperModel = WhisperModel.LARGE_V3_TURBO
+    whisper_model: WhisperModel = WhisperModel.LARGE
     whisper_device: str = "cuda"
     whisper_compute_type: str = "int8_float16"
 
@@ -87,13 +89,15 @@ def build_task(cfg: AgentConfig) -> tuple[PipelineTask, LiveKitTransport]:
     vad_analyzer = SileroVADAnalyzer(params=vad_params)
     vad_processor = VADProcessor(vad_analyzer=vad_analyzer)
 
-    stt = WhisperSTTService(
+    stt = FilteredWhisperSTTService(
         device=cfg.whisper_device,
         compute_type=cfg.whisper_compute_type,
-        settings=WhisperSTTService.Settings(
+        settings=FilteredWhisperSTTService.Settings(
             model=cfg.whisper_model.value,
             language="ru",
             no_speech_prob=0.4,
+            min_avg_logprob=-0.7,
+            max_compression_ratio=2.4,
         ),
     )
 
@@ -121,7 +125,6 @@ def build_task(cfg: AgentConfig) -> tuple[PipelineTask, LiveKitTransport]:
         ),
     )
 
-    hallucination_filter = WhisperHallucinationFilter()
     user_transcript = UserTranscriptForwarder(transport)
     assistant_transcript = AssistantTranscriptForwarder(transport)
 
@@ -130,7 +133,6 @@ def build_task(cfg: AgentConfig) -> tuple[PipelineTask, LiveKitTransport]:
             transport.input(),
             vad_processor,
             stt,
-            hallucination_filter,
             user_transcript,
             user_agg,
             llm,

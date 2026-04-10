@@ -231,9 +231,9 @@ services:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
       - LIVEKIT_ROOM=${DEMO_ROOM:-demo}
-      - VLLM_BASE_URL=http://vllm:8000/v1
-      - VLLM_MODEL=mistral-7b
-      - VLLM_API_KEY=${VLLM_API_KEY:?VLLM_API_KEY is required}
+      - VLLM_BASE_URL=${LLM_BASE_URL:-http://vllm:8000/v1}
+      - VLLM_MODEL=${LLM_MODEL:-mistral-7b}
+      - VLLM_API_KEY=${LLM_API_KEY:-${VLLM_API_KEY}}
       - TTS_VOICE=${TTS_VOICE:-ru_RU-denis-medium}
       - HF_HOME=/home/appuser/.cache/huggingface
       - PIPER_VOICES_DIR=/home/appuser/.cache/piper

@@ -1,64 +1,114 @@
-"""Filter out common Whisper hallucinations on silence/noise.
+"""Whisper STT subclass with confidence-based hallucination filtering.
 
-Whisper is notorious for producing phantom transcriptions like "Thank you.",
-"Thanks for watching.", "Bye." when fed silence or low-level background noise.
-This processor drops those before they reach the LLM.
+Instead of maintaining a blocklist of known hallucination strings, this
+filters segments by their statistical properties:
+  - no_speech_prob: high values indicate the segment is likely silence/noise
+  - avg_logprob: low values indicate the model is uncertain about the text
+  - compression_ratio: the magic value 0.5555… is a known hallucination marker
+
+This catches hallucinations regardless of language or content.
 """
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass, field
+
+import numpy as np
 from loguru import logger
-from pipecat.frames.frames import Frame, TranscriptionFrame
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.frames.frames import ErrorFrame, TranscriptionFrame
+from pipecat.services.whisper.stt import WhisperSTTService, WhisperSTTSettings
+from pipecat.utils.time import time_now_iso8601
 
-# Lowercase, stripped. Whisper produces these on silence across many languages.
-HALLUCINATIONS = frozenset(
-    {
-        "thank you.",
-        "thank you",
-        "thanks.",
-        "thanks",
-        "thanks for watching.",
-        "thanks for watching",
-        "bye.",
-        "bye",
-        "goodbye.",
-        "goodbye",
-        "you",
-        "the end.",
-        "the end",
-        "so",
-        "okay.",
-        "okay",
-        "oh",
-        "ah",
-        "hmm",
-        "uh",
-        "um",
-        # Russian equivalents
-        "спасибо.",
-        "спасибо",
-        "пока.",
-        "пока",
-        "до свидания.",
-        "до свидания",
-        "продолжение следует...",
-        "продолжение следует",
-        "продолжение следует…",
-        "субтитры сделал dyadefima",
-        "субтитры добавил dyadefima",
-    }
-)
+# Compression ratio that faster-whisper produces for pure hallucinations
+# (repeated tokens / padding). The MLX backend already checks this.
+_HALLUCINATION_COMPRESSION_RATIO = 0.5555555555555556
 
 
-class WhisperHallucinationFilter(FrameProcessor):
-    """Drops TranscriptionFrames that match known Whisper hallucination phrases."""
+@dataclass
+class FilteredWhisperSettings(WhisperSTTSettings):
+    """Extended settings with confidence thresholds."""
 
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        await super().process_frame(frame, direction)
-        if isinstance(frame, TranscriptionFrame):
-            normalized = frame.text.strip().lower()
-            if normalized in HALLUCINATIONS:
-                logger.debug("Dropped Whisper hallucination: {text}", text=frame.text)
-                return  # swallow the frame
-        await self.push_frame(frame, direction)
+    # Segments with avg_logprob below this are dropped.
+    # Real speech is typically > -0.5; hallucinations are often < -0.7.
+    min_avg_logprob: float = -0.7
+
+    # Segments with compression_ratio above this are likely repetitive
+    # hallucinations (e.g. "ha ha ha ha ha").
+    max_compression_ratio: float = 2.4
+
+
+class FilteredWhisperSTTService(WhisperSTTService):
+    """WhisperSTTService that drops low-confidence segments.
+
+    Drop-in replacement — same constructor interface, just uses
+    FilteredWhisperSettings for the extra thresholds.
+    """
+
+    Settings = FilteredWhisperSettings
+    _settings: Settings
+
+    async def run_stt(self, audio: bytes):
+        if not self._model:
+            yield ErrorFrame("Whisper model not available")
+            return
+
+        await self.start_processing_metrics()
+
+        audio_float = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
+
+        segments, _ = await asyncio.to_thread(
+            self._model.transcribe, audio_float, language=self._settings.language
+        )
+
+        text = ""
+        for seg in segments:
+            # High probability that the segment is not speech at all
+            if seg.no_speech_prob >= self._settings.no_speech_prob:
+                logger.debug(
+                    "Dropped segment (no_speech_prob={p:.2f}): {t}",
+                    p=seg.no_speech_prob,
+                    t=seg.text,
+                )
+                continue
+
+            # Known hallucination compression ratio
+            if seg.compression_ratio == _HALLUCINATION_COMPRESSION_RATIO:
+                logger.debug(
+                    "Dropped segment (compression_ratio={c}): {t}",
+                    c=seg.compression_ratio,
+                    t=seg.text,
+                )
+                continue
+
+            # Very high compression = repetitive garbage
+            if seg.compression_ratio > self._settings.max_compression_ratio:
+                logger.debug(
+                    "Dropped segment (compression_ratio={c:.2f}): {t}",
+                    c=seg.compression_ratio,
+                    t=seg.text,
+                )
+                continue
+
+            # Low confidence = model is guessing
+            if seg.avg_logprob < self._settings.min_avg_logprob:
+                logger.debug(
+                    "Dropped segment (avg_logprob={l:.2f}): {t}",
+                    l=seg.avg_logprob,
+                    t=seg.text,
+                )
+                continue
+
+            text += f"{seg.text} "
+
+        await self.stop_processing_metrics()
+
+        if text:
+            await self._handle_transcription(text, True, self._settings.language)
+            logger.debug(f"Transcription: [{text}]")
+            yield TranscriptionFrame(
+                text,
+                self._user_id,
+                time_now_iso8601(),
+                self._settings.language,
+            )
