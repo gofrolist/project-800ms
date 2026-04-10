@@ -152,7 +152,12 @@ umask 077
   printf 'HUGGING_FACE_HUB_TOKEN=%s\n' "$HUGGING_FACE_HUB_TOKEN"
   printf 'LOG_LEVEL=INFO\n'
   printf 'DEMO_ROOM=demo\n'
-  printf 'CORS_ALLOWED_ORIGINS=["*"]\n'
+  if [ "$TLS_ENABLED" = "true" ] && [ -n "$DOMAIN" ]; then
+    printf 'CORS_ALLOWED_ORIGINS=["https://api.%s"]\n' "$DOMAIN"
+  else
+    printf 'CORS_ALLOWED_ORIGINS=["*"]\n'
+  fi
+  printf 'ENV=production\n'
   printf 'IMAGE_TAG=%s\n' "$IMAGE_TAG"
   if [ "$TLS_ENABLED" = "true" ]; then
     printf 'DOMAIN=%s\n' "$DOMAIN"

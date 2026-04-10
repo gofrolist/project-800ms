@@ -188,6 +188,11 @@ cython_debug/
 #  you could uncomment the following to ignore the entire vscode folder
 # .vscode/
 
+# Terraform secrets — redundant safety net (also in infra/terraform/.gitignore)
+infra/terraform/terraform.tfvars
+infra/terraform/terraform.tfstate
+infra/terraform/terraform.tfstate.backup
+
 # Ruff stuff:
 .ruff_cache/
 

@@ -27,7 +27,7 @@ from pipeline import AgentConfig, build_task
 GREETING = "Привет! Чем могу помочь?"
 
 AGENT_IDENTITY = "agent-bot"
-AGENT_TOKEN_TTL = datetime.timedelta(hours=2)
+AGENT_TOKEN_TTL = datetime.timedelta(minutes=30)
 
 
 def _mint_agent_token(api_key: str, api_secret: str, room: str) -> str:

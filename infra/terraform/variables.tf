@@ -35,9 +35,9 @@ variable "key_name" {
 }
 
 variable "allowed_ssh_cidr" {
-  description = "CIDR allowed for SSH (22). Ignored if key_name is empty."
+  description = "CIDR allowed for SSH (22). Ignored if key_name is empty. Must be set explicitly — no default to prevent accidental global exposure."
   type        = string
-  default     = "0.0.0.0/0"
+  default     = ""
 }
 
 variable "allowed_app_cidr" {

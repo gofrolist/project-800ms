@@ -141,7 +141,7 @@ resource "aws_security_group" "main" {
   }
 
   dynamic "ingress" {
-    for_each = var.key_name == "" ? [] : [1]
+    for_each = var.key_name != "" && var.allowed_ssh_cidr != "" ? [1] : []
 
     content {
       description = "SSH"

@@ -108,7 +108,7 @@ services:
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -119,7 +119,7 @@ services:
   # Model: Mistral-7B-Instruct-v0.3-AWQ — strong EN+RU, no Chinese
   # leakage. ~4GB weights. gpu_memory_utilization=0.40 on 16GB RTX
   # 5080 → ~6.4GB for vLLM (weights + KV cache), leaving headroom
-  # for Whisper (~2GB) + XTTS (~2-3GB) + OS.
+  # for Whisper (~2GB) + OS.
   # ─────────────────────────────────────────────────────────────────────────
   vllm:
     image: vllm/vllm-openai:v0.19.0
@@ -127,12 +127,12 @@ services:
     <<: *gpu
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
-      - HF_HOME=/root/.cache/huggingface
+      - HF_HOME=/home/vllm/.cache/huggingface
+    user: "1000:1000"
     volumes:
-      # Dedicated HF cache for vLLM. Don't share with the agent: vllm runs
-      # as root, the agent runs as non-root appuser, and a shared volume
-      # leaves cache files root-owned and unwritable for the agent.
-      - hf_cache_vllm:/root/.cache/huggingface
+      # Dedicated HF cache for vLLM. Don't share with the agent: different
+      # UIDs would leave cache files unwritable for the other service.
+      - hf_cache_vllm:/home/vllm/.cache/huggingface
       - ./mistral-chat-template.jinja:/etc/vllm/chat-template.jinja:ro
     ports:
       # Loopback only — vLLM has no built-in rate limiting and (until the
@@ -174,23 +174,16 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-voice}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-voice}
-      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
-      - LIVEKIT_URL=ws://livekit:7880
       - LIVEKIT_PUBLIC_URL=${LIVEKIT_PUBLIC_URL:-ws://localhost:7880}
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
       - DEMO_ROOM=${DEMO_ROOM:-demo}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-["*"]}
+      - ENV=${ENV:-development}
     ports:
       # Public — browsers POST /sessions here. Rate-limited at the app
       # layer (slowapi).
       - "8000:8000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
       interval: 10s
@@ -198,28 +191,7 @@ services:
       retries: 10
 
   # ─────────────────────────────────────────────────────────────────────────
-  # TTS: XTTS-v2 streaming server (GPU)
-  #
-  # Single model handles EN + RU natively — no voice switching logic
-  # needed. ~2-3GB VRAM. Language is set per request by the agent.
-  # ─────────────────────────────────────────────────────────────────────────
-  xtts:
-    image: ghcr.io/coqui-ai/xtts-streaming-server:latest-cuda121
-    restart: unless-stopped
-    <<: *gpu
-    environment:
-      - COQUI_TOS_AGREED=1
-    ports:
-      - "127.0.0.1:8002:80"
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:80/languages"]
-      interval: 15s
-      timeout: 5s
-      retries: 20
-      start_period: 120s  # model download on first run
-
-  # ─────────────────────────────────────────────────────────────────────────
-  # Agent worker: Pipecat pipeline (VAD → Whisper → vLLM → XTTS)
+  # Agent worker: Pipecat pipeline (VAD → Whisper → vLLM → Piper TTS)
   # Uses GPU for Faster-Whisper in-process.
   # ─────────────────────────────────────────────────────────────────────────
   agent:
@@ -235,7 +207,7 @@ services:
       - LIVEKIT_ROOM=${DEMO_ROOM:-demo}
       - VLLM_BASE_URL=${LLM_BASE_URL:-http://vllm:8000/v1}
       - VLLM_MODEL=${LLM_MODEL:-mistral-7b}
-      - VLLM_API_KEY=${LLM_API_KEY:-${VLLM_API_KEY}}
+      - VLLM_API_KEY=${VLLM_API_KEY:?VLLM_API_KEY is required}
       - TTS_VOICE=${TTS_VOICE:-ru_RU-denis-medium}
       - HF_HOME=/home/appuser/.cache/huggingface
       - PIPER_VOICES_DIR=/home/appuser/.cache/piper

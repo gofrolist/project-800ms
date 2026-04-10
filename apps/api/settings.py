@@ -11,9 +11,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=None, extra="ignore")
 
-    # LiveKit. Server talks to LiveKit over the internal docker network;
-    # browsers need a public URL. Both default to the dev single-box setup.
-    livekit_url: str = "ws://livekit:7880"
+    # LiveKit public URL — what the browser connects to. Defaults to the
+    # dev single-box setup; set to wss://livekit.yourdomain.com in prod.
     livekit_public_url: str = "ws://localhost:7880"
     # API key is a short identifier; the secret signs JWTs via HMAC-SHA256.
     # LiveKit recommends a 32+ char secret for HMAC strength. Empty values

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 import uuid
 
 from fastapi import FastAPI, Request
@@ -26,7 +27,14 @@ from settings import settings
 
 logger = logging.getLogger("project-800ms.api")
 
-app = FastAPI(title="project-800ms API")
+_is_production = os.getenv("ENV", "").lower() == "production"
+
+app = FastAPI(
+    title="project-800ms API",
+    docs_url=None if _is_production else "/docs",
+    redoc_url=None if _is_production else "/redoc",
+    openapi_url=None if _is_production else "/openapi.json",
+)
 
 # ─── Rate limiting ────────────────────────────────────────────────────────
 # Per-remote-IP limits. /sessions is the high-value endpoint — each call
@@ -36,7 +44,20 @@ app = FastAPI(title="project-800ms API")
 #
 # Note: when behind a reverse proxy, configure proxy-forwarded headers and
 # swap `get_remote_address` for a key function that reads X-Forwarded-For.
-limiter = Limiter(key_func=get_remote_address, default_limits=[])
+def _real_ip(request: Request) -> str:
+    """Extract the real client IP when behind a trusted reverse proxy (Caddy).
+
+    Only trusts X-Forwarded-For when the immediate peer is on the Docker
+    bridge network (172.x.x.x), preventing header spoofing from direct clients.
+    """
+    xff = request.headers.get("X-Forwarded-For")
+    client_host = request.client.host if request.client else ""
+    if xff and client_host.startswith("172."):
+        return xff.split(",")[0].strip()
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_real_ip, default_limits=[])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(SlowAPIMiddleware)
@@ -59,6 +80,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers.setdefault(
             "Strict-Transport-Security",
             "max-age=31536000; includeSubDomains",
+        )
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; connect-src 'self' wss:; "
+            "script-src 'self'; style-src 'self' 'unsafe-inline'",
+        )
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "microphone=(self), camera=(), geolocation=()",
         )
         return response
 

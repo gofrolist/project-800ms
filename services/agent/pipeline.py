@@ -60,7 +60,7 @@ class AgentConfig:
     vllm_model: str
     tts_voice: str  # e.g. "ru_RU-denis-medium"
     piper_voices_dir: Path = Path("/home/appuser/.cache/piper")
-    vllm_api_key: str = "not-used"
+    vllm_api_key: str
     whisper_model: WhisperModel = WhisperModel.LARGE
     whisper_device: str = "cuda"
     whisper_compute_type: str = "int8_float16"
