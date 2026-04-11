@@ -53,6 +53,9 @@ class FilteredWhisperSTTService(WhisperSTTService):
     def __init__(self, *, model: object | None = None, **kwargs):
         self._shared_model = model
         super().__init__(**kwargs)
+        # Set after super().__init__ so it survives any init-time resets.
+        if model is not None:
+            self._model = model
 
     async def _load(self):
         """Use the pre-loaded model if available, otherwise load normally."""
