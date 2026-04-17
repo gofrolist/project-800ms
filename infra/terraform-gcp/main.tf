@@ -198,6 +198,7 @@ locals {
     livekit_api_secret     = var.livekit_api_secret
     vllm_api_key           = var.vllm_api_key
     hugging_face_hub_token = var.hugging_face_hub_token == "" ? "__UNSET__" : var.hugging_face_hub_token
+    llm_api_key            = var.llm_api_key == "" ? "__UNSET__" : var.llm_api_key
   }
 }
 
@@ -255,6 +256,8 @@ locals {
     domain             = var.domain
     tls_email          = var.tls_email
     secret_prefix      = "${var.project_name}-"
+    llm_base_url       = var.llm_base_url
+    llm_model          = var.llm_model
   })
 }
 
@@ -365,4 +368,33 @@ resource "cloudflare_record" "livekit" {
   ttl     = 60
   proxied = false
   comment = "Managed by Terraform (project-800ms GCP) — do not proxy, WebRTC + HTTP-01 break behind CF proxy"
+}
+
+# Apex — Caddy serves the React SPA here. Without this record, Let's Encrypt's
+# HTTP-01 challenge for ${domain} hits whatever stale IP is in DNS and fails,
+# which also poisons cert issuance for the subdomains (ACME rate-limits /
+# retries per account).
+resource "cloudflare_record" "apex" {
+  count   = local.cloudflare_enabled ? 1 : 0
+  zone_id = var.cloudflare_zone_id
+  name    = var.domain
+  type    = "A"
+  content = google_compute_address.main.address
+  ttl     = 60
+  proxied = false
+  comment = "Managed by Terraform (project-800ms GCP) — apex SPA host, do not proxy (HTTP-01)"
+}
+
+# www — Caddyfile.prod 301-redirects www.${domain} → ${domain}. Needs to
+# resolve to the instance for the redirect block to be reachable; without
+# it, Caddy still tries to issue a cert and HTTP-01 fails against stale DNS.
+resource "cloudflare_record" "www" {
+  count   = local.cloudflare_enabled ? 1 : 0
+  zone_id = var.cloudflare_zone_id
+  name    = "www.${var.domain}"
+  type    = "A"
+  content = google_compute_address.main.address
+  ttl     = 60
+  proxied = false
+  comment = "Managed by Terraform (project-800ms GCP) — www → apex 301 via Caddy"
 }

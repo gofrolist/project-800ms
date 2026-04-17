@@ -239,3 +239,39 @@ variable "hugging_face_hub_token" {
   sensitive = true
   default   = ""
 }
+
+# -----------------------------------------------------------------------------
+# LLM provider (optional override)
+#
+# Default (empty) routes the agent to the local vLLM container running Qwen.
+# Set these three to swap to an external OpenAI-compatible LLM (Groq, OpenAI,
+# Together, Fireworks, etc.) without changing infra.
+#
+# Typical Groq values:
+#   llm_base_url = "https://api.groq.com/openai/v1"
+#   llm_model    = "llama-3.3-70b-versatile"
+#   llm_api_key  = "gsk_..."  # from https://console.groq.com/keys
+#
+# The local vllm container stays running regardless (wastes some GPU memory
+# but keeps it easy to flip back). Drop vllm from compose later if you
+# commit to the external provider.
+# -----------------------------------------------------------------------------
+
+variable "llm_base_url" {
+  description = "External OpenAI-compatible LLM endpoint. Empty = use local vLLM."
+  type        = string
+  default     = ""
+}
+
+variable "llm_model" {
+  description = "Model name for the external LLM (e.g. llama-3.3-70b-versatile). Empty = use local default qwen-7b."
+  type        = string
+  default     = ""
+}
+
+variable "llm_api_key" {
+  description = "API key for the external LLM. Empty = use the local vllm_api_key (agent self-auths to its own vLLM)."
+  type        = string
+  sensitive   = true
+  default     = ""
+}

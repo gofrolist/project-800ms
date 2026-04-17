@@ -262,6 +262,13 @@ resource "aws_ssm_parameter" "hugging_face_hub_token" {
   tags  = { Project = var.project_name }
 }
 
+resource "aws_ssm_parameter" "llm_api_key" {
+  name  = "/${var.project_name}/llm_api_key"
+  type  = "SecureString"
+  value = var.llm_api_key == "" ? "__UNSET__" : var.llm_api_key
+  tags  = { Project = var.project_name }
+}
+
 # -----------------------------------------------------------------------------
 # IAM — SSM Session Manager access + scoped read on the project's SSM params.
 # -----------------------------------------------------------------------------
@@ -362,6 +369,8 @@ locals {
     tls_enabled        = local.tls_enabled
     domain             = var.domain
     tls_email          = var.tls_email
+    llm_base_url       = var.llm_base_url
+    llm_model          = var.llm_model
   })
 }
 
@@ -426,6 +435,7 @@ resource "aws_spot_instance_request" "main" {
     aws_ssm_parameter.livekit_api_secret,
     aws_ssm_parameter.vllm_api_key,
     aws_ssm_parameter.hugging_face_hub_token,
+    aws_ssm_parameter.llm_api_key,
   ]
 }
 
@@ -475,6 +485,7 @@ resource "aws_instance" "main" {
     aws_ssm_parameter.livekit_api_secret,
     aws_ssm_parameter.vllm_api_key,
     aws_ssm_parameter.hugging_face_hub_token,
+    aws_ssm_parameter.llm_api_key,
   ]
 }
 
@@ -538,4 +549,31 @@ resource "cloudflare_record" "livekit" {
   ttl     = 60
   proxied = false
   comment = "Managed by Terraform (project-800ms) — do not proxy, WebRTC + HTTP-01 break behind CF proxy"
+}
+
+# Apex — Caddy serves the React SPA here. Without this record, Let's Encrypt's
+# HTTP-01 challenge for ${domain} hits whatever stale IP is in DNS and fails,
+# which also poisons cert issuance for the subdomains (ACME rate-limits /
+# retries per account).
+resource "cloudflare_record" "apex" {
+  count   = local.cloudflare_enabled ? 1 : 0
+  zone_id = var.cloudflare_zone_id
+  name    = var.domain
+  type    = "A"
+  content = aws_eip.main.public_ip
+  ttl     = 60
+  proxied = false
+  comment = "Managed by Terraform (project-800ms) — apex SPA host, do not proxy (HTTP-01)"
+}
+
+# www — Caddyfile.prod 301-redirects www.${domain} → ${domain}.
+resource "cloudflare_record" "www" {
+  count   = local.cloudflare_enabled ? 1 : 0
+  zone_id = var.cloudflare_zone_id
+  name    = "www.${var.domain}"
+  type    = "A"
+  content = aws_eip.main.public_ip
+  ttl     = 60
+  proxied = false
+  comment = "Managed by Terraform (project-800ms) — www → apex 301 via Caddy"
 }

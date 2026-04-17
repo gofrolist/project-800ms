@@ -34,12 +34,11 @@ output "livekit_ws_url" {
 }
 
 output "dns_records_needed" {
-  description = "A records you must create in your DNS provider before the first HTTPS request succeeds. Empty when TLS is disabled. When cloudflare_api_token + cloudflare_zone_id are set, api/livekit are auto-managed by Terraform."
+  description = "A records you must create in your DNS provider before the first HTTPS request succeeds. Empty when TLS is disabled. When cloudflare_api_token + cloudflare_zone_id are set, apex + www + api + livekit are ALL auto-managed by Terraform — nothing manual remains."
   value = local.tls_enabled ? (
-    local.cloudflare_enabled ? {
-      "${var.domain}" = google_compute_address.main.address # apex — manual
-      } : {
+    local.cloudflare_enabled ? {} : {
       "${var.domain}"         = google_compute_address.main.address
+      "www.${var.domain}"     = google_compute_address.main.address
       "api.${var.domain}"     = google_compute_address.main.address
       "livekit.${var.domain}" = google_compute_address.main.address
     }
@@ -47,7 +46,7 @@ output "dns_records_needed" {
 }
 
 output "cloudflare_managed" {
-  description = "Whether Terraform is managing the api/livekit DNS records via Cloudflare."
+  description = "Whether Terraform is managing the apex, www, api, and livekit DNS records via Cloudflare."
   value       = local.cloudflare_enabled
 }
 

@@ -58,6 +58,26 @@ vllm_api_key           = "REPLACE_ME_openssl_rand_hex_32"
 hugging_face_hub_token = ""  # optional; required only for gated HF models
 
 # -----------------------------------------------------------------------------
+# LLM provider (optional — default routes to local vLLM with Qwen-7B)
+#
+# Set all three to route the agent at an external OpenAI-compatible LLM.
+# Local vllm container keeps running (wastes GPU but easy to flip back).
+#
+# Groq example (10-50x faster TTFT than local L4):
+#   llm_base_url = "https://api.groq.com/openai/v1"
+#   llm_model    = "llama-3.3-70b-versatile"
+#   llm_api_key  = "gsk_..."  # https://console.groq.com/keys
+#
+# OpenAI example:
+#   llm_base_url = "https://api.openai.com/v1"
+#   llm_model    = "gpt-4o-mini"
+#   llm_api_key  = "sk-..."
+# -----------------------------------------------------------------------------
+llm_base_url = ""
+llm_model    = ""
+llm_api_key  = ""
+
+# -----------------------------------------------------------------------------
 # Access
 # -----------------------------------------------------------------------------
 allowed_app_cidr = "0.0.0.0/0"

@@ -112,6 +112,21 @@ curl "$(terraform output -raw api_url)/health"  # https://api.$domain/health
 
 2. **Via Terraform** — bump `image_tag` to a specific `sha-xxxxxxx` and re-apply. `metadata_startup_script` only runs on first boot, so changing it alone won't re-deploy. Recreate the instance via `terraform taint google_compute_instance.main` to force a fresh boot (loses state).
 
+## Switching LLM provider (Groq / OpenAI / etc.)
+
+The agent talks to any OpenAI-compatible endpoint. Default is the bundled local vLLM running Qwen-7B on the L4. To swap to an external provider, set three Terraform variables:
+
+```hcl
+# terraform.tfvars
+llm_base_url = "https://api.groq.com/openai/v1"
+llm_model    = "llama-3.3-70b-versatile"
+llm_api_key  = "gsk_..."  # https://console.groq.com/keys
+```
+
+Run `terraform apply` — the instance is recreated (startup script changed), the agent boots pointed at Groq, and the local vLLM container keeps running in the background (unused, wasting ~11 GB GPU mem but easy to revert). Once you're committed to the external provider, you can drop vLLM from compose to free the GPU — or stop paying for a GPU box entirely and move to the hybrid architecture noted in the root README.
+
+Empty values for all three = use local vLLM (default).
+
 ## Rotating secrets
 
 Secret Manager holds the truth — no re-apply needed:

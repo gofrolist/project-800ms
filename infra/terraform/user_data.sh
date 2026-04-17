@@ -23,6 +23,8 @@ LIVEKIT_PUBLIC_URL="${livekit_public_url}"
 TLS_ENABLED="${tls_enabled}"
 DOMAIN="${domain}"
 TLS_EMAIL="${tls_email}"
+LLM_BASE_URL_TF="${llm_base_url}"
+LLM_MODEL_TF="${llm_model}"
 
 # Compose files depend on whether TLS is enabled.
 if [ "$TLS_ENABLED" = "true" ]; then
@@ -118,6 +120,12 @@ if [ "$HUGGING_FACE_HUB_TOKEN" = "__UNSET__" ]; then
   HUGGING_FACE_HUB_TOKEN=""
 fi
 
+# External LLM provider override. Empty = use local vllm.
+LLM_API_KEY_EXTERNAL=$(ssm_get llm_api_key)
+if [ "$LLM_API_KEY_EXTERNAL" = "__UNSET__" ]; then
+  LLM_API_KEY_EXTERNAL=""
+fi
+
 # -----------------------------------------------------------------------------
 # 3. Clone the app repo.
 # -----------------------------------------------------------------------------
@@ -148,10 +156,22 @@ umask 077
   printf 'LIVEKIT_API_KEY=%s\n' "$LIVEKIT_API_KEY"
   printf 'LIVEKIT_API_SECRET=%s\n' "$LIVEKIT_API_SECRET"
   printf 'LIVEKIT_PUBLIC_URL=%s\n' "$LIVEKIT_PUBLIC_URL"
-  # vLLM reads VLLM_API_KEY, agent reads LLM_API_KEY — same value, different
-  # env var names (agent env was renamed to signal that LLM is pluggable).
+  # vLLM always reads VLLM_API_KEY (secures its own endpoint).
   printf 'VLLM_API_KEY=%s\n' "$VLLM_API_KEY"
-  printf 'LLM_API_KEY=%s\n' "$VLLM_API_KEY"
+  # LLM_API_KEY is what the agent presents to whichever LLM endpoint.
+  # If an external provider is configured, route agent traffic there and
+  # use its API key. Otherwise default to the local vllm key.
+  if [ -n "$LLM_BASE_URL_TF" ]; then
+    printf 'LLM_BASE_URL=%s\n' "$LLM_BASE_URL_TF"
+  fi
+  if [ -n "$LLM_MODEL_TF" ]; then
+    printf 'LLM_MODEL=%s\n' "$LLM_MODEL_TF"
+  fi
+  if [ -n "$LLM_API_KEY_EXTERNAL" ]; then
+    printf 'LLM_API_KEY=%s\n' "$LLM_API_KEY_EXTERNAL"
+  else
+    printf 'LLM_API_KEY=%s\n' "$VLLM_API_KEY"
+  fi
   printf 'HUGGING_FACE_HUB_TOKEN=%s\n' "$HUGGING_FACE_HUB_TOKEN"
   printf 'LOG_LEVEL=INFO\n'
   if [ "$TLS_ENABLED" = "true" ] && [ -n "$DOMAIN" ]; then
@@ -182,7 +202,15 @@ umask 022
 # rewrites __API_URL__ placeholders at start using the API_URL env var.
 # --ignore-pull-failures is defense-in-depth in case a specific image is
 # temporarily unavailable.
-docker compose --env-file infra/.env "$${COMPOSE_FILES[@]}" pull --ignore-pull-failures
-docker compose --env-file infra/.env "$${COMPOSE_FILES[@]}" up -d
+#
+# The vllm service is gated behind the `local-llm` compose profile and
+# only starts when no external LLM endpoint is configured.
+COMPOSE_PROFILE_FLAGS=()
+if [ -z "$LLM_BASE_URL_TF" ]; then
+  COMPOSE_PROFILE_FLAGS=(--profile local-llm)
+fi
+
+docker compose --env-file infra/.env "$${COMPOSE_PROFILE_FLAGS[@]}" "$${COMPOSE_FILES[@]}" pull --ignore-pull-failures
+docker compose --env-file infra/.env "$${COMPOSE_PROFILE_FLAGS[@]}" "$${COMPOSE_FILES[@]}" up -d
 
 echo "[bootstrap] done $(date -Is)"
