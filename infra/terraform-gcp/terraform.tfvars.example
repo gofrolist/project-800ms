@@ -1,0 +1,67 @@
+project_id   = "project-800ms-mvp"
+project_name = "project-800ms"
+region       = "us-central1"
+zone         = "us-central1-a"
+machine_type = "g2-standard-8"
+
+# App source
+git_repo = "https://github.com/gofrolist/project-800ms.git"
+git_ref  = "main"
+
+# GHCR image tag for api/agent. Use "latest" to follow main, or pin to
+# "sha-abc1234" for a reproducible deploy / easy rollback.
+image_tag = "latest"
+
+# -----------------------------------------------------------------------------
+# Spot vs on-demand
+#
+# GCP Spot VMs: ~60-70%% off on-demand. Preempted with 30s notice, boot disk
+# preserved. No hard capacity failures like AWS spot.
+# -----------------------------------------------------------------------------
+use_spot = true
+
+# -----------------------------------------------------------------------------
+# TLS (strongly recommended)
+#
+# Leave both empty for a plaintext MVP demo on http://<ip>:8000 / ws://<ip>:7880.
+# Set both to enable Caddy + Let's Encrypt, serving:
+#   api.$domain     — FastAPI
+#   livekit.$domain — LiveKit signaling (wss://)
+# -----------------------------------------------------------------------------
+domain    = ""  # e.g. "voice.example.com"
+tls_email = ""  # e.g. "you@example.com"
+
+# -----------------------------------------------------------------------------
+# Cloudflare DNS automation (optional)
+#
+# Leave empty to manage DNS by hand. Set both to have Terraform create the
+# api.$domain and livekit.$domain A records automatically.
+#
+# cloudflare_api_token — dash.cloudflare.com → My Profile → API Tokens →
+#   "Edit zone DNS" template, scoped to the target zone only.
+# cloudflare_zone_id   — CF dashboard → domain overview, right sidebar.
+#
+# Records are always proxied=false. Cloudflare's proxy cannot pass WebRTC UDP
+# or Let's Encrypt HTTP-01 challenges.
+# -----------------------------------------------------------------------------
+cloudflare_api_token = ""
+cloudflare_zone_id   = ""
+
+# -----------------------------------------------------------------------------
+# Secrets — generate with: openssl rand -hex 32
+# -----------------------------------------------------------------------------
+postgres_password      = "REPLACE_ME_openssl_rand_hex_32"
+redis_password         = "REPLACE_ME_openssl_rand_hex_32"
+livekit_api_key        = "REPLACE_ME"
+livekit_api_secret     = "REPLACE_ME_openssl_rand_hex_32"
+vllm_api_key           = "REPLACE_ME_openssl_rand_hex_32"
+hugging_face_hub_token = ""  # optional; required only for gated HF models
+
+# -----------------------------------------------------------------------------
+# Access
+# -----------------------------------------------------------------------------
+allowed_app_cidr = "0.0.0.0/0"
+
+# Leave allowed_ssh_cidr empty to rely on gcloud OS Login + IAP tunneling
+# (no public SSH port). Set to a CIDR only if you need raw SSH from elsewhere.
+allowed_ssh_cidr = ""

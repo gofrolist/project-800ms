@@ -27,9 +27,12 @@ resource "aws_internet_gateway" "main" {
 }
 
 resource "aws_subnet" "public" {
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = "10.0.1.0/24"
-  availability_zone       = data.aws_availability_zones.available.names[0]
+  vpc_id     = aws_vpc.main.id
+  cidr_block = "10.0.1.0/24"
+  # Explicit AZ override wins; otherwise fall back to the region's first AZ.
+  # GPU spot capacity is AZ-specific — use `aws ec2 describe-spot-price-history`
+  # to pick an AZ with live pricing for your instance type.
+  availability_zone       = var.availability_zone != "" ? var.availability_zone : data.aws_availability_zones.available.names[0]
   map_public_ip_on_launch = true
 
   tags = {
@@ -372,6 +375,8 @@ locals {
 # -----------------------------------------------------------------------------
 
 resource "aws_spot_instance_request" "main" {
+  count = var.use_spot ? 1 : 0
+
   ami                  = data.aws_ami.dlami.id
   instance_type        = var.instance_type
   subnet_id            = aws_subnet.public.id
@@ -424,22 +429,78 @@ resource "aws_spot_instance_request" "main" {
   ]
 }
 
+# -----------------------------------------------------------------------------
+# On-demand fallback — used when use_spot = false. Same AMI, same networking,
+# same user_data. Costs ~3x but bypasses spot capacity constraints entirely.
+# -----------------------------------------------------------------------------
+
+resource "aws_instance" "main" {
+  count = var.use_spot ? 0 : 1
+
+  ami                  = data.aws_ami.dlami.id
+  instance_type        = var.instance_type
+  subnet_id            = aws_subnet.public.id
+  iam_instance_profile = aws_iam_instance_profile.instance.name
+  key_name             = var.key_name == "" ? null : var.key_name
+
+  vpc_security_group_ids = [aws_security_group.main.id]
+
+  user_data = local.user_data
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+    instance_metadata_tags      = "enabled"
+  }
+
+  root_block_device {
+    volume_size           = var.root_volume_size
+    volume_type           = "gp3"
+    delete_on_termination = true
+    encrypted             = true
+  }
+
+  tags = {
+    Name    = "${var.project_name}-instance"
+    Project = var.project_name
+  }
+
+  depends_on = [
+    aws_iam_role_policy.ssm_read,
+    aws_iam_role_policy_attachment.ssm_managed,
+    aws_ssm_parameter.postgres_password,
+    aws_ssm_parameter.redis_password,
+    aws_ssm_parameter.livekit_api_key,
+    aws_ssm_parameter.livekit_api_secret,
+    aws_ssm_parameter.vllm_api_key,
+    aws_ssm_parameter.hugging_face_hub_token,
+  ]
+}
+
+# Single source of truth for the instance ID, regardless of spot vs on-demand.
+locals {
+  instance_id = var.use_spot ? aws_spot_instance_request.main[0].spot_instance_id : aws_instance.main[0].id
+}
+
 # Tags on aws_spot_instance_request don't propagate to the underlying instance,
-# so apply them explicitly.
+# so apply them explicitly. On-demand already has tags on the resource itself.
 resource "aws_ec2_tag" "instance_name" {
-  resource_id = aws_spot_instance_request.main.spot_instance_id
+  count       = var.use_spot ? 1 : 0
+  resource_id = local.instance_id
   key         = "Name"
   value       = "${var.project_name}-instance"
 }
 
 resource "aws_ec2_tag" "instance_project" {
-  resource_id = aws_spot_instance_request.main.spot_instance_id
+  count       = var.use_spot ? 1 : 0
+  resource_id = local.instance_id
   key         = "Project"
   value       = var.project_name
 }
 
 resource "aws_eip_association" "main" {
-  instance_id   = aws_spot_instance_request.main.spot_instance_id
+  instance_id   = local.instance_id
   allocation_id = aws_eip.main.id
 }
 

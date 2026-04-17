@@ -4,8 +4,8 @@ output "public_ip" {
 }
 
 output "instance_id" {
-  description = "Underlying EC2 instance ID fulfilled by the spot request"
-  value       = aws_spot_instance_request.main.spot_instance_id
+  description = "Underlying EC2 instance ID (spot-fulfilled or on-demand, depending on use_spot)"
+  value       = local.instance_id
 }
 
 output "tls_enabled" {
@@ -43,7 +43,7 @@ output "cloudflare_managed" {
 
 output "ssm_connect" {
   description = "Open an interactive shell via SSM Session Manager (no SSH needed)"
-  value       = "aws ssm start-session --target ${aws_spot_instance_request.main.spot_instance_id} --region ${var.region}"
+  value       = "aws ssm start-session --target ${local.instance_id} --region ${var.region}"
 }
 
 output "bootstrap_log_hint" {

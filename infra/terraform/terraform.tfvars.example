@@ -75,3 +75,7 @@ allowed_app_cidr = "0.0.0.0/0"
 
 # Optional: fixed spot price cap. Empty = on-demand price cap (recommended).
 # max_spot_price = "0.40"
+
+# Spot vs on-demand. Flip to false if GPU spot capacity is dry.
+# Spot is ~3x cheaper but AWS can reject with "capacity-not-available".
+# use_spot = true

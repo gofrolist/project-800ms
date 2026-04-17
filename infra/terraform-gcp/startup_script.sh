@@ -1,14 +1,15 @@
 #!/bin/bash
-# project-800ms bootstrap — runs once on first boot of the spot instance.
-# On spot stop/start the root volume is preserved and cloud-init does NOT
-# re-run, so everything below is idempotent-on-first-run only.
+# project-800ms GCP bootstrap — runs once on first boot of the compute instance.
+# On spot preemption the boot disk is preserved and the startup script does
+# NOT re-run (GCP only runs metadata_startup_script on first boot), so
+# everything below is idempotent-on-first-run only.
 #
 # Security: `set -x` is intentionally OMITTED so secret values fetched from
-# SSM are NOT echoed into the bootstrap log.
+# Secret Manager are NOT echoed into the bootstrap log.
 set -euo pipefail
 
 LOG=/var/log/project-800ms-bootstrap.log
-# Log is root:root 0600 so non-root SSM sessions can't read it.
+# Log is root:root 0600 so non-root SSH sessions can't read it.
 install -m 600 /dev/null "$LOG"
 exec > >(tee -a "$LOG") 2>&1
 echo "[bootstrap] starting $(date -Is)"
@@ -23,6 +24,7 @@ LIVEKIT_PUBLIC_URL="${livekit_public_url}"
 TLS_ENABLED="${tls_enabled}"
 DOMAIN="${domain}"
 TLS_EMAIL="${tls_email}"
+SECRET_PREFIX="${secret_prefix}"
 
 # Compose files depend on whether TLS is enabled.
 if [ "$TLS_ENABLED" = "true" ]; then
@@ -39,10 +41,10 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# 1. Docker + NVIDIA runtime + AWS CLI.
+# 1. Docker + NVIDIA runtime + gcloud + git.
 #
-# The AWS Deep Learning AMI ships with all three preinstalled, but we verify
-# and install on miss so non-DLAMI base images also work.
+# Deep Learning VM images ship with all of these. Verify and install on miss
+# so non-DLVM base images also work.
 # -----------------------------------------------------------------------------
 if ! command -v docker >/dev/null 2>&1; then
   echo "[bootstrap] installing docker"
@@ -50,26 +52,40 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 systemctl enable --now docker
 
-if ! dpkg -l | grep -q nvidia-container-toolkit; then
+# Check for the actual binary rather than dpkg metadata — DLVM images may ship
+# the toolkit via a non-standard package name but the binary is canonical.
+if ! command -v nvidia-ctk >/dev/null 2>&1; then
   echo "[bootstrap] installing nvidia-container-toolkit"
+  # --yes overrides the "file exists" prompt if the keyring was pre-staged.
+  rm -f /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-    | gpg --batch --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    | gpg --batch --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
   curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
     | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
     > /etc/apt/sources.list.d/nvidia-container-toolkit.list
   apt-get update
   apt-get install -y nvidia-container-toolkit
+fi
+
+# Always ensure Docker knows about the nvidia runtime. On DLVM images the
+# toolkit is installed but `nvidia-ctk runtime configure` may not have been
+# run against Docker yet — safe to re-run (idempotent).
+if ! docker info 2>/dev/null | grep -qi "Runtimes:.*nvidia"; then
+  echo "[bootstrap] configuring docker nvidia runtime"
   nvidia-ctk runtime configure --runtime=docker
   systemctl restart docker
 fi
 
-if ! command -v aws >/dev/null 2>&1; then
-  echo "[bootstrap] installing aws cli"
-  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
-  apt-get install -y unzip
-  unzip -q /tmp/awscliv2.zip -d /tmp
-  /tmp/aws/install
-  rm -rf /tmp/aws /tmp/awscliv2.zip
+if ! command -v gcloud >/dev/null 2>&1; then
+  echo "[bootstrap] installing google-cloud-sdk"
+  apt-get update
+  apt-get install -y apt-transport-https ca-certificates gnupg curl
+  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg \
+    | gpg --batch --dearmor -o /usr/share/keyrings/cloud.google.gpg
+  echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
+    > /etc/apt/sources.list.d/google-cloud-sdk.list
+  apt-get update
+  apt-get install -y google-cloud-cli
 fi
 
 if ! command -v git >/dev/null 2>&1; then
@@ -81,38 +97,35 @@ fi
 nvidia-smi
 
 # -----------------------------------------------------------------------------
-# 2. Fetch secrets from SSM Parameter Store.
+# 2. Fetch secrets from Secret Manager.
 #
-# Uses the instance IAM role. Retries because IAM role propagation can take a
-# few seconds after launch even though the policy attachment is ordered
-# before the instance create.
+# Uses the instance service account's token from the metadata server.
+# Retries because SA propagation after instance create can take a few seconds.
 # -----------------------------------------------------------------------------
-ssm_get() {
+secret_get() {
   local name="$1"
   local attempt=0
   local value
   while [ $attempt -lt 10 ]; do
-    if value=$(aws --region "$REGION" ssm get-parameter \
-      --name "/$PROJECT/$name" \
-      --with-decryption \
-      --query 'Parameter.Value' \
-      --output text 2>/dev/null); then
+    if value=$(gcloud secrets versions access latest \
+      --secret="$${SECRET_PREFIX}$${name//_/-}" \
+      2>/dev/null); then
       printf '%s' "$value"
       return 0
     fi
     attempt=$((attempt + 1))
     sleep 3
   done
-  echo "[bootstrap] ERROR: failed to fetch /$PROJECT/$name from SSM after 10 attempts" >&2
+  echo "[bootstrap] ERROR: failed to fetch secret $${SECRET_PREFIX}$${name//_/-} after 10 attempts" >&2
   return 1
 }
 
-POSTGRES_PASSWORD=$(ssm_get postgres_password)
-REDIS_PASSWORD=$(ssm_get redis_password)
-LIVEKIT_API_KEY=$(ssm_get livekit_api_key)
-LIVEKIT_API_SECRET=$(ssm_get livekit_api_secret)
-VLLM_API_KEY=$(ssm_get vllm_api_key)
-HUGGING_FACE_HUB_TOKEN=$(ssm_get hugging_face_hub_token)
+POSTGRES_PASSWORD=$(secret_get postgres_password)
+REDIS_PASSWORD=$(secret_get redis_password)
+LIVEKIT_API_KEY=$(secret_get livekit_api_key)
+LIVEKIT_API_SECRET=$(secret_get livekit_api_secret)
+VLLM_API_KEY=$(secret_get vllm_api_key)
+HUGGING_FACE_HUB_TOKEN=$(secret_get hugging_face_hub_token)
 # Treat the sentinel value as unset.
 if [ "$HUGGING_FACE_HUB_TOKEN" = "__UNSET__" ]; then
   HUGGING_FACE_HUB_TOKEN=""
@@ -171,12 +184,6 @@ umask 022
 
 # -----------------------------------------------------------------------------
 # 5. Bring up the stack.
-#
-# The prod overlay replaces `build:` with `image: ghcr.io/...` for api and
-# agent. The optional tls overlay adds Caddy and swaps in livekit.prod.yaml.
-#
-# First run downloads ~5GB of model weights into the hf_cache volume —
-# expect several minutes before vllm reports healthy.
 # -----------------------------------------------------------------------------
 docker compose --env-file infra/.env "$${COMPOSE_FILES[@]}" pull
 docker compose --env-file infra/.env "$${COMPOSE_FILES[@]}" up -d

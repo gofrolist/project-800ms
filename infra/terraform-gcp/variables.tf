@@ -1,18 +1,10 @@
-variable "region" {
-  description = "AWS region"
-  type        = string
-  default     = "us-east-1"
-}
+# -----------------------------------------------------------------------------
+# Project / placement
+# -----------------------------------------------------------------------------
 
-variable "availability_zone" {
-  description = <<-EOT
-    AZ for the public subnet (e.g. "us-west-2c"). Empty = first AZ in the region.
-    GPU spot capacity is AZ-specific; pick one with live pricing via:
-      aws ec2 describe-spot-price-history --instance-types g6.xlarge \
-        --product-descriptions Linux/UNIX --region $REGION --max-items 10
-  EOT
+variable "project_id" {
+  description = "GCP project ID (globally unique). Create via `gcloud projects create`."
   type        = string
-  default     = ""
 }
 
 variable "project_name" {
@@ -21,77 +13,102 @@ variable "project_name" {
   default     = "project-800ms"
 }
 
-variable "instance_type" {
-  description = "GPU EC2 instance type. g6.xlarge (L4, 24GB) is the MVP sweet spot."
+variable "region" {
+  description = "GCP region. us-central1 has the best L4 stock and lowest latency to US East; us-west1/us-west4 are alternatives."
   type        = string
-  default     = "g6.xlarge"
+  default     = "us-central1"
 }
 
-variable "max_spot_price" {
-  description = "Max $/hr for spot. Empty = on-demand price cap (recommended)."
+variable "zone" {
+  description = "GCP zone. L4 GPUs live in specific zones — us-central1-a/b/c all have them."
   type        = string
-  default     = ""
+  default     = "us-central1-a"
+}
+
+# -----------------------------------------------------------------------------
+# Instance
+# -----------------------------------------------------------------------------
+
+variable "machine_type" {
+  description = <<-EOT
+    GCP GPU machine type. g2-standard-8 (1x L4, 8 vCPU, 32 GB) is the direct
+    equivalent of AWS g6.2xlarge. g2-standard-4 (1x L4, 4 vCPU, 16 GB) is
+    cheaper but tighter — comparable to g6.xlarge.
+  EOT
+  type        = string
+  default     = "g2-standard-8"
+}
+
+variable "root_volume_size" {
+  description = "Boot disk size in GB. Deep Learning VM + Docker images + HF model cache need ~100-200 GB."
+  type        = number
+  default     = 200
 }
 
 variable "use_spot" {
   description = <<-EOT
-    true  = request a spot instance (cheap but AWS can reject on capacity).
-    false = launch a regular on-demand instance (~3x cost but always available).
-    Flip to false to unblock when GPU spot capacity is dry.
+    true  = request a Spot VM (cheap, ~60-70%% off, AWS may preempt with 30s
+            notice).
+    false = launch a regular on-demand VM (~3x cost but no preemption risk).
+    On GCP, Spot VMs do not have the hard capacity failures AWS spot has
+    — they are scheduled on standard capacity pools with preemption as the
+    primary tradeoff, not scarcity.
   EOT
   type        = bool
   default     = true
 }
 
-variable "root_volume_size" {
-  description = "Root EBS size in GB. Needs room for DLAMI + images + HF model cache."
-  type        = number
-  default     = 200
+# -----------------------------------------------------------------------------
+# Deep Learning VM image
+# -----------------------------------------------------------------------------
+
+variable "image_family" {
+  description = <<-EOT
+    Deep Learning VM image family. common-cu129-ubuntu-2204-nvidia-580 ships
+    Ubuntu 22.04 with CUDA 12.9, NVIDIA driver 580, Docker, and
+    nvidia-container-toolkit preinstalled.
+    Verify current families with:
+      gcloud compute images list --project deeplearning-platform-release \
+        --filter="family ~ cu1" --format="value(family)" | sort -u
+  EOT
+  type        = string
+  default     = "common-cu129-ubuntu-2204-nvidia-580"
 }
 
-variable "key_name" {
-  description = "EC2 key pair name for SSH. Leave empty to use SSM Session Manager only."
+variable "image_project" {
+  description = "Deep Learning VM images are published by the deeplearning-platform-release project."
   type        = string
-  default     = ""
+  default     = "deeplearning-platform-release"
 }
 
-variable "allowed_ssh_cidr" {
-  description = "CIDR allowed for SSH (22). Ignored if key_name is empty. Must be set explicitly — no default to prevent accidental global exposure."
-  type        = string
-  default     = ""
-}
+# -----------------------------------------------------------------------------
+# Access — narrow before real use
+# -----------------------------------------------------------------------------
 
 variable "allowed_app_cidr" {
   description = <<-EOT
     CIDR allowed to reach public app ports.
     With TLS off: 7880/tcp, 7881/tcp, 8000/tcp, 50000-50099/udp.
-    With TLS on : 80/tcp, 443/tcp, 50000-50099/udp (signaling+API move behind Caddy).
+    With TLS on : 80/tcp, 443/tcp, 50000-50099/udp (signaling+API behind Caddy).
     Default 0.0.0.0/0 is required for a public voice app — the real security
-    boundary is TLS + app-level auth, not the CIDR. Narrow to a single IP
-    only for private demos.
+    boundary is TLS + app-level auth.
   EOT
   type        = string
   default     = "0.0.0.0/0"
 }
 
+variable "allowed_ssh_cidr" {
+  description = "CIDR allowed for SSH (port 22). Leave empty to rely solely on gcloud OS Login / IAP."
+  type        = string
+  default     = ""
+}
+
 # -----------------------------------------------------------------------------
-# TLS (optional)
-#
-# When `domain` is set, Caddy runs on the instance and terminates TLS for
-# api.${domain} and livekit.${domain}, automatically obtaining certs from
-# Let's Encrypt via HTTP-01 on port 80. The plaintext 7880/7881/8000 ports
-# are then closed at the security group level.
-#
-# Prerequisites when enabling:
-#   1. You own the domain and can create DNS records.
-#   2. Create two A records after `terraform apply`, pointing to the EIP:
-#        api.${domain}     -> <eip>
-#        livekit.${domain} -> <eip>
-#   3. Wait for DNS propagation before the first HTTPS request.
+# TLS (optional) — mirrors AWS module behaviour
 # -----------------------------------------------------------------------------
 
 variable "domain" {
-  description = "Base domain for TLS. Empty disables TLS. When set, exposes api.$domain and livekit.$domain with Let's Encrypt certs."
+  description = "Base domain for TLS. Empty disables TLS. When set, Caddy serves api.$domain + livekit.$domain with Let's Encrypt HTTP-01 certs."
   type        = string
   default     = ""
 
@@ -113,19 +130,10 @@ variable "tls_email" {
 }
 
 # -----------------------------------------------------------------------------
-# Cloudflare DNS (optional)
+# Cloudflare DNS (optional) — mirrors AWS module behaviour
 #
-# When set together with `domain`, Terraform creates the api/livekit A records
-# automatically. Leave both empty to manage DNS manually (or use a different
-# provider like Route53).
-#
-# Token scope: create at dash.cloudflare.com → My Profile → API Tokens →
-# "Edit zone DNS" template, restricted to the target zone only. Do NOT use
-# the Global API Key.
-#
-# CRITICAL: records are always created with `proxied = false`. Cloudflare's
-# proxy cannot pass WebRTC UDP traffic (LiveKit media on 50000-50099) and it
-# breaks Let's Encrypt HTTP-01 challenges used by Caddy. Orange-cloud = broken.
+# proxied=false is enforced — CF proxy cannot pass WebRTC UDP or Let's Encrypt
+# HTTP-01 challenges.
 # -----------------------------------------------------------------------------
 
 variable "cloudflare_api_token" {
@@ -136,7 +144,7 @@ variable "cloudflare_api_token" {
 }
 
 variable "cloudflare_zone_id" {
-  description = "Cloudflare zone ID for the domain (find in CF dashboard → domain overview → API section). Empty = don't manage DNS via Terraform."
+  description = "Cloudflare zone ID for the domain. Empty = don't manage DNS via Terraform."
   type        = string
   default     = ""
 }
@@ -151,19 +159,19 @@ variable "git_repo" {
 }
 
 variable "git_ref" {
-  description = "Git ref (branch / tag / sha) to deploy. Controls which docker-compose files the instance uses."
+  description = "Git ref (branch / tag / sha) to deploy."
   type        = string
   default     = "main"
 }
 
 variable "image_tag" {
-  description = "GHCR image tag for api/agent (e.g. latest, main, sha-abc1234). Pin to a sha for reproducible deploys."
+  description = "GHCR image tag for api/agent."
   type        = string
   default     = "latest"
 }
 
 variable "livekit_public_url" {
-  description = "Public LiveKit URL the browser will connect to. Leave empty to derive ws://<eip>:7880."
+  description = "Public LiveKit URL the browser will connect to. Empty = derive from EIP."
   type        = string
   default     = ""
 }
@@ -171,12 +179,9 @@ variable "livekit_public_url" {
 # -----------------------------------------------------------------------------
 # Secrets
 #
-# Terraform stores these as SSM Parameter Store SecureStrings and the instance
-# fetches them at boot via its IAM role. Secrets do NOT end up in the cloud-init
-# user-data blob on the instance.
-#
-# They DO still end up in terraform.tfstate — use an encrypted remote backend
-# (S3 + DynamoDB locking) for any real deployment.
+# Terraform writes these to Secret Manager; the instance fetches them at boot
+# via its service account. They still live in terraform.tfstate — use a GCS
+# remote backend for any real deployment.
 # -----------------------------------------------------------------------------
 
 variable "postgres_password" {
@@ -200,7 +205,7 @@ variable "redis_password" {
 }
 
 variable "livekit_api_key" {
-  description = "LiveKit API key. No default — must be set explicitly to avoid shipping with a well-known key."
+  description = "LiveKit API key. No default — must be set explicitly."
   type        = string
 
   validation {
