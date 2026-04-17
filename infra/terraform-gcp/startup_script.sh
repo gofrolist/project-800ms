@@ -184,8 +184,17 @@ umask 022
 
 # -----------------------------------------------------------------------------
 # 5. Bring up the stack.
+#
+# All images — including web — are pulled from GHCR. The web container
+# rewrites __API_URL__ placeholders at start using the API_URL env var,
+# so one published image works for any deployment domain.
+#
+# --ignore-pull-failures is kept as defense-in-depth: if the web image
+# happens to be temporarily unavailable on GHCR (e.g. during CI rollout
+# before first push of that image), compose still brings up the rest of
+# the stack and we can retry web later.
 # -----------------------------------------------------------------------------
-docker compose --env-file infra/.env "$${COMPOSE_FILES[@]}" pull
+docker compose --env-file infra/.env "$${COMPOSE_FILES[@]}" pull --ignore-pull-failures
 docker compose --env-file infra/.env "$${COMPOSE_FILES[@]}" up -d
 
 echo "[bootstrap] done $(date -Is)"

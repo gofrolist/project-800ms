@@ -37,11 +37,19 @@ services:
     ports: !reset null
 
   web:
+    # Published to GHCR by the docker-web CI job with a __API_URL__ placeholder
+    # baked in. The container rewrites the placeholder at startup using the
+    # API_URL env var below, so one image works for any deployment domain.
+    #
+    # The build: section is a fallback — if the image can't be pulled (e.g.
+    # during initial CI rollout before the first push), compose will build
+    # locally and tag it under the same name. Once CI publishes the image,
+    # the pull path wins on subsequent deploys.
+    image: ghcr.io/gofrolist/project-800ms-web:${IMAGE_TAG:-latest}
     build:
       context: ../apps/web
-      args:
-        VITE_API_URL: https://api.${DOMAIN}
-    image: project-800ms-web:latest
+    environment:
+      - API_URL=https://api.${DOMAIN:?DOMAIN is required when TLS is enabled}
     volumes:
       - web_dist:/dist
 

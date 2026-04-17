@@ -178,7 +178,11 @@ umask 022
 # First run downloads ~5GB of model weights into the hf_cache volume —
 # expect several minutes before vllm reports healthy.
 # -----------------------------------------------------------------------------
-docker compose --env-file infra/.env "$${COMPOSE_FILES[@]}" pull
+# All images — including web — are pulled from GHCR. The web container
+# rewrites __API_URL__ placeholders at start using the API_URL env var.
+# --ignore-pull-failures is defense-in-depth in case a specific image is
+# temporarily unavailable.
+docker compose --env-file infra/.env "$${COMPOSE_FILES[@]}" pull --ignore-pull-failures
 docker compose --env-file infra/.env "$${COMPOSE_FILES[@]}" up -d
 
 echo "[bootstrap] done $(date -Is)"
