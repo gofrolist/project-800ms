@@ -86,6 +86,45 @@ sudo docker compose -f /opt/project-800ms/infra/docker-compose.yml \
 curl https://api.voice.example.com/health
 ```
 
+## Deploy — with TLS + Cloudflare DNS automation
+
+If the zone is on Cloudflare, skip the manual DNS step. Terraform manages the
+api/livekit A records for you.
+
+```bash
+# 1. In the Cloudflare dashboard, get:
+#    - Zone ID: your domain → Overview → API section (right sidebar)
+#    - API Token: My Profile → API Tokens → Create Token → "Edit zone DNS"
+#      template, restricted to the target zone only. Not the Global API Key.
+
+# 2. In terraform.tfvars, set:
+#      domain               = "voice.example.com"
+#      tls_email            = "you@example.com"
+#      cloudflare_api_token = "..."
+#      cloudflare_zone_id   = "..."
+
+# 3. Apply — Terraform now creates the EIP, instance, AND the DNS records:
+terraform apply
+
+# 4. Verify DNS + cert:
+dig +short api.voice.example.com   # → the EIP
+terraform output cloudflare_managed  # → true
+$(terraform output -raw ssm_connect)
+sudo docker compose -f /opt/project-800ms/infra/docker-compose.yml \
+                    -f /opt/project-800ms/infra/docker-compose.prod.yml \
+                    -f /opt/project-800ms/infra/docker-compose.tls.yml \
+                    logs -f caddy
+# Look for: "certificate obtained successfully"
+
+# 5. From your laptop:
+curl https://api.voice.example.com/health
+```
+
+> **Do not turn on the Cloudflare proxy (orange cloud).** Records are created
+> with `proxied = false` and must stay that way. The CF proxy cannot pass
+> WebRTC UDP traffic (LiveKit media on 50000-50099) and it breaks Let's
+> Encrypt HTTP-01 challenges. Orange cloud = audio drops + no certs.
+
 ## What verification looks like
 
 ```bash

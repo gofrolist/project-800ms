@@ -442,3 +442,39 @@ resource "aws_eip_association" "main" {
   instance_id   = aws_spot_instance_request.main.spot_instance_id
   allocation_id = aws_eip.main.id
 }
+
+# -----------------------------------------------------------------------------
+# Cloudflare DNS records (optional)
+#
+# Created only when TLS is enabled AND a Cloudflare zone/token are configured.
+# `proxied = false` is mandatory — see variables.tf for why.
+# -----------------------------------------------------------------------------
+
+locals {
+  # nonsensitive() — the token itself is secret, but "is the token set?" is a
+  # boolean we want to surface in outputs and use in resource counts without
+  # Terraform tainting every downstream value as sensitive.
+  cloudflare_enabled = local.tls_enabled && nonsensitive(var.cloudflare_api_token != "") && var.cloudflare_zone_id != ""
+}
+
+resource "cloudflare_record" "api" {
+  count   = local.cloudflare_enabled ? 1 : 0
+  zone_id = var.cloudflare_zone_id
+  name    = "api.${var.domain}"
+  type    = "A"
+  content = aws_eip.main.public_ip
+  ttl     = 60
+  proxied = false
+  comment = "Managed by Terraform (project-800ms) — do not proxy, WebRTC + HTTP-01 break behind CF proxy"
+}
+
+resource "cloudflare_record" "livekit" {
+  count   = local.cloudflare_enabled ? 1 : 0
+  zone_id = var.cloudflare_zone_id
+  name    = "livekit.${var.domain}"
+  type    = "A"
+  content = aws_eip.main.public_ip
+  ttl     = 60
+  proxied = false
+  comment = "Managed by Terraform (project-800ms) — do not proxy, WebRTC + HTTP-01 break behind CF proxy"
+}

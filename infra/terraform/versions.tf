@@ -6,6 +6,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 4.0"
+    }
   }
 
   # IMPORTANT: Configure a remote backend before running `terraform apply`.
@@ -22,4 +26,12 @@ terraform {
 
 provider "aws" {
   region = var.region
+}
+
+# Cloudflare DNS automation (optional). When cloudflare_api_token and
+# cloudflare_zone_id are both set and TLS is enabled, Terraform manages the
+# api / livekit A records automatically. Token needs Zone:DNS:Edit scoped to
+# the target zone only.
+provider "cloudflare" {
+  api_token = var.cloudflare_api_token
 }

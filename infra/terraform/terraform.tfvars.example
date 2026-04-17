@@ -20,9 +20,29 @@ image_tag = "latest"
 #
 # After `terraform apply`, create two A records pointing to the EIP output
 # and wait ~1 min for DNS to propagate before hitting the HTTPS endpoints.
+# (Or set cloudflare_* below to have Terraform create them for you.)
 # -----------------------------------------------------------------------------
 domain    = ""  # e.g. "voice.example.com"
 tls_email = ""  # e.g. "you@example.com"
+
+# -----------------------------------------------------------------------------
+# Cloudflare DNS automation (optional)
+#
+# Leave empty to manage DNS by hand. Set both to have Terraform create the
+# api.$domain and livekit.$domain A records automatically.
+#
+# cloudflare_api_token — create at dash.cloudflare.com → My Profile → API
+#   Tokens → "Edit zone DNS" template, scoped to the target zone only.
+# cloudflare_zone_id   — CF dashboard → your domain → Overview, right sidebar.
+#
+# Records are always created with proxied=false. Cloudflare's proxy cannot
+# pass WebRTC UDP (LiveKit media 50000-50099) and it breaks Let's Encrypt
+# HTTP-01 challenges. Orange cloud = broken stack. Do not re-enable it in
+# the CF UI after apply either — Terraform will fight you, but if someone
+# clicks it between applies the stack breaks.
+# -----------------------------------------------------------------------------
+cloudflare_api_token = ""  # e.g. "abcd1234..."
+cloudflare_zone_id   = ""  # e.g. "0123456789abcdef0123456789abcdef"
 
 # -----------------------------------------------------------------------------
 # Secrets — generate with:

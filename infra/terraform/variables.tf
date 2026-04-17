@@ -92,6 +92,35 @@ variable "tls_email" {
 }
 
 # -----------------------------------------------------------------------------
+# Cloudflare DNS (optional)
+#
+# When set together with `domain`, Terraform creates the api/livekit A records
+# automatically. Leave both empty to manage DNS manually (or use a different
+# provider like Route53).
+#
+# Token scope: create at dash.cloudflare.com → My Profile → API Tokens →
+# "Edit zone DNS" template, restricted to the target zone only. Do NOT use
+# the Global API Key.
+#
+# CRITICAL: records are always created with `proxied = false`. Cloudflare's
+# proxy cannot pass WebRTC UDP traffic (LiveKit media on 50000-50099) and it
+# breaks Let's Encrypt HTTP-01 challenges used by Caddy. Orange-cloud = broken.
+# -----------------------------------------------------------------------------
+
+variable "cloudflare_api_token" {
+  description = "Cloudflare API token with Zone:DNS:Edit scoped to the target zone. Empty = don't manage DNS via Terraform."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "cloudflare_zone_id" {
+  description = "Cloudflare zone ID for the domain (find in CF dashboard → domain overview → API section). Empty = don't manage DNS via Terraform."
+  type        = string
+  default     = ""
+}
+
+# -----------------------------------------------------------------------------
 # App deployment
 # -----------------------------------------------------------------------------
 
