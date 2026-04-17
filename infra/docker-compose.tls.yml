@@ -46,7 +46,7 @@ services:
       - web_dist:/dist
 
   caddy:
-    image: caddy:2.10-alpine
+    image: caddy:2.11-alpine
     restart: unless-stopped
     environment:
       - DOMAIN=${DOMAIN:?DOMAIN is required when TLS is enabled}
