@@ -10,15 +10,15 @@ Real-time voice assistant: browser ↔ LiveKit (WebRTC) ↔ Pipecat agent (VAD �
 
 ```
 Browser (React + LiveKit SDK)  ──WebRTC──►  LiveKit SFU (:7880)
-                                                │
-FastAPI (:8000)                          Pipecat Agent
-  POST /sessions → mint LiveKit JWT       ├─ Silero VAD (CPU)
-  GET  /health                            ├─ Faster-Whisper STT (GPU)
-                                          ├─ LLM → vLLM (:8001) or external
-                                          └─ Piper TTS (CPU)
+       │                                        │
+       │ POST /sessions                   Pipecat Agent (:8001)
+       ▼                                   ├─ Silero VAD (CPU)
+FastAPI (:8000) ──POST /dispatch──►        ├─ Faster-Whisper STT (GPU, shared)
+  mint LiveKit JWT                         ├─ LLM → vLLM or Groq/OpenAI
+  dispatch agent to room                   └─ Piper TTS (CPU)
 ```
 
-Three deployable units: `apps/api` (FastAPI), `services/agent` (Pipecat pipeline), `apps/web` (React SPA). Infrastructure in `infra/` (Docker Compose + Terraform for AWS GPU spot).
+Four deployable units: `apps/api` (FastAPI), `services/agent` (Pipecat dispatcher), `apps/web` (React SPA), `infra/` (Docker Compose + Caddy + Terraform for AWS GPU spot).
 
 ## Commands
 
