@@ -44,20 +44,10 @@ class Settings(BaseSettings):
     # time this engine connects the schema is guaranteed current.
     database_url: str = "postgresql+asyncpg://voice:voice@postgres:5432/voice"
 
-    # LiveKit webhook signing secret. Defaults to livekit_api_secret — the
-    # signing key is the same HMAC secret used for JWTs, per LiveKit's
-    # webhook docs. Kept separate so it can be rotated independently later.
-    webhook_signing_secret: str = ""
-
     # How long a successful X-API-Key lookup stays in process-local cache.
     # Shorter = faster revocation propagation, more DB load. 60s is a
     # reasonable tradeoff for a single-replica API.
     tenant_cache_ttl_seconds: int = 60
-
-    def model_post_init(self, __context) -> None:  # type: ignore[override]
-        # Default webhook secret to the LiveKit one when unset — common case.
-        if not self.webhook_signing_secret:
-            object.__setattr__(self, "webhook_signing_secret", self.livekit_api_secret)
 
 
 settings = Settings()  # type: ignore[call-arg]

@@ -208,9 +208,6 @@ services:
       - ENV=${ENV:-development}
       - AGENT_DISPATCH_URL=http://agent:8001
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-voice}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-voice}
-      # Webhook signing defaults to LIVEKIT_API_SECRET when unset. Set
-      # explicitly only when you need to rotate webhook auth independently.
-      - WEBHOOK_SIGNING_SECRET=${WEBHOOK_SIGNING_SECRET:-}
       - TENANT_CACHE_TTL_SECONDS=${TENANT_CACHE_TTL_SECONDS:-60}
     ports:
       # Public — browsers POST /v1/sessions here. Rate-limited at the app

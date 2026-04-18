@@ -94,14 +94,6 @@ llm_api_key  = ""
 seed_demo_api_key = ""  # e.g. "tk_0123...abcd"
 
 # -----------------------------------------------------------------------------
-# LiveKit webhook signing (optional)
-#
-# Defaults to livekit_api_secret when empty. Set only when you need to
-# rotate webhook auth independently of the JWT signing key.
-# -----------------------------------------------------------------------------
-webhook_signing_secret = ""
-
-# -----------------------------------------------------------------------------
 # Access
 # -----------------------------------------------------------------------------
 allowed_app_cidr = "0.0.0.0/0"
