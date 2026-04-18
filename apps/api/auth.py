@@ -133,3 +133,37 @@ async def get_current_tenant(
     request.state.tenant_rate_limit_per_minute = identity.rate_limit_per_minute
     request.state.api_key_id = identity.api_key_id
     return identity
+
+
+async def enforce_tenant_origin(
+    request: Request,
+    identity: TenantIdentity = Depends(get_current_tenant),
+) -> TenantIdentity:
+    """Per-tenant Origin allowlist check.
+
+    Browser-initiated requests carry an `Origin` header — we match it
+    against the tenant's `allowed_origins` list and reject mismatches with
+    403. Direct HTTP clients (game servers, CLIs, server-to-server calls)
+    omit `Origin`; those pass through. Tenants with an empty
+    `allowed_origins` opt out of browser enforcement entirely — common for
+    server-only integrations.
+
+    This complements the global CORS middleware, which is permissive by
+    design (browsers strip X-API-Key from preflight, so real per-tenant
+    enforcement has to happen after auth). An attacker that ignores the
+    browser's CORS response and makes a direct HTTP call would still be
+    stopped here.
+
+    Raises:
+        APIError(403) — Origin header present and not in allowed_origins.
+    """
+    origin = request.headers.get("Origin")
+    if not origin or not identity.allowed_origins:
+        return identity
+    if origin not in identity.allowed_origins:
+        raise APIError(
+            403,
+            "forbidden",
+            f"Origin {origin!r} is not allowed for this tenant",
+        )
+    return identity
