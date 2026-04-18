@@ -70,7 +70,21 @@ api.{$DOMAIN} {
 		header_up X-Forwarded-Proto {http.request.scheme}
 	}
 
-	# Security headers.
+	# Docs endpoints: Swagger/ReDoc/Scalar load JS+CSS from jsdelivr and the
+	# FastAPI favicon from tiangolo.com, plus execute inline scripts. The
+	# JSON endpoints don't need any of this, so we scope the loosened CSP
+	# to /docs, /redoc, /reference and the favicon path with a matcher.
+	@docs path /docs /docs/* /redoc /redoc/* /reference /reference/*
+	header @docs {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Content-Security-Policy "default-src 'self'; connect-src 'self' wss:; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https://cdn.jsdelivr.net https://fastapi.tiangolo.com; font-src 'self' https://cdn.jsdelivr.net; worker-src 'self' blob:"
+		Permissions-Policy "microphone=(self), camera=(), geolocation=()"
+		-Server
+	}
+
+	# Everything else (JSON API surface) keeps the tight CSP.
 	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
