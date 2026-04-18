@@ -25,6 +25,7 @@ from request_id import RequestIdMiddleware
 from routes.sessions import router as sessions_router
 from routes.transcripts import internal_router as transcripts_internal_router
 from routes.transcripts import v1_router as transcripts_v1_router
+from routes.usage import router as usage_router
 from routes.webhooks import router as webhooks_router
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -72,7 +73,7 @@ default. Exceeding the budget returns **429 rate_limited**.
 
 app = FastAPI(
     title="project-800ms API",
-    version="0.1.0",
+    version="0.2.0",
     summary="Voice-agent session API.",
     description=API_DESCRIPTION,
     contact={
@@ -87,6 +88,14 @@ app = FastAPI(
         {
             "name": "sessions",
             "description": "Open and inspect voice sessions.",
+        },
+        {
+            "name": "transcripts",
+            "description": "Read persisted utterances for past sessions.",
+        },
+        {
+            "name": "usage",
+            "description": "Per-tenant daily audio consumption.",
         },
         {
             "name": "system",
@@ -184,6 +193,7 @@ app.include_router(sessions_router)
 app.include_router(webhooks_router)
 app.include_router(transcripts_v1_router)
 app.include_router(transcripts_internal_router)
+app.include_router(usage_router)
 
 
 @app.get("/health", tags=["system"], summary="Liveness probe")
