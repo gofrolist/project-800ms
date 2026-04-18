@@ -2,13 +2,15 @@
 
 Graph:
     LiveKit mic audio  →  Silero VAD  →  Faster-Whisper (GPU)  →
-    LLM (vLLM)  →  Piper TTS (CPU)  →  LiveKit speaker
+    LLM (vLLM or external)  →  Piper TTS (CPU)  →  LiveKit speaker
 
-Everything streams. First audio out should land ~700ms after end-of-speech on
-the RTX 5080 / L4 target hardware.
+Everything streams. First audio out should land ~700ms after end-of-speech
+on the RTX 5080 / L4 target hardware.
 
-Whisper auto-detects language per utterance. The LLM always replies in
-Russian. A single Russian Piper voice handles output.
+The pipeline is parameterized per-session via ``PerSessionOverrides``
+(persona, voice, language, llm_model). Defaults come from ``AgentConfig``;
+overrides are applied at ``build_task`` time so each room can be a
+different NPC speaking a different language.
 """
 
 from __future__ import annotations
@@ -33,22 +35,9 @@ from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 
 from faster_whisper import WhisperModel
 
+from overrides import PerSessionOverrides, build_system_prompt
 from stt_filter import FilteredWhisperSTTService
 from transcript import AssistantTranscriptForwarder, UserTranscriptForwarder
-
-SYSTEM_PROMPT = (
-    "Ты голосовой помощник. Твои ответы озвучиваются через синтез речи, "
-    "поэтому строго соблюдай правила: "
-    "Отвечай коротко, 1-3 предложения, разговорный тон. "
-    "Никогда не используй маркдаун, звёздочки, списки, "
-    "тире, скобки, кавычки, эмодзи и специальные символы. "
-    "Используй только обычные слова и базовую пунктуацию (точка, запятая, "
-    "вопросительный знак, восклицательный знак). "
-    "Всегда отвечай только на русском языке. "
-    "Никогда не используй слова или символы из других языков, "
-    "включая английский, китайский и любые другие. "
-    "Все имена и названия транслитерируй на русский."
-)
 
 
 @dataclass(frozen=True)
@@ -69,9 +58,23 @@ class AgentConfig:
 
 
 def build_task(
-    cfg: AgentConfig, *, whisper_model: WhisperModel | None = None
+    cfg: AgentConfig,
+    *,
+    whisper_model: WhisperModel | None = None,
+    overrides: PerSessionOverrides | None = None,
 ) -> tuple[PipelineTask, LiveKitTransport]:
-    """Build the Pipecat pipeline + task for one call."""
+    """Build the Pipecat pipeline + task for one call.
+
+    `overrides` carries per-session knobs from the API's /dispatch payload
+    (persona, voice, language, llm_model). When any field is set, it takes
+    precedence over the corresponding value in `cfg`.
+    """
+    overrides = overrides or PerSessionOverrides()
+    language = overrides.effective_language
+    voice = overrides.voice or cfg.tts_voice
+    llm_model = overrides.llm_model or cfg.vllm_model
+    system_instruction = build_system_prompt(overrides.persona, language)
+
     transport = LiveKitTransport(
         url=cfg.livekit_url,
         token=cfg.livekit_token,
@@ -99,7 +102,7 @@ def build_task(
         compute_type=cfg.whisper_compute_type,
         settings=FilteredWhisperSTTService.Settings(
             model=cfg.whisper_model.value,
-            language="ru",
+            language=language,
             no_speech_prob=0.4,
             min_avg_logprob=-0.7,
             max_compression_ratio=2.4,
@@ -110,14 +113,14 @@ def build_task(
         base_url=cfg.vllm_base_url,
         api_key=cfg.vllm_api_key,
         settings=OpenAILLMService.Settings(
-            model=cfg.vllm_model,
-            system_instruction=SYSTEM_PROMPT,
+            model=llm_model,
+            system_instruction=system_instruction,
             max_tokens=128,
         ),
     )
 
     tts = PiperTTSService(
-        settings=PiperTTSService.Settings(voice=cfg.tts_voice),
+        settings=PiperTTSService.Settings(voice=voice),
         download_dir=cfg.piper_voices_dir,
         use_cuda=False,
     )

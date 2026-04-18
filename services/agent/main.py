@@ -23,9 +23,8 @@ from pipecat.pipeline.runner import PipelineRunner
 
 from env import MissingEnvError, require_env
 from models import get_whisper, load_whisper
+from overrides import PerSessionOverrides, resolve_greeting
 from pipeline import AgentConfig, build_task
-
-GREETING = "Привет! Чем могу помочь?"
 
 AGENT_IDENTITY = "agent-bot"
 AGENT_TOKEN_TTL = datetime.timedelta(minutes=30)
@@ -60,9 +59,16 @@ def _mint_agent_token(room: str) -> str:
     )
 
 
-async def _run_pipeline(room: str) -> None:
+async def _run_pipeline(room: str, overrides: PerSessionOverrides) -> None:
     """Run a Pipecat pipeline for one room until the caller leaves."""
-    logger.info("Spawning pipeline for room={room}", room=room)
+    logger.info(
+        "Spawning pipeline room={room} npc={npc} lang={lang} voice={voice} model={model}",
+        room=room,
+        npc=overrides.npc_id or "-",
+        lang=overrides.effective_language,
+        voice=overrides.voice or "default",
+        model=overrides.llm_model or "default",
+    )
     _active_rooms.add(room)
     try:
         cfg = AgentConfig(
@@ -72,15 +78,16 @@ async def _run_pipeline(room: str) -> None:
             **_base_config,
         )
 
-        task, transport = build_task(cfg, whisper_model=get_whisper())
+        task, transport = build_task(cfg, whisper_model=get_whisper(), overrides=overrides)
+        greeting = resolve_greeting(overrides.persona, overrides.effective_language)
 
         @transport.event_handler("on_first_participant_joined")
         async def _on_join(_transport: object, participant_id: str) -> None:
             logger.info("Participant joined room={room}: {pid}", room=room, pid=participant_id)
             await transport.send_message(
-                json.dumps({"role": "assistant", "text": GREETING}, ensure_ascii=False)
+                json.dumps({"role": "assistant", "text": greeting}, ensure_ascii=False)
             )
-            await task.queue_frame(TTSSpeakFrame(GREETING))
+            await task.queue_frame(TTSSpeakFrame(greeting))
 
         @transport.event_handler("on_participant_left")
         async def _on_leave(_transport: object, participant_id: str, _reason: object) -> None:
@@ -104,7 +111,8 @@ async def handle_dispatch(request: web.Request) -> web.Response:
     if room in _active_rooms:
         return web.json_response({"error": "room already active"}, status=409)
 
-    asyncio.create_task(_run_pipeline(room))
+    overrides = PerSessionOverrides.from_dispatch(body)
+    asyncio.create_task(_run_pipeline(room, overrides))
     return web.json_response({"status": "dispatched", "room": room})
 
 
