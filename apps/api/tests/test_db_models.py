@@ -81,12 +81,18 @@ async def test_api_key_cascades_on_tenant_delete(db_session):
 
 
 async def test_session_status_check_constraint(db_session, seed_tenant):
-    from models import Session
+    from models import ApiKey, Session
 
     tenant, _ = seed_tenant
+    # Fetch the API key explicitly — lazy-loading via `tenant.api_keys`
+    # doesn't work in async sessions without awaitable_attrs / selectinload.
+    api_key = (
+        await db_session.execute(select(ApiKey).where(ApiKey.tenant_id == tenant.id))
+    ).scalar_one()
+
     s = Session(
         tenant_id=tenant.id,
-        api_key_id=tenant.api_keys[0].id if tenant.api_keys else uuid.uuid4(),
+        api_key_id=api_key.id,
         room=f"room-{uuid.uuid4().hex[:8]}",
         identity=f"user-{uuid.uuid4().hex[:8]}",
         status="nonsense",

@@ -154,12 +154,17 @@ def upgrade() -> None:
 
     # Trigger to bump tenants.updated_at on row update. Cheap and idiomatic;
     # saves us from having to remember to set it in every UPDATE.
+    #
+    # clock_timestamp() (NOT now()) so successive UPDATEs inside the same
+    # transaction produce distinct timestamps. now() returns the transaction
+    # start time — with now() two UPDATEs in one tx would leave identical
+    # updated_at values, defeating the column's purpose.
     op.execute(
         """
         CREATE OR REPLACE FUNCTION set_updated_at()
         RETURNS TRIGGER AS $$
         BEGIN
-            NEW.updated_at = now();
+            NEW.updated_at = clock_timestamp();
             RETURN NEW;
         END;
         $$ LANGUAGE plpgsql;
