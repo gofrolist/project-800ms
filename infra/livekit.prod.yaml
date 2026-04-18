@@ -29,3 +29,20 @@ turn:
 room:
   empty_timeout: 300
   max_participants: 4
+
+# Webhook callbacks — LiveKit POSTs room_started / room_finished /
+# participant_* events to the API so we can mark sessions as ended and
+# record audio_seconds for billing. The JWT Authorization header on each
+# request is signed with api_secret; the api container verifies using
+# the same secret.
+#
+# api_key below MUST equal the LIVEKIT_API_KEY value from infra/.env —
+# it picks which key/secret pair in the `keys` map to sign with. LiveKit
+# doesn't do env-var substitution in its YAML, so this is a literal
+# string. Rotate both in tandem if you change LIVEKIT_API_KEY.
+webhook:
+  api_key: coastalai-dev-key
+  urls:
+    # Internal docker network — Caddy isn't on this path, so LiveKit
+    # talks to the api container directly.
+    - http://api:8000/v1/livekit-webhook
