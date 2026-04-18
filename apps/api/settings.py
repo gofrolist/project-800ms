@@ -31,10 +31,33 @@ class Settings(BaseSettings):
     # to spawn a pipeline for a new room.
     agent_dispatch_url: str = "http://agent:8001"
 
-    # CORS. Default is permissive for local dev (browser at :5173 hits API
-    # at :8000). In prod, set CORS_ALLOWED_ORIGINS to a comma-separated list
-    # of explicit origins, e.g. "https://app.example.com,https://example.com".
+    # CORS. Set CORS_ALLOWED_ORIGINS to a comma-separated list of explicit
+    # origins, e.g. "https://app.example.com,https://example.com". Wildcard
+    # is accepted only in local dev (tests + docker-compose.yml default);
+    # production deployments MUST override. Per-tenant origin pinning in
+    # tenants.allowed_origins is the real access-control boundary — this
+    # list is a belt-and-braces second layer.
     cors_allowed_origins: list[str] = ["*"]
+
+    # Database — async SQLAlchemy URL (postgresql+asyncpg://...). The init
+    # container runs Alembic migrations before the API starts, so by the
+    # time this engine connects the schema is guaranteed current.
+    database_url: str = "postgresql+asyncpg://voice:voice@postgres:5432/voice"
+
+    # LiveKit webhook signing secret. Defaults to livekit_api_secret — the
+    # signing key is the same HMAC secret used for JWTs, per LiveKit's
+    # webhook docs. Kept separate so it can be rotated independently later.
+    webhook_signing_secret: str = ""
+
+    # How long a successful X-API-Key lookup stays in process-local cache.
+    # Shorter = faster revocation propagation, more DB load. 60s is a
+    # reasonable tradeoff for a single-replica API.
+    tenant_cache_ttl_seconds: int = 60
+
+    def model_post_init(self, __context) -> None:  # type: ignore[override]
+        # Default webhook secret to the LiveKit one when unset — common case.
+        if not self.webhook_signing_secret:
+            object.__setattr__(self, "webhook_signing_secret", self.livekit_api_secret)
 
 
 settings = Settings()  # type: ignore[call-arg]

@@ -8,21 +8,36 @@ dependencies = [
     "uvicorn[standard]==0.44.0",
     "pydantic-settings==2.13.1",
     "livekit-api==1.1.0",
-    # Per-IP rate limiting on /sessions and /health. /sessions mints LiveKit
-    # tokens with no auth, so an unrate-limited flood would burn GPU compute
-    # on Whisper + vLLM. See SECURITY.md / F-01, F-02.
+    # Per-tenant rate limiting. See Phase 1 PRD — key_func resolves to
+    # tenant_id from the X-API-Key header so one noisy tenant can't starve
+    # others.
     "slowapi==0.1.9",
     "httpx>=0.28.1",
+    # SQLAlchemy 2.0 async + asyncpg + Alembic for tenant/session persistence.
+    "sqlalchemy[asyncio]>=2.0.40",
+    "asyncpg==0.30.0",
+    "alembic==1.14.0",
+    # TTL cache for authenticated tenant lookup — avoids hitting Postgres
+    # on every request. Revocations propagate within TENANT_CACHE_TTL_SECONDS.
+    "cachetools==5.5.0",
+    # ULID for request IDs — monotonic, sortable, URL-safe, shorter than UUID.
+    "python-ulid==3.0.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest==9.0.3",
+    "pytest-asyncio==1.3.0",
+    "pytest-cov==6.0.0",
     "httpx==0.28.1",
     # Used by tests to inspect/verify the JWTs that /sessions mints. Already
     # a transitive dep via livekit-api, but declared explicitly so test imports
     # don't depend on dependency drift.
     "pyjwt==2.12.1",
+    # Real Postgres in tests (not SQLite) to catch dialect drift. Requires
+    # Docker to be running locally. CI uses a GHA service container instead,
+    # see .github/workflows/ci.yml.
+    "testcontainers[postgresql]==4.8.2",
 ]
 
 [tool.uv]
@@ -46,4 +61,8 @@ extend-exclude = [".venv", "tests/.pytest_cache"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra --strict-markers"
+asyncio_mode = "auto"
+markers = [
+    "slow: tests that spin up Postgres testcontainers (skipped in quick runs)",
+]
