@@ -50,6 +50,10 @@ services:
       context: ../apps/web
     environment:
       - API_URL=https://api.${DOMAIN:?DOMAIN is required when TLS is enabled}
+      # Baked into the SPA at container start. Treat as public — the browser
+      # exposes it in-page. Use a tenant with an origin allowlist scoped
+      # tight to this deployment's domain.
+      - API_KEY=${WEB_API_KEY:?WEB_API_KEY is required — rotate this tenant's key via the API to revoke}
     volumes:
       - web_dist:/dist
 

@@ -158,22 +158,29 @@ jobs:
           cache-from: type=gha,scope=web
           cache-to: type=gha,scope=web,mode=max
 
-      - name: Smoke-test web container (runtime URL substitution)
+      - name: Smoke-test web container (runtime URL + API key substitution)
         env:
           FIRST_TAG: ${{ fromJSON(steps.meta-web.outputs.json).tags[0] }}
         run: |
           mkdir -p /tmp/web-dist
           docker run --rm \
             -e API_URL=https://api.example.com \
+            -e API_KEY=smoke-test-placeholder \
             -v /tmp/web-dist:/dist \
             "$FIRST_TAG"
           test -s /tmp/web-dist/index.html
-          if grep -qr "__API_URL__" /tmp/web-dist/ 2>/dev/null; then
-            echo "::error::Placeholder __API_URL__ still present after substitution"
-            exit 1
-          fi
+          for placeholder in __API_URL__ __API_KEY__; do
+            if grep -qr "$placeholder" /tmp/web-dist/ 2>/dev/null; then
+              echo "::error::Placeholder $placeholder still present after substitution"
+              exit 1
+            fi
+          done
           if ! grep -qr "https://api.example.com" /tmp/web-dist/; then
             echo "::error::Expected api.example.com not found in built assets"
+            exit 1
+          fi
+          if ! grep -qr "smoke-test-placeholder" /tmp/web-dist/; then
+            echo "::error::Expected API key not found in built assets"
             exit 1
           fi
           echo "web container runtime substitution works"

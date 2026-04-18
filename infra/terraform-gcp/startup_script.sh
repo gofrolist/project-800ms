@@ -208,6 +208,10 @@ umask 077
   printf 'SEED_DEMO_API_KEY=%s\n' "$SEED_DEMO_API_KEY"
   # LiveKit webhook HMAC — defaults to LIVEKIT_API_SECRET when empty.
   printf 'WEBHOOK_SIGNING_SECRET=%s\n' "$WEBHOOK_SIGNING_SECRET"
+  # The demo SPA embeds this key. Default to the seeded 'demo' tenant
+  # key so a fresh terraform apply gives a working SPA out of the box.
+  # Rotate by editing the tenant's api_keys rows via SQL.
+  printf 'WEB_API_KEY=%s\n' "$SEED_DEMO_API_KEY"
   if [ "$TLS_ENABLED" = "true" ] && [ -n "$DOMAIN" ]; then
     printf 'CORS_ALLOWED_ORIGINS=["https://%s"]\n' "$DOMAIN"
   else
