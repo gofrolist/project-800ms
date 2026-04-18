@@ -8,6 +8,13 @@ ENV UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_PYTHON_DOWNLOADS=never
 
+# Build tools for C-extension deps without py3.14 wheels yet (asyncpg in
+# particular). Builder-stage only — the runtime image is a separate FROM
+# and doesn't inherit these packages.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
 # uv: single static binary, copied from the official distroless image.
 COPY --from=ghcr.io/astral-sh/uv:0.11.4 /uv /uvx /usr/local/bin/
 
