@@ -1,0 +1,87 @@
+"""Pydantic request/response schemas for /v1/* endpoints.
+
+Keeping schemas separate from route handlers lets generated OpenAPI clients
+import just the types, and makes it easy to spot breaking shape changes in
+code review.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class CreateSessionRequest(BaseModel):
+    """Game-client payload for opening a new voice session.
+
+    Every field is optional because the simplest integration (a demo page)
+    just wants a token and doesn't care about persona routing. Game clients
+    fill in user_id/npc_id/persona/context for the features that need them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Stable caller identifier in the tenant's system.",
+    )
+    npc_id: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Which NPC / persona this session targets.",
+    )
+    persona: dict[str, Any] | None = Field(
+        default=None,
+        description="Persona JSON — system prompt, backstory, knobs.",
+    )
+    voice: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Piper voice id, e.g. 'ru_RU-denis-medium'.",
+    )
+    language: str | None = Field(
+        default=None,
+        max_length=16,
+        description="BCP-47 locale hint for STT + LLM output.",
+    )
+    llm_model: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Override LLM model (falls back to tenant/agent default).",
+    )
+    context: dict[str, Any] | None = Field(
+        default=None,
+        description="Arbitrary game-state context passed to the agent.",
+    )
+
+
+class CreateSessionResponse(BaseModel):
+    """What the browser / game client needs to join the LiveKit room."""
+
+    session_id: str
+    room: str
+    identity: str
+    token: str
+    url: str
+
+
+class SessionDetails(BaseModel):
+    """Read model for GET /v1/sessions/{room}."""
+
+    session_id: str
+    room: str
+    identity: str
+    user_id: str | None
+    npc_id: str | None
+    persona: dict[str, Any] | None
+    voice: str | None
+    language: str | None
+    llm_model: str | None
+    context: dict[str, Any] | None
+    status: str
+    created_at: str
+    started_at: str | None
+    ended_at: str | None
+    audio_seconds: int | None

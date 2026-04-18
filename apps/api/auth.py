@@ -103,7 +103,7 @@ async def _resolve(raw_key: str, db: AsyncSession) -> TenantIdentity:
 
 async def get_current_tenant(
     request: Request,
-    x_api_key: str = Header(..., alias="X-API-Key"),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
     db: AsyncSession = Depends(get_db),
 ) -> TenantIdentity:
     """FastAPI dependency — resolve X-API-Key to a TenantIdentity.

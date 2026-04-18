@@ -5,10 +5,13 @@ Rate-limiting key order:
     2. X-Forwarded-For (first hop) when behind Caddy
     3. Peer IP
 
-Each tenant has its own `rate_limit_per_minute` column; handlers apply
-the per-tenant value dynamically via `limiter.limit(tenant_rate_limit)`.
-Routes that don't take auth (health, docs) continue to use IP-based
-limits.
+Every tenant gets their own bucket via `tenant_or_ip` (the key_func), so
+tenants don't share budgets. The limit *value* itself is currently a fixed
+string per route (see V1_DEFAULT_LIMIT) — slowapi's `@limit` decorator
+evaluates its limit string without request context, so truly per-tenant
+limit numbers need a custom dependency. TODO: read each tenant's
+`rate_limit_per_minute` column in a pre-route dep and short-circuit with
+429 when the tenant's ceiling is below the route default.
 """
 
 from __future__ import annotations
@@ -16,6 +19,11 @@ from __future__ import annotations
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from starlette.requests import Request
+
+# One default rate for every /v1/* endpoint. Liberal enough for a game
+# client's idle chatter; abusive traffic still gets cut off. Raise this
+# when we add per-tenant overrides.
+V1_DEFAULT_LIMIT = "60/minute"
 
 
 def _real_ip(request: Request) -> str:
@@ -36,15 +44,3 @@ def tenant_or_ip(request: Request) -> str:
 
 
 limiter = Limiter(key_func=tenant_or_ip, default_limits=[])
-
-
-def tenant_rate_limit(request: Request) -> str:
-    """Per-tenant minute budget, resolved from request.state.
-
-    Used as `@limiter.limit(tenant_rate_limit)` on /v1/ endpoints so each
-    tenant gets their own `rate_limit_per_minute` from the DB column.
-    Falls back to a conservative 10/min when unauthenticated (blocks abuse
-    of endpoints that somehow skipped the auth dep).
-    """
-    rate = getattr(request.state, "tenant_rate_limit_per_minute", None)
-    return f"{rate or 10}/minute"

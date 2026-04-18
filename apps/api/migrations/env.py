@@ -20,7 +20,10 @@ from settings import settings
 config = context.config
 
 # Inject the runtime DATABASE_URL — keeps alembic.ini free of secrets.
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# Caller-provided overrides (e.g. tests pointing at a testcontainer URL)
+# win over the process-level settings.
+if not config.get_main_option("sqlalchemy.url"):
+    config.set_main_option("sqlalchemy.url", settings.database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

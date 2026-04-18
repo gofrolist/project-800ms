@@ -17,6 +17,7 @@ import uuid
 from sqlalchemy import (
     ARRAY,
     CheckConstraint,
+    DateTime,
     ForeignKey,
     Index,
     LargeBinary,
@@ -53,10 +54,12 @@ class Tenant(Base):
     )
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'active'"))
     created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
         nullable=False,
         server_default=text("now()"),
     )
     updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
         nullable=False,
         server_default=text("now()"),
     )
@@ -89,9 +92,14 @@ class ApiKey(Base):
     # keys without grepping the hash.
     key_prefix: Mapped[str] = mapped_column(String(8), nullable=False)
     label: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'default'"))
-    last_used_at: Mapped[datetime.datetime | None] = mapped_column(nullable=True)
-    revoked_at: Mapped[datetime.datetime | None] = mapped_column(nullable=True)
+    last_used_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
         nullable=False,
         server_default=text("now()"),
     )
@@ -135,10 +143,15 @@ class Session(Base):
     llm_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
         nullable=False,
         server_default=text("now()"),
     )
-    started_at: Mapped[datetime.datetime | None] = mapped_column(nullable=True)
-    ended_at: Mapped[datetime.datetime | None] = mapped_column(nullable=True)
+    started_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    ended_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     audio_seconds: Mapped[int | None] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))

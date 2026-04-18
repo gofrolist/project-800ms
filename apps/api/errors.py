@@ -118,8 +118,11 @@ async def validation_error_handler(_request: Request, exc: Exception) -> JSONRes
 
 
 async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
-    # Swallow the internals — don't leak stack traces. Loggers elsewhere
-    # record the exception + request_id for ops triage.
+    # Swallow the internals — don't leak stack traces. The logger records the
+    # traceback so ops can correlate via request_id.
+    import logging
+
+    logging.getLogger("project-800ms.api").exception("Unhandled exception on request: %s", exc)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content=_envelope("internal_error", "Internal server error"),
