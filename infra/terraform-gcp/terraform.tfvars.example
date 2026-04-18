@@ -78,23 +78,20 @@ llm_model    = ""
 llm_api_key  = ""
 
 # -----------------------------------------------------------------------------
-# API seed keys (optional, but required if you want the web SPA to work
-# out of the box)
+# API seed key (required for the web SPA to work out of the box)
 #
-# When set, the Alembic seed migration materializes API keys for the
-# pre-created "dev" and "demo" tenants. The raw values are hashed and
-# discarded — this is the ONLY time they're recoverable, so save them.
+# The Alembic seed migration materializes an API key for the 'demo'
+# tenant when this is set. The raw value is hashed and discarded at
+# migration time — this is the ONLY time it's recoverable, so save it
+# somewhere safe (1Password / secret manager).
 #
-# The web SPA uses SEED_DEMO_API_KEY by default (startup_script defaults
-# WEB_API_KEY to it), so leaving seed_demo_api_key empty means the SPA
-# service will refuse to start (WEB_API_KEY is required in compose).
+# The startup script defaults WEB_API_KEY to this value; compose refuses
+# to start the web service with an empty WEB_API_KEY, so leaving this
+# empty breaks the deploy.
 #
-# Recommended: set seed_demo_api_key to a `tk_`-prefixed 32-byte hex —
-#   openssl rand -hex 32 | xargs -I{} echo "tk_{}"
-# Leave seed_dev_api_key empty unless you use the 'dev' tenant directly.
+# Generate:  openssl rand -hex 32 | xargs -I{} echo "tk_{}"
 # -----------------------------------------------------------------------------
-seed_demo_api_key = ""  # e.g. "tk_0123...abcd" — powers the web SPA
-seed_dev_api_key  = ""
+seed_demo_api_key = ""  # e.g. "tk_0123...abcd"
 
 # -----------------------------------------------------------------------------
 # LiveKit webhook signing (optional)

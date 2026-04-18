@@ -201,7 +201,6 @@ locals {
     llm_api_key            = var.llm_api_key == "" ? "__UNSET__" : var.llm_api_key
     # Optional API seed / webhook secrets. Sentinel + startup script treat
     # __UNSET__ as empty so downstream compose falls back to defaults.
-    seed_dev_api_key       = var.seed_dev_api_key == "" ? "__UNSET__" : var.seed_dev_api_key
     seed_demo_api_key      = var.seed_demo_api_key == "" ? "__UNSET__" : var.seed_demo_api_key
     webhook_signing_secret = var.webhook_signing_secret == "" ? "__UNSET__" : var.webhook_signing_secret
   }

@@ -182,7 +182,6 @@ services:
     command: ["alembic", "upgrade", "head"]
     environment:
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-voice}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-voice}
-      - SEED_DEV_API_KEY=${SEED_DEV_API_KEY:-}
       - SEED_DEMO_API_KEY=${SEED_DEMO_API_KEY:-}
       # These two aren't used by the migration itself, but Settings
       # validates them at import time and alembic imports settings.

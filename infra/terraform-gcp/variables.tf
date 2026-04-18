@@ -277,21 +277,17 @@ variable "llm_api_key" {
 }
 
 # -----------------------------------------------------------------------------
-# API seed keys (optional)
+# API seed key
 #
-# When set, the Alembic seed migration (0002_seed_dev_tenant) materializes
-# API keys for the pre-created "dev" and "demo" tenants. The raw values are
-# hashed and discarded by the migration — this is the only moment they are
-# recoverable. Leave empty for deployments that provision keys through a
-# separate admin flow (preferred for production).
+# When set, the Alembic seed migration (0002_seed_demo_tenant) materializes
+# an API key for the pre-created "demo" tenant. The raw value is hashed
+# and discarded by the migration — this is the only moment it is
+# recoverable.
+#
+# The web SPA defaults WEB_API_KEY to this value in the startup script,
+# and compose refuses an empty WEB_API_KEY, so in practice this is
+# required for any deployment that exposes the SPA.
 # -----------------------------------------------------------------------------
-
-variable "seed_dev_api_key" {
-  description = "Raw API key for the seeded 'dev' tenant. Empty to skip."
-  type        = string
-  sensitive   = true
-  default     = ""
-}
 
 variable "seed_demo_api_key" {
   description = "Raw API key for the seeded 'demo' tenant. Empty to skip."

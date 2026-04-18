@@ -95,9 +95,9 @@ async def db_session(postgres_url: str) -> AsyncIterator[object]:
 
     SAVEPOINTs + a nested transaction give us per-test isolation without
     re-running migrations. Every test sees a clean slate (except for
-    migration-seeded rows like the 'dev' / 'demo' tenants — but those only
-    exist if SEED_*_API_KEY env vars were set at container start, which
-    they aren't in tests).
+    migration-seeded 'demo' tenant row — but that only has an API key
+    attached when SEED_DEMO_API_KEY is set at container start, which it
+    isn't in tests).
     """
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
