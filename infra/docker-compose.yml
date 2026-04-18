@@ -188,6 +188,9 @@ services:
       # Shared secret for /internal/* endpoints (agent -> api transcript
       # writes). Empty disables POST /internal/transcripts.
       - AGENT_INTERNAL_TOKEN=${AGENT_INTERNAL_TOKEN:-}
+      # Master key for /v1/admin/* endpoints. Empty disables the admin
+      # surface entirely (403 -> 503 agent_unavailable on first call).
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-}
     ports:
       # Public — browsers POST /v1/sessions here. Rate-limited at the app
       # layer (slowapi).

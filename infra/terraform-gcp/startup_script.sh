@@ -162,6 +162,11 @@ if [ "$AGENT_INTERNAL_TOKEN" = "__UNSET__" ]; then
   AGENT_INTERNAL_TOKEN=$(cat "$TOKEN_FILE")
 fi
 
+ADMIN_API_KEY=$(secret_get admin_api_key)
+if [ "$ADMIN_API_KEY" = "__UNSET__" ]; then
+  ADMIN_API_KEY=""
+fi
+
 # -----------------------------------------------------------------------------
 # 3. Clone the app repo.
 # -----------------------------------------------------------------------------
@@ -215,6 +220,8 @@ umask 077
   printf 'SEED_DEMO_API_KEY=%s\n' "$SEED_DEMO_API_KEY"
   # Shared agent <-> api secret for transcript persistence.
   printf 'AGENT_INTERNAL_TOKEN=%s\n' "$AGENT_INTERNAL_TOKEN"
+  # Master admin key — empty disables the /v1/admin/* surface.
+  printf 'ADMIN_API_KEY=%s\n' "$ADMIN_API_KEY"
   # The demo SPA embeds this key. Default to the seeded 'demo' tenant
   # key so a fresh terraform apply gives a working SPA out of the box.
   # Rotate by editing the tenant's api_keys rows via SQL.

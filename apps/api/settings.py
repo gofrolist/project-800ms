@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     # tenants that don't need transcript persistence.
     agent_internal_token: str = ""
 
+    # Master key for /v1/admin/* endpoints (create / rotate tenants + keys).
+    # Empty disables the admin surface entirely — preferred in deployments
+    # that provision out-of-band (e.g. via direct DB access). Raw key is
+    # only sent over the wire; no session cookie / refresh flow, so
+    # exposure should be treated as total compromise — rotate by changing
+    # this env var and redeploying.
+    admin_api_key: str = ""
+
     # How long a successful X-API-Key lookup stays in process-local cache.
     # Shorter = faster revocation propagation, more DB load. 60s is a
     # reasonable tradeoff for a single-replica API.

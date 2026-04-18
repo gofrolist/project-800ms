@@ -301,3 +301,18 @@ variable "agent_internal_token" {
   sensitive   = true
   default     = ""
 }
+
+# -----------------------------------------------------------------------------
+# Admin API key (optional)
+#
+# Master credential for /v1/admin/* endpoints. NOT a tenant key. Leaving
+# this empty disables the admin surface entirely — appropriate for
+# deployments that provision tenants + keys out-of-band via SQL.
+# -----------------------------------------------------------------------------
+
+variable "admin_api_key" {
+  description = "Master key for /v1/admin/* endpoints. Empty disables the admin API."
+  type        = string
+  sensitive   = true
+  default     = ""
+}

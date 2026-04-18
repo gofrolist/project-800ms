@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from rate_limit import limiter
 from request_id import RequestIdMiddleware
+from routes.admin import router as admin_router
 from routes.sessions import router as sessions_router
 from routes.transcripts import internal_router as transcripts_internal_router
 from routes.transcripts import v1_router as transcripts_v1_router
@@ -100,6 +101,13 @@ app = FastAPI(
         {
             "name": "system",
             "description": "Liveness and service metadata.",
+        },
+        {
+            "name": "admin",
+            "description": (
+                "Operator-only tenant + API-key management. Requires "
+                "`X-Admin-Key` (not `X-API-Key`)."
+            ),
         },
     ],
     docs_url="/docs",
@@ -194,6 +202,7 @@ app.include_router(webhooks_router)
 app.include_router(transcripts_v1_router)
 app.include_router(transcripts_internal_router)
 app.include_router(usage_router)
+app.include_router(admin_router)
 
 
 @app.get("/health", tags=["system"], summary="Liveness probe")
