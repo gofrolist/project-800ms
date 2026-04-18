@@ -2,7 +2,8 @@
 
 Endpoints:
     GET  /health      — liveness
-    POST /sessions    — mint a LiveKit caller token for the demo room
+    POST /sessions    — mint a LiveKit caller token for the demo room (DEPRECATED)
+    (new /v1/* endpoints land in subsequent commits)
 """
 
 from __future__ import annotations
@@ -12,11 +13,13 @@ import logging
 import os
 import uuid
 
+import errors
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from livekit import api as lkapi
 from pydantic import BaseModel
+from request_id import RequestIdMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
@@ -36,6 +39,15 @@ app = FastAPI(
     redoc_url=None if _is_production else "/redoc",
     openapi_url=None if _is_production else "/openapi.json",
 )
+
+# Request ID must run before anything else so every downstream log +
+# error response has an ID to reference.
+app.add_middleware(RequestIdMiddleware)
+
+# Register error handlers — every HTTP error on the app now produces the
+# unified {error: {...}} envelope. Does NOT affect legacy /sessions
+# success responses, only the error paths.
+errors.install(app)
 
 
 # ─── Rate limiting ────────────────────────────────────────────────────────
