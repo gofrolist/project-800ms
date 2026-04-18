@@ -73,8 +73,10 @@ api.{$DOMAIN} {
 	# Docs endpoints: Swagger/ReDoc/Scalar load JS+CSS from jsdelivr and the
 	# FastAPI favicon from tiangolo.com, plus execute inline scripts. The
 	# JSON endpoints don't need any of this, so we scope the loosened CSP
-	# to /docs, /redoc, /reference and the favicon path with a matcher.
+	# to /docs, /redoc, /reference with a matcher.
 	@docs path /docs /docs/* /redoc /redoc/* /reference /reference/*
+	@not_docs not path /docs /docs/* /redoc /redoc/* /reference /reference/*
+
 	header @docs {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
@@ -85,7 +87,7 @@ api.{$DOMAIN} {
 	}
 
 	# Everything else (JSON API surface) keeps the tight CSP.
-	header {
+	header @not_docs {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
