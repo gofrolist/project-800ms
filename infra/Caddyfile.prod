@@ -70,29 +70,18 @@ api.{$DOMAIN} {
 		header_up X-Forwarded-Proto {http.request.scheme}
 	}
 
-	# Docs endpoints: Swagger/ReDoc/Scalar load JS+CSS from jsdelivr and the
-	# FastAPI favicon from tiangolo.com, plus execute inline scripts. The
-	# JSON endpoints don't need any of this, so we scope the loosened CSP
-	# to /docs, /redoc, /reference with a matcher.
-	@docs path /docs /docs/* /redoc /redoc/* /reference /reference/*
-	@not_docs not path /docs /docs/* /redoc /redoc/* /reference /reference/*
-
-	header @docs {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
-		X-Content-Type-Options "nosniff"
-		Referrer-Policy "strict-origin-when-cross-origin"
-		Content-Security-Policy "default-src 'self'; connect-src 'self' wss:; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https://cdn.jsdelivr.net https://fastapi.tiangolo.com; font-src 'self' https://cdn.jsdelivr.net; worker-src 'self' blob:"
-		Permissions-Policy "microphone=(self), camera=(), geolocation=()"
-		-Server
-	}
-
-	# Everything else (JSON API surface) keeps the tight CSP.
-	header @not_docs {
+	# Security headers. The CSP is loose enough to let Swagger / ReDoc /
+	# Scalar load their JS+CSS from jsdelivr and the FastAPI favicon from
+	# tiangolo.com. Non-doc endpoints return application/json, which
+	# browsers never execute as script — so a relaxed script-src on the
+	# JSON surface has no practical risk. X-Content-Type-Options and
+	# X-Frame-Options stay tight.
+	header {
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
 		X-Frame-Options "DENY"
 		Referrer-Policy "strict-origin-when-cross-origin"
-		Content-Security-Policy "default-src 'self'; connect-src 'self' wss:; script-src 'self'; style-src 'self' 'unsafe-inline'"
+		Content-Security-Policy "default-src 'self'; connect-src 'self' wss:; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https://cdn.jsdelivr.net https://fastapi.tiangolo.com; font-src 'self' https://cdn.jsdelivr.net; worker-src 'self' blob:"
 		Permissions-Policy "microphone=(self), camera=(), geolocation=()"
 		-Server
 	}
