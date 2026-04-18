@@ -185,6 +185,9 @@ services:
       - AGENT_DISPATCH_URL=http://agent:8001
       - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-voice}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-voice}
       - TENANT_CACHE_TTL_SECONDS=${TENANT_CACHE_TTL_SECONDS:-60}
+      # Shared secret for /internal/* endpoints (agent -> api transcript
+      # writes). Empty disables POST /internal/transcripts.
+      - AGENT_INTERNAL_TOKEN=${AGENT_INTERNAL_TOKEN:-}
     ports:
       # Public — browsers POST /v1/sessions here. Rate-limited at the app
       # layer (slowapi).
@@ -221,6 +224,10 @@ services:
       - HF_HOME=/home/appuser/.cache/huggingface
       - HF_HUB_DISABLE_XET=1
       - PIPER_VOICES_DIR=/home/appuser/.cache/piper
+      # Transcript persistence: when both set, the agent POSTs finalized
+      # STT/LLM utterances to the api's /internal/transcripts endpoint.
+      - API_BASE_URL=${API_BASE_URL:-http://api:8000}
+      - AGENT_INTERNAL_TOKEN=${AGENT_INTERNAL_TOKEN:-}
       # INFO by default — DEBUG logs full STT transcripts and LLM
       # prompts/completions, which is a privacy issue if exposed via
       # docker logs. Set LOG_LEVEL=DEBUG in .env when actively debugging.

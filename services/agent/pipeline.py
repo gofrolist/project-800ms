@@ -38,6 +38,7 @@ from faster_whisper import WhisperModel
 from overrides import PerSessionOverrides, build_system_prompt
 from stt_filter import FilteredWhisperSTTService
 from transcript import AssistantTranscriptForwarder, UserTranscriptForwarder
+from transcript_sink import TranscriptSink
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,11 @@ class AgentConfig:
     whisper_model: WhisperModelSize = WhisperModelSize.LARGE
     whisper_device: str = "cuda"
     whisper_compute_type: str = "int8_float16"
+    # When both values are set, final STT and LLM utterances are also
+    # POSTed to the API's /internal/transcripts endpoint. Empty = in-UI
+    # transcripts only (no DB persistence).
+    api_base_url: str = ""
+    agent_internal_token: str = ""
 
 
 def build_task(
@@ -133,8 +139,16 @@ def build_task(
         ),
     )
 
-    user_transcript = UserTranscriptForwarder(transport)
-    assistant_transcript = AssistantTranscriptForwarder(transport)
+    sink: TranscriptSink | None = None
+    if cfg.api_base_url and cfg.agent_internal_token:
+        sink = TranscriptSink(
+            api_base_url=cfg.api_base_url,
+            internal_token=cfg.agent_internal_token,
+            room=cfg.room_name,
+        )
+
+    user_transcript = UserTranscriptForwarder(transport, sink=sink)
+    assistant_transcript = AssistantTranscriptForwarder(transport, sink=sink)
 
     pipeline = Pipeline(
         [

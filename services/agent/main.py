@@ -33,7 +33,7 @@ AGENT_TOKEN_TTL = datetime.timedelta(minutes=30)
 _livekit_url: str = ""
 _api_key: str = ""
 _api_secret: str = ""
-_base_config: dict[str, str | Path] = {}
+_base_config: dict[str, object] = {}
 
 # Track active rooms to prevent double-dispatch.
 _active_rooms: set[str] = set()
@@ -145,6 +145,11 @@ def main() -> None:
             "tts_voice": require_env("TTS_VOICE", "ru_RU-denis-medium"),
             "vllm_api_key": require_env("VLLM_API_KEY", "not-used"),
             "piper_voices_dir": Path(require_env("PIPER_VOICES_DIR", "/home/appuser/.cache/piper")),
+            # Optional transcript persistence. Both must be set (or both
+            # left empty — require_env with "" default accepts unset as
+            # empty rather than raising).
+            "api_base_url": os.environ.get("API_BASE_URL", ""),
+            "agent_internal_token": os.environ.get("AGENT_INTERNAL_TOKEN", ""),
         }
     except MissingEnvError as exc:
         logger.error(str(exc))

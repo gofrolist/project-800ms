@@ -24,9 +24,7 @@ async def test_migrations_created_expected_tables(db_session):
         )
     )
     tables = {row[0] for row in result.all()}
-    assert {"tenants", "api_keys", "sessions"}.issubset(tables)
-    # Transcripts are Phase 2 — explicitly NOT in this migration.
-    assert "session_transcripts" not in tables
+    assert {"tenants", "api_keys", "sessions", "session_transcripts"}.issubset(tables)
 
 
 async def test_tenant_roundtrip_and_defaults(db_session):

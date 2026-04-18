@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     # time this engine connects the schema is guaranteed current.
     database_url: str = "postgresql+asyncpg://voice:voice@postgres:5432/voice"
 
+    # Shared secret for server-to-server calls from the agent to /internal/*
+    # endpoints (today: transcript writes). The agent presents this value
+    # as `X-Internal-Token`. Empty disables the endpoint — useful for
+    # tenants that don't need transcript persistence.
+    agent_internal_token: str = ""
+
     # How long a successful X-API-Key lookup stays in process-local cache.
     # Shorter = faster revocation propagation, more DB load. 60s is a
     # reasonable tradeoff for a single-replica API.

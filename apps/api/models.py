@@ -24,8 +24,8 @@ from sqlalchemy import (
     LargeBinary,
     String,
     Text,
-    text,
 )
+from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -43,26 +43,28 @@ class Tenant(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
-        server_default=text("gen_random_uuid()"),
+        server_default=sql_text("gen_random_uuid()"),
     )
     name: Mapped[str] = mapped_column(Text, nullable=False)
     slug: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    rate_limit_per_minute: Mapped[int] = mapped_column(nullable=False, server_default=text("60"))
+    rate_limit_per_minute: Mapped[int] = mapped_column(
+        nullable=False, server_default=sql_text("60")
+    )
     allowed_origins: Mapped[list[str]] = mapped_column(
         ARRAY(Text),
         nullable=False,
-        server_default=text("'{}'::text[]"),
+        server_default=sql_text("'{}'::text[]"),
     )
-    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'active'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=sql_text("'active'"))
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        server_default=text("now()"),
+        server_default=sql_text("now()"),
     )
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        server_default=text("now()"),
+        server_default=sql_text("now()"),
     )
 
     api_keys: Mapped[list[ApiKey]] = relationship(
@@ -78,7 +80,7 @@ class ApiKey(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
-        server_default=text("gen_random_uuid()"),
+        server_default=sql_text("gen_random_uuid()"),
     )
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -92,7 +94,7 @@ class ApiKey(Base):
     # First 8 chars of the raw key — safe to log, used by ops to identify
     # keys without grepping the hash.
     key_prefix: Mapped[str] = mapped_column(String(8), nullable=False)
-    label: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'default'"))
+    label: Mapped[str] = mapped_column(Text, nullable=False, server_default=sql_text("'default'"))
     last_used_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -102,7 +104,7 @@ class ApiKey(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        server_default=text("now()"),
+        server_default=sql_text("now()"),
     )
 
     tenant: Mapped[Tenant] = relationship(back_populates="api_keys")
@@ -122,7 +124,7 @@ class Session(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         primary_key=True,
-        server_default=text("gen_random_uuid()"),
+        server_default=sql_text("gen_random_uuid()"),
     )
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -146,7 +148,7 @@ class Session(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        server_default=text("now()"),
+        server_default=sql_text("now()"),
     )
     started_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -155,4 +157,43 @@ class Session(Base):
         DateTime(timezone=True), nullable=True
     )
     audio_seconds: Mapped[int | None] = mapped_column(nullable=True)
-    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'pending'"))
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default=sql_text("'pending'"))
+
+
+class SessionTranscript(Base):
+    __tablename__ = "session_transcripts"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('user', 'assistant')",
+            name="session_transcripts_role_check",
+        ),
+        Index(
+            "ix_session_transcripts_session_created",
+            "session_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=sql_text("gen_random_uuid()"),
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(Text, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    started_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    ended_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sql_text("now()"),
+    )

@@ -200,7 +200,8 @@ locals {
     llm_api_key            = var.llm_api_key == "" ? "__UNSET__" : var.llm_api_key
     # Optional API seed key. Sentinel + startup script treat __UNSET__ as
     # empty so downstream compose falls back to defaults.
-    seed_demo_api_key = var.seed_demo_api_key == "" ? "__UNSET__" : var.seed_demo_api_key
+    seed_demo_api_key    = var.seed_demo_api_key == "" ? "__UNSET__" : var.seed_demo_api_key
+    agent_internal_token = var.agent_internal_token == "" ? "__UNSET__" : var.agent_internal_token
   }
 }
 

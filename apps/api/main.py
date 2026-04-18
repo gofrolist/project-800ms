@@ -23,6 +23,8 @@ from fastapi.responses import HTMLResponse
 from rate_limit import limiter
 from request_id import RequestIdMiddleware
 from routes.sessions import router as sessions_router
+from routes.transcripts import internal_router as transcripts_internal_router
+from routes.transcripts import v1_router as transcripts_v1_router
 from routes.webhooks import router as webhooks_router
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -180,6 +182,8 @@ app.add_middleware(
 # ─── Routes ───────────────────────────────────────────────────────────────
 app.include_router(sessions_router)
 app.include_router(webhooks_router)
+app.include_router(transcripts_v1_router)
+app.include_router(transcripts_internal_router)
 
 
 @app.get("/health", tags=["system"], summary="Liveness probe")

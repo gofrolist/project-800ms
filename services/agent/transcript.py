@@ -1,4 +1,6 @@
-"""Frame processors that forward transcript data to the web UI via LiveKit data channel."""
+"""Frame processors that forward transcript data to the web UI via
+LiveKit data channel, and optionally persist to the API's /internal/
+transcripts endpoint."""
 
 from __future__ import annotations
 
@@ -16,15 +18,35 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transports.livekit.transport import LiveKitTransport
 
+from transcript_sink import TranscriptSink
+
 # Debounce delay: flush buffered user transcript after this many seconds
 # of no new transcriptions.
 _USER_TRANSCRIPT_DEBOUNCE_SECS = 1.0
 
 
-async def _send_transcript(transport: LiveKitTransport, role: str, text: str):
+async def _forward(
+    transport: LiveKitTransport,
+    sink: TranscriptSink | None,
+    role: str,
+    text: str,
+) -> None:
+    """Emit one transcript to both destinations.
+
+    1. LiveKit data channel — renders in the web UI in real time.
+    2. API internal endpoint — durable storage for playback / auditing.
+
+    Both paths swallow their own errors (best-effort). A LiveKit-side
+    failure shouldn't drop the DB write and vice versa.
+    """
     msg = json.dumps({"role": role, "text": text}, ensure_ascii=False)
-    logger.debug("Transcript → client: {msg}", msg=msg)
-    await transport.send_message(msg)
+    logger.debug("Transcript role={role} chars={n}", role=role, n=len(text))
+    try:
+        await transport.send_message(msg)
+    except Exception:
+        logger.exception("Failed to send transcript over LiveKit data channel")
+    if sink is not None:
+        await sink.log(role, text)
 
 
 class UserTranscriptForwarder(FrameProcessor):
@@ -36,9 +58,15 @@ class UserTranscriptForwarder(FrameProcessor):
     message in the UI.
     """
 
-    def __init__(self, transport: LiveKitTransport, **kwargs):
+    def __init__(
+        self,
+        transport: LiveKitTransport,
+        sink: TranscriptSink | None = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._transport = transport
+        self._sink = sink
         self._buf: list[str] = []
         self._flush_handle: asyncio.TimerHandle | None = None
 
@@ -67,19 +95,22 @@ class UserTranscriptForwarder(FrameProcessor):
         buf, self._buf = self._buf, []
         if not buf:
             return
-        try:
-            await _send_transcript(self._transport, "user", " ".join(buf))
-        except Exception:
-            logger.exception("Failed to forward user transcript")
+        await _forward(self._transport, self._sink, "user", " ".join(buf))
 
 
 class AssistantTranscriptForwarder(FrameProcessor):
     """Place after LLM to capture the full assistant response.
     Buffers streaming TextFrames between LLMFullResponseStart/End."""
 
-    def __init__(self, transport: LiveKitTransport, **kwargs):
+    def __init__(
+        self,
+        transport: LiveKitTransport,
+        sink: TranscriptSink | None = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._transport = transport
+        self._sink = sink
         self._buf: list[str] = []
         self._in_response = False
 
@@ -95,7 +126,7 @@ class AssistantTranscriptForwarder(FrameProcessor):
             self._in_response = False
             full = "".join(self._buf).strip()
             if full:
-                await _send_transcript(self._transport, "assistant", full)
+                await _forward(self._transport, self._sink, "assistant", full)
             self._buf.clear()
 
         await self.push_frame(frame, direction)

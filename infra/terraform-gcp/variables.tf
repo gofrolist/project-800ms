@@ -285,3 +285,19 @@ variable "seed_demo_api_key" {
   sensitive   = true
   default     = ""
 }
+
+# -----------------------------------------------------------------------------
+# Agent <-> API internal token (optional)
+#
+# Shared secret for server-to-server calls from the agent worker to the
+# API's /internal/* endpoints (today: transcript writes). Empty disables
+# transcript persistence; the agent still sends transcripts over LiveKit's
+# data channel to connected clients.
+# -----------------------------------------------------------------------------
+
+variable "agent_internal_token" {
+  description = "Shared secret for agent -> api /internal/* calls. Empty disables transcript persistence."
+  type        = string
+  sensitive   = true
+  default     = ""
+}

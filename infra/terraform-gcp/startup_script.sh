@@ -145,6 +145,23 @@ if [ "$SEED_DEMO_API_KEY" = "__UNSET__" ]; then
   SEED_DEMO_API_KEY=""
 fi
 
+# Agent <-> API internal token. When the terraform var is empty, we
+# auto-generate one locally so transcript persistence works out of the
+# box. The generated value lives in /etc/project-800ms/agent-token so a
+# subsequent VM reboot keeps the same token (otherwise in-flight rooms
+# would lose the ability to post transcripts after a restart).
+AGENT_INTERNAL_TOKEN=$(secret_get agent_internal_token)
+if [ "$AGENT_INTERNAL_TOKEN" = "__UNSET__" ]; then
+  TOKEN_FILE=/etc/project-800ms/agent-token
+  mkdir -p /etc/project-800ms
+  chmod 700 /etc/project-800ms
+  if [ ! -s "$TOKEN_FILE" ]; then
+    openssl rand -hex 32 > "$TOKEN_FILE"
+    chmod 600 "$TOKEN_FILE"
+  fi
+  AGENT_INTERNAL_TOKEN=$(cat "$TOKEN_FILE")
+fi
+
 # -----------------------------------------------------------------------------
 # 3. Clone the app repo.
 # -----------------------------------------------------------------------------
@@ -196,6 +213,8 @@ umask 077
   # materialize a key for the 'demo' tenant. Safe only for deployments
   # that provision keys via an admin flow and don't expose the SPA.
   printf 'SEED_DEMO_API_KEY=%s\n' "$SEED_DEMO_API_KEY"
+  # Shared agent <-> api secret for transcript persistence.
+  printf 'AGENT_INTERNAL_TOKEN=%s\n' "$AGENT_INTERNAL_TOKEN"
   # The demo SPA embeds this key. Default to the seeded 'demo' tenant
   # key so a fresh terraform apply gives a working SPA out of the box.
   # Rotate by editing the tenant's api_keys rows via SQL.
