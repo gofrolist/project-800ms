@@ -275,3 +275,41 @@ variable "llm_api_key" {
   sensitive   = true
   default     = ""
 }
+
+# -----------------------------------------------------------------------------
+# API seed keys (optional)
+#
+# When set, the Alembic seed migration (0002_seed_dev_tenant) materializes
+# API keys for the pre-created "dev" and "demo" tenants. The raw values are
+# hashed and discarded by the migration — this is the only moment they are
+# recoverable. Leave empty for deployments that provision keys through a
+# separate admin flow (preferred for production).
+# -----------------------------------------------------------------------------
+
+variable "seed_dev_api_key" {
+  description = "Raw API key for the seeded 'dev' tenant. Empty to skip."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "seed_demo_api_key" {
+  description = "Raw API key for the seeded 'demo' tenant. Empty to skip."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+# -----------------------------------------------------------------------------
+# LiveKit webhook signing (optional)
+#
+# Defaults to livekit_api_secret when empty. Set explicitly only when you
+# need to rotate webhook auth independently of the JWT signing secret.
+# -----------------------------------------------------------------------------
+
+variable "webhook_signing_secret" {
+  description = "HMAC secret for inbound LiveKit webhooks. Empty = reuse livekit_api_secret."
+  type        = string
+  sensitive   = true
+  default     = ""
+}

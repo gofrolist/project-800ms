@@ -139,6 +139,21 @@ if [ "$LLM_API_KEY_EXTERNAL" = "__UNSET__" ]; then
   LLM_API_KEY_EXTERNAL=""
 fi
 
+# Optional seed API keys + webhook secret. Sentinel __UNSET__ means "leave
+# the env var empty so compose / settings fall back to defaults".
+SEED_DEV_API_KEY=$(secret_get seed_dev_api_key)
+if [ "$SEED_DEV_API_KEY" = "__UNSET__" ]; then
+  SEED_DEV_API_KEY=""
+fi
+SEED_DEMO_API_KEY=$(secret_get seed_demo_api_key)
+if [ "$SEED_DEMO_API_KEY" = "__UNSET__" ]; then
+  SEED_DEMO_API_KEY=""
+fi
+WEBHOOK_SIGNING_SECRET=$(secret_get webhook_signing_secret)
+if [ "$WEBHOOK_SIGNING_SECRET" = "__UNSET__" ]; then
+  WEBHOOK_SIGNING_SECRET=""
+fi
+
 # -----------------------------------------------------------------------------
 # 3. Clone the app repo.
 # -----------------------------------------------------------------------------
@@ -187,6 +202,12 @@ umask 077
   fi
   printf 'HUGGING_FACE_HUB_TOKEN=%s\n' "$HUGGING_FACE_HUB_TOKEN"
   printf 'LOG_LEVEL=INFO\n'
+  # API seed keys — empty means the Alembic seed migration won't materialize
+  # a key for the corresponding tenant. Safe to leave empty in prod.
+  printf 'SEED_DEV_API_KEY=%s\n' "$SEED_DEV_API_KEY"
+  printf 'SEED_DEMO_API_KEY=%s\n' "$SEED_DEMO_API_KEY"
+  # LiveKit webhook HMAC — defaults to LIVEKIT_API_SECRET when empty.
+  printf 'WEBHOOK_SIGNING_SECRET=%s\n' "$WEBHOOK_SIGNING_SECRET"
   if [ "$TLS_ENABLED" = "true" ] && [ -n "$DOMAIN" ]; then
     printf 'CORS_ALLOWED_ORIGINS=["https://%s"]\n' "$DOMAIN"
   else

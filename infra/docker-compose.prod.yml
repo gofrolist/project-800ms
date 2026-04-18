@@ -19,6 +19,11 @@
 name: project-800ms
 
 services:
+  migrate:
+    image: ghcr.io/gofrolist/project-800ms-api:${IMAGE_TAG:-latest}
+    build: !reset null
+    pull_policy: always
+
   api:
     image: ghcr.io/gofrolist/project-800ms-api:${IMAGE_TAG:-latest}
     build: !reset null
