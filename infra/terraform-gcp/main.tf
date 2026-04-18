@@ -193,7 +193,6 @@ resource "google_project_iam_member" "metrics_writer" {
 locals {
   app_secrets = {
     postgres_password      = var.postgres_password
-    redis_password         = var.redis_password
     livekit_api_key        = var.livekit_api_key
     livekit_api_secret     = var.livekit_api_secret
     vllm_api_key           = var.vllm_api_key

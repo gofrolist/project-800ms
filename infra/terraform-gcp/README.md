@@ -43,7 +43,7 @@ Parallel to `infra/terraform/` (AWS). Same app stack, same Caddy/Cloudflare inte
 cd infra/terraform-gcp
 cp terraform.tfvars.example terraform.tfvars
 # Set project_id, git_repo, and generate secrets:
-openssl rand -hex 32  # for each of postgres_password, redis_password, livekit_api_secret, vllm_api_key
+openssl rand -hex 32  # for each of postgres_password, livekit_api_secret, vllm_api_key
 
 terraform init
 terraform plan

@@ -123,7 +123,6 @@ secret_get() {
 }
 
 POSTGRES_PASSWORD=$(secret_get postgres_password)
-REDIS_PASSWORD=$(secret_get redis_password)
 LIVEKIT_API_KEY=$(secret_get livekit_api_key)
 LIVEKIT_API_SECRET=$(secret_get livekit_api_secret)
 VLLM_API_KEY=$(secret_get vllm_api_key)
@@ -172,7 +171,6 @@ umask 077
   printf 'POSTGRES_USER=voice\n'
   printf 'POSTGRES_PASSWORD=%s\n' "$POSTGRES_PASSWORD"
   printf 'POSTGRES_DB=voice\n'
-  printf 'REDIS_PASSWORD=%s\n' "$REDIS_PASSWORD"
   printf 'LIVEKIT_API_KEY=%s\n' "$LIVEKIT_API_KEY"
   printf 'LIVEKIT_API_SECRET=%s\n' "$LIVEKIT_API_SECRET"
   printf 'LIVEKIT_PUBLIC_URL=%s\n' "$LIVEKIT_PUBLIC_URL"

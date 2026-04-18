@@ -51,7 +51,6 @@ cloudflare_zone_id   = ""
 # Secrets — generate with: openssl rand -hex 32
 # -----------------------------------------------------------------------------
 postgres_password      = "REPLACE_ME_openssl_rand_hex_32"
-redis_password         = "REPLACE_ME_openssl_rand_hex_32"
 livekit_api_key        = "REPLACE_ME"
 livekit_api_secret     = "REPLACE_ME_openssl_rand_hex_32"
 vllm_api_key           = "REPLACE_ME_openssl_rand_hex_32"

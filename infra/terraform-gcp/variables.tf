@@ -194,16 +194,6 @@ variable "postgres_password" {
   }
 }
 
-variable "redis_password" {
-  type      = string
-  sensitive = true
-
-  validation {
-    condition     = length(var.redis_password) >= 16
-    error_message = "redis_password must be at least 16 characters. Generate with: openssl rand -hex 32"
-  }
-}
-
 variable "livekit_api_key" {
   description = "LiveKit API key. No default — must be set explicitly."
   type        = string

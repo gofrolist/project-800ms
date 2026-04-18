@@ -19,8 +19,8 @@
 #   - On Linux, `network_mode: host` gives LiveKit the cleanest NAT behavior.
 #     We use bridge + port mapping here for macOS/WSL compatibility. Switch to
 #     host mode in prod by uncommenting the relevant line.
-#   - All "internal" services (postgres, redis, vllm) are bound to 127.0.0.1 on
-#     the host so a misconfigured cloud security group can't expose them publicly.
+#   - All "internal" services (postgres, vllm) are bound to 127.0.0.1 on the
+#     host so a misconfigured cloud security group can't expose them publicly.
 #     Override LIVEKIT_DEV_FLAG, LOG_LEVEL, etc. in .env for local dev.
 
 name: project-800ms
@@ -85,30 +85,6 @@ services:
       - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-voice} -d ${POSTGRES_DB:-voice}"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
-  redis:
-    image: redis:8-alpine
-    restart: unless-stopped
-    # `requirepass` enforces auth even on localhost. Connections from the
-    # other services use the password from REDIS_URL via env.
-    command:
-      - "redis-server"
-      - "--save"
-      - "60"
-      - "1"
-      - "--loglevel"
-      - "warning"
-      - "--requirepass"
-      - "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"
-    volumes:
-      - redis_data:/data
-    ports:
-      - "127.0.0.1:6379:6379"
-    healthcheck:
-      test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -272,7 +248,6 @@ services:
 
 volumes:
   pg_data:
-  redis_data:
   hf_cache_vllm:
   hf_cache_agent:
   piper_voices:
