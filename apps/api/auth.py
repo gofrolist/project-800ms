@@ -23,7 +23,8 @@ import hmac
 from dataclasses import dataclass
 
 from cachetools import TTLCache
-from fastapi import Depends, Header, Request
+from fastapi import Depends, Request
+from fastapi.security import APIKeyHeader
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,6 +60,14 @@ _cache: TTLCache[bytes, TenantIdentity] = TTLCache(
 def _clear_cache_for_tests() -> None:
     """Used by tests to reset between cases. Not exported on the prod surface."""
     _cache.clear()
+
+
+# Documented security scheme. Shows up in the generated OpenAPI as
+# `components.securitySchemes.ApiKeyAuth` and gets applied to every
+# endpoint that depends on `get_current_tenant`. `auto_error=False`
+# lets our handler produce the 401 envelope instead of FastAPI's default
+# 403 {detail: "Not authenticated"}.
+_api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 async def _resolve(raw_key: str, db: AsyncSession) -> TenantIdentity:
@@ -103,7 +112,7 @@ async def _resolve(raw_key: str, db: AsyncSession) -> TenantIdentity:
 
 async def get_current_tenant(
     request: Request,
-    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    x_api_key: str | None = Depends(_api_key_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> TenantIdentity:
     """FastAPI dependency — resolve X-API-Key to a TenantIdentity.

@@ -36,6 +36,44 @@ logger = logging.getLogger("project-800ms.api.sessions")
 router = APIRouter(prefix="/v1", tags=["sessions"])
 
 
+# Shared response bodies for the error envelopes the /v1/sessions routes
+# can emit. Keeping them in one place means the OpenAPI spec stays in
+# sync with the actual error envelope shape.
+_ERROR_ENVELOPE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "error": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string"},
+                "message": {"type": "string"},
+                "request_id": {"type": "string"},
+            },
+            "required": ["code", "message", "request_id"],
+        }
+    },
+}
+
+_COMMON_ERROR_RESPONSES: dict[int | str, dict[str, object]] = {
+    401: {
+        "description": "Missing or malformed X-API-Key header.",
+        "content": {"application/json": {"schema": _ERROR_ENVELOPE_SCHEMA}},
+    },
+    403: {
+        "description": "Key revoked or tenant suspended.",
+        "content": {"application/json": {"schema": _ERROR_ENVELOPE_SCHEMA}},
+    },
+    422: {
+        "description": "Request body failed validation.",
+        "content": {"application/json": {"schema": _ERROR_ENVELOPE_SCHEMA}},
+    },
+    429: {
+        "description": "Rate limit exceeded for this tenant.",
+        "content": {"application/json": {"schema": _ERROR_ENVELOPE_SCHEMA}},
+    },
+}
+
+
 def _mint_caller_token(room: str, identity: str) -> str:
     """Short-TTL LiveKit JWT for the caller's browser.
 
@@ -103,8 +141,18 @@ async def _dispatch_agent(room: str, body: CreateSessionRequest) -> None:
     summary="Open a voice session",
     description=(
         "Create a new LiveKit room, dispatch the voice agent into it, and "
-        "return the credentials the client needs to join."
+        "return the credentials the client needs to join.\n\n"
+        "The caller connects to `url` over WebRTC using `token` and "
+        "`identity`. Persona and voice fields are forwarded to the agent "
+        "so the LLM + TTS can be tuned per-NPC."
     ),
+    responses={
+        503: {
+            "description": "Agent dispatcher is unavailable; the session row has been rolled back.",
+            "content": {"application/json": {"schema": _ERROR_ENVELOPE_SCHEMA}},
+        },
+        **_COMMON_ERROR_RESPONSES,
+    },
 )
 @limiter.limit(V1_DEFAULT_LIMIT)
 async def create_session(
@@ -167,6 +215,18 @@ async def create_session(
     "/sessions/{room}",
     response_model=SessionDetails,
     summary="Fetch session details",
+    description=(
+        "Return the current state of a session owned by the calling tenant. "
+        "Returns **404 not_found** for sessions owned by other tenants — "
+        "existence is deliberately not distinguishable across tenants."
+    ),
+    responses={
+        404: {
+            "description": "No session with this room name for this tenant.",
+            "content": {"application/json": {"schema": _ERROR_ENVELOPE_SCHEMA}},
+        },
+        **_COMMON_ERROR_RESPONSES,
+    },
 )
 @limiter.limit(V1_DEFAULT_LIMIT)
 async def get_session(

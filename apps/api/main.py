@@ -1,22 +1,25 @@
 """project-800ms API.
 
 Endpoints:
-    GET  /health        — liveness
-    POST /v1/sessions   — mint a LiveKit caller token (X-API-Key auth)
+    GET  /health            — liveness
+    POST /v1/sessions       — mint a LiveKit caller token (X-API-Key auth)
     GET  /v1/sessions/{room} — fetch session details
 
-The legacy unauthenticated POST /sessions has been removed — every caller
-must now authenticate via X-API-Key. See `routes/sessions.py`.
+Docs surface (all publicly reachable):
+    GET  /docs              — Swagger UI
+    GET  /redoc             — ReDoc
+    GET  /reference         — Scalar API Reference
+    GET  /openapi.json      — raw OpenAPI 3.1 spec
 """
 
 from __future__ import annotations
 
 import logging
-import os
 
 import errors
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from rate_limit import limiter
 from request_id import RequestIdMiddleware
 from routes.sessions import router as sessions_router
@@ -30,13 +33,66 @@ from settings import settings
 
 logger = logging.getLogger("project-800ms.api")
 
-_is_production = os.getenv("ENV", "").lower() == "production"
+
+API_DESCRIPTION = """
+Real-time voice-agent API for game clients.
+
+## Authentication
+
+Every `/v1/*` endpoint requires an **`X-API-Key`** header. Request keys
+from your operations contact. Keys are tenant-scoped; revoking a key
+does not affect other tenants.
+
+## Error envelope
+
+All `/v1/*` error responses share a common shape:
+
+```json
+{
+  "error": {
+    "code": "unauthenticated",
+    "message": "Missing or malformed X-API-Key header",
+    "request_id": "01HQXZ3Y4A5TGJ6GGC8CVKWE0N"
+  }
+}
+```
+
+`request_id` is a ULID returned in the `X-Request-ID` header of every
+response. Include it in support tickets so we can correlate logs.
+
+## Rate limits
+
+`/v1/*` endpoints are rate-limited per tenant at 60 requests/minute by
+default. Exceeding the budget returns **429 rate_limited**.
+"""
+
 
 app = FastAPI(
     title="project-800ms API",
-    docs_url=None if _is_production else "/docs",
-    redoc_url=None if _is_production else "/redoc",
-    openapi_url=None if _is_production else "/openapi.json",
+    version="0.1.0",
+    summary="Voice-agent session API.",
+    description=API_DESCRIPTION,
+    contact={
+        "name": "project-800ms",
+        "url": "https://github.com/gofrolist/project-800ms",
+    },
+    license_info={
+        "name": "Apache 2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0.html",
+    },
+    openapi_tags=[
+        {
+            "name": "sessions",
+            "description": "Open and inspect voice sessions.",
+        },
+        {
+            "name": "system",
+            "description": "Liveness and service metadata.",
+        },
+    ],
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
 )
 
 # Request ID must run before anything else so every downstream log +
@@ -76,10 +132,17 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "Strict-Transport-Security",
             "max-age=31536000; includeSubDomains",
         )
+        # CSP is permissive for /docs, /redoc, /reference — they load
+        # Swagger / ReDoc / Scalar assets from jsdelivr. Every other route
+        # returns JSON so the extra sources are never used.
         response.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; connect-src 'self' wss:; "
-            "script-src 'self'; style-src 'self' 'unsafe-inline'",
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "img-src 'self' data: https://cdn.jsdelivr.net; "
+            "font-src 'self' https://cdn.jsdelivr.net; "
+            "worker-src 'self' blob:",
         )
         response.headers.setdefault(
             "Permissions-Policy",
@@ -117,7 +180,45 @@ app.add_middleware(
 app.include_router(sessions_router)
 
 
-@app.get("/health")
+@app.get("/health", tags=["system"], summary="Liveness probe")
 @limiter.limit("60/minute")
 def health(request: Request) -> dict[str, str]:
+    """Return `{"status": "ok"}` whenever the process is up.
+
+    Does not exercise the database or the downstream agent — use this for
+    TCP-level health checks and the `/v1/sessions` create path for deep
+    end-to-end validation.
+    """
     return {"status": "ok"}
+
+
+# ─── Scalar docs UI ───────────────────────────────────────────────────────
+# Scalar is a Swagger/ReDoc alternative with a better default UX. We serve
+# its HTML from a CDN — no package dep needed. The spec URL points at our
+# existing /openapi.json.
+_SCALAR_HTML = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>project-800ms API Reference</title>
+  </head>
+  <body>
+    <script
+      id="api-reference"
+      data-url="/openapi.json"
+      data-configuration='{"theme":"default","layout":"modern"}'
+    ></script>
+    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+  </body>
+</html>"""
+
+
+@app.get(
+    "/reference",
+    include_in_schema=False,
+    response_class=HTMLResponse,
+    summary="Scalar API Reference",
+)
+def scalar_reference() -> HTMLResponse:
+    return HTMLResponse(_SCALAR_HTML)
