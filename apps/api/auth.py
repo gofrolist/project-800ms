@@ -8,10 +8,10 @@ queries. The 60-second default means revocations propagate within ~1 min.
 Design notes:
     - Raw keys are NEVER logged. Only the 8-char `key_prefix` shows up in
       logs / errors when we need to identify a key during triage.
-    - Comparisons use hmac.compare_digest where the hash is attacker-
-      controllable, to avoid timing side-channels even though the lookup
-      is already keyed by the hash (the constant-time check here is
-      belt-and-braces).
+    - The lookup is keyed by the SHA-256 hash via an indexed equality in
+      Postgres, so no Python-side comparison of attacker-controllable
+      input is needed. If we ever move to a scan-based match, reintroduce
+      hmac.compare_digest.
     - The cache is keyed by the hash bytes, not the raw key — even if
       somebody instrumented the cache object, the raw key wouldn't leak.
 """
@@ -19,7 +19,6 @@ Design notes:
 from __future__ import annotations
 
 import hashlib
-import hmac
 from dataclasses import dataclass
 
 from cachetools import TTLCache
@@ -88,9 +87,6 @@ async def _resolve(raw_key: str, db: AsyncSession) -> TenantIdentity:
 
     api_key: ApiKey = row[0]
     tenant: Tenant = row[1]
-
-    if not hmac.compare_digest(bytes(api_key.key_hash), key_hash):
-        raise APIError(401, "unauthenticated", "Invalid API key")
 
     if api_key.revoked_at is not None:
         raise APIError(403, "forbidden", "API key has been revoked")

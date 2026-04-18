@@ -33,7 +33,7 @@ AGENT_TOKEN_TTL = datetime.timedelta(minutes=30)
 _livekit_url: str = ""
 _api_key: str = ""
 _api_secret: str = ""
-_base_config: dict = {}
+_base_config: dict[str, str | Path] = {}
 
 # Track active rooms to prevent double-dispatch.
 _active_rooms: set[str] = set()
@@ -69,7 +69,10 @@ async def _run_pipeline(room: str, overrides: PerSessionOverrides) -> None:
         voice=overrides.voice or "default",
         model=overrides.llm_model or "default",
     )
-    _active_rooms.add(room)
+    # The caller (handle_dispatch) claims the slot in _active_rooms BEFORE
+    # scheduling this task — otherwise two concurrent dispatches for the
+    # same room could both pass the guard check and spawn duplicate
+    # pipelines. We only own the discard() in finally.
     try:
         cfg = AgentConfig(
             livekit_url=_livekit_url,
@@ -111,6 +114,10 @@ async def handle_dispatch(request: web.Request) -> web.Response:
     if room in _active_rooms:
         return web.json_response({"error": "room already active"}, status=409)
 
+    # Claim the slot synchronously — before any await or create_task yields
+    # to the event loop. Otherwise a burst of identical dispatches could
+    # all pass the guard above before any pipeline adds itself to the set.
+    _active_rooms.add(room)
     overrides = PerSessionOverrides.from_dispatch(body)
     asyncio.create_task(_run_pipeline(room, overrides))
     return web.json_response({"status": "dispatched", "room": room})

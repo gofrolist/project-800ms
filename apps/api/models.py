@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime
 import uuid
+from typing import Any
 
 from sqlalchemy import (
     ARRAY,
@@ -137,11 +138,11 @@ class Session(Base):
     identity: Mapped[str] = mapped_column(Text, nullable=False)
     user_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     npc_id: Mapped[str | None] = mapped_column(Text, nullable=True)
-    persona: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    persona: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     voice: Mapped[str | None] = mapped_column(Text, nullable=True)
     language: Mapped[str | None] = mapped_column(Text, nullable=True)
     llm_model: Mapped[str | None] = mapped_column(Text, nullable=True)
-    context: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    context: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
