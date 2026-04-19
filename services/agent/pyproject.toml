@@ -12,6 +12,10 @@ dependencies = [
     # Pinned transitively-critical. faster-whisper → ctranslate2 is linked against
     # libcublas.so.12 and libcudnn*.so.9 — the CUDA 12.x Docker base must match.
     "faster-whisper==1.2.1",
+    # GigaAM-v3 (Sber, MIT) for the STT A/B experiment. PyPI 0.1.0 is v1/v2-only;
+    # v3 requires git source + the `torch` extra for PyTorch runtime. SHA pinned —
+    # do not follow `main`. See docs/plans/2026-04-19-001-feat-stt-ab-experiment-plan.md.
+    "gigaam[torch] @ git+https://github.com/salute-developers/GigaAM@6e4b027c6fb554e09e8b9059b757a175295ab879",
 ]
 
 [dependency-groups]
