@@ -1,26 +1,23 @@
-"""Sample N Russian utterances from Mozilla Common Voice for the eval set.
+"""Sample N Russian utterances from google/fleurs for the eval set.
 
-Streams `mozilla-foundation/common_voice_17_0` (ru, test split) via HF
-datasets, filters by duration, resamples to 16 kHz mono, saves as
-int16 WAV, appends one line per clip to truth.jsonl.
+Streams `google/fleurs` (ru_ru, test split) via HF datasets, filters by
+duration, saves as int16 WAV, appends one line per clip to truth.jsonl.
+
+Originally targeted Mozilla Common Voice 17 but Mozilla pulled CV from
+HF in Oct 2025 — CV is only available via Mozilla Data Collective now.
+FLEURS is non-gated, 16 kHz mono, and both Whisper and GigaAM have
+published numbers on it, which gives us a sanity cross-check.
 
 This is one-shot scaffolding — run once to populate the eval set, then
 delete the script alongside the rest of the experiment's cleanup. Not
 productized.
 
-Requires (install transiently via pip — not added to pyproject):
-    datasets soundfile librosa
-
 Usage (from inside the agent container):
-    HUGGING_FACE_HUB_TOKEN=... python scripts/sample_common_voice.py --out /app/eval/russian_eval_set --n 70
+    python scripts/sample_common_voice.py --out /app/eval/russian_eval_set --n 70
 
-HF auth: Common Voice is a gated dataset on HF — you must have accepted
-the license on https://huggingface.co/datasets/mozilla-foundation/common_voice_17_0
-with the same HF account the token is scoped to.
-
-Categorisation: CV doesn't expose a noisiness label; we approximate
-clean vs short by duration. Human re-labeling can move a subset to
-`noisy` or `stress` after listening (edit truth.jsonl by hand).
+Categorisation: FLEURS is clean read speech; we mark short clips as
+`short` and the rest as `clean`. Phase B catches noise/stress variance
+on real game audio.
 """
 
 from __future__ import annotations
@@ -39,15 +36,20 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--dataset",
-        default="mozilla-foundation/common_voice_17_0",
-        help="HF dataset id (override for newer versions or non-gated mirrors)",
+        default="google/fleurs",
+        help="HF dataset id",
+    )
+    parser.add_argument(
+        "--config",
+        default="ru_ru",
+        help="Dataset config (FLEURS uses BCP-47 locale like 'ru_ru'; CV used 'ru')",
     )
     parser.add_argument("--split", default="test", help="Dataset split")
     parser.add_argument(
         "--max-scan",
         type=int,
         default=2000,
-        help="Max CV rows to scan when sampling — caps streaming cost",
+        help="Max rows to scan when sampling — caps streaming cost",
     )
     args = parser.parse_args()
 
@@ -61,8 +63,8 @@ def main() -> int:
     import soundfile as sf  # noqa: PLC0415
     from datasets import load_dataset  # noqa: PLC0415
 
-    print(f"Streaming {args.dataset} ({args.split}, ru)...")
-    ds = load_dataset(args.dataset, "ru", split=args.split, streaming=True)
+    print(f"Streaming {args.dataset} ({args.config}, {args.split})...")
+    ds = load_dataset(args.dataset, args.config, split=args.split, streaming=True)
 
     # Gather candidates with basic quality filtering. Stream stops at
     # max_scan so we don't burn the whole split on a 70-clip sample.
@@ -80,7 +82,8 @@ def main() -> int:
             # Too short: not enough signal. Too long: disproportionate
             # decode cost for a smoke set.
             continue
-        text = (row.get("sentence") or "").strip()
+        # FLEURS uses `transcription`, CV used `sentence`.
+        text = (row.get("transcription") or row.get("sentence") or "").strip()
         if not text:
             continue
         candidates.append({"array": arr, "sample_rate": sr, "text": text, "duration": duration})
