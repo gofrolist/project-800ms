@@ -1,12 +1,17 @@
-"""Sample N Russian utterances from google/fleurs for the eval set.
+"""Sample N Russian utterances from bond005/sberdevices_golos_10h_crowd for the eval set.
 
-Streams `google/fleurs` (ru_ru, test split) via HF datasets, filters by
-duration, saves as int16 WAV, appends one line per clip to truth.jsonl.
+Streams the dataset (test split) via HF datasets, filters by duration,
+saves as 16 kHz mono int16 WAV, appends one line per clip to truth.jsonl.
 
-Originally targeted Mozilla Common Voice 17 but Mozilla pulled CV from
-HF in Oct 2025 — CV is only available via Mozilla Data Collective now.
-FLEURS is non-gated, 16 kHz mono, and both Whisper and GigaAM have
-published numbers on it, which gives us a sanity cross-check.
+Dataset history for this experiment:
+  - Originally targeted Mozilla Common Voice 17 → Mozilla pulled CV from
+    HF in Oct 2025, dataset page is an empty stub now.
+  - Then tried google/fleurs → HF datasets v3+ dropped support for
+    loading scripts, fleurs.py won't load.
+  - Settled on Sber Golos (10h crowd, non-gated, parquet-native) — closer
+    to voice-assistant register than FLEURS (read news) would have been
+    anyway. Both Whisper and GigaAM are trained on or near Golos so we
+    still get a sanity cross-check.
 
 This is one-shot scaffolding — run once to populate the eval set, then
 delete the script alongside the rest of the experiment's cleanup. Not
@@ -15,9 +20,9 @@ productized.
 Usage (from inside the agent container):
     python scripts/sample_common_voice.py --out /app/eval/russian_eval_set --n 70
 
-Categorisation: FLEURS is clean read speech; we mark short clips as
-`short` and the rest as `clean`. Phase B catches noise/stress variance
-on real game audio.
+Categorisation: Golos crowd is already casual/command-style speech; we
+mark short clips as `short` and the rest as `clean`. Phase B catches
+noise/stress variance on real game audio.
 """
 
 from __future__ import annotations
@@ -36,13 +41,13 @@ def main() -> int:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--dataset",
-        default="google/fleurs",
+        default="bond005/sberdevices_golos_10h_crowd",
         help="HF dataset id",
     )
     parser.add_argument(
         "--config",
-        default="ru_ru",
-        help="Dataset config (FLEURS uses BCP-47 locale like 'ru_ru'; CV used 'ru')",
+        default=None,
+        help="Optional dataset config (Golos has no configs; FLEURS used 'ru_ru', CV used 'ru')",
     )
     parser.add_argument("--split", default="test", help="Dataset split")
     parser.add_argument(
@@ -58,13 +63,23 @@ def main() -> int:
 
     # Heavy imports only inside main — the script is installed transiently,
     # don't force them on any other caller that might import this file.
+    import io  # noqa: PLC0415
+
     import librosa  # noqa: PLC0415
     import numpy as np  # noqa: PLC0415
     import soundfile as sf  # noqa: PLC0415
-    from datasets import load_dataset  # noqa: PLC0415
+    from datasets import Audio, load_dataset  # noqa: PLC0415
 
-    print(f"Streaming {args.dataset} ({args.config}, {args.split})...")
-    ds = load_dataset(args.dataset, args.config, split=args.split, streaming=True)
+    print(f"Streaming {args.dataset} ({args.config or '-'}, {args.split})...")
+    if args.config:
+        ds = load_dataset(args.dataset, args.config, split=args.split, streaming=True)
+    else:
+        ds = load_dataset(args.dataset, split=args.split, streaming=True)
+
+    # datasets v3 defaults to torchcodec for Audio decode. We don't have
+    # torchcodec in the image (and don't want it — extra ~200 MB). Disable
+    # the auto-decoder and decode manually with soundfile below.
+    ds = ds.cast_column("audio", Audio(decode=False))
 
     # Gather candidates with basic quality filtering. Stream stops at
     # max_scan so we don't burn the whole split on a 70-clip sample.
@@ -73,17 +88,30 @@ def main() -> int:
         if i >= args.max_scan:
             break
         audio = row.get("audio") or {}
-        arr = audio.get("array")
-        sr = audio.get("sampling_rate")
-        if arr is None or sr is None:
+        # With decode=False the Audio feature yields {"bytes": b"...", "path": "..."}.
+        # Fall back to the old decoded shape just in case.
+        if "bytes" in audio and audio["bytes"] is not None:
+            try:
+                arr, sr = sf.read(io.BytesIO(audio["bytes"]), dtype="float32")
+            except Exception:
+                continue
+            # sf.read returns (samples,) for mono, (samples, channels) for multi
+            if arr.ndim > 1:
+                arr = np.mean(arr, axis=1)
+        elif audio.get("array") is not None:
+            arr = audio["array"]
+            sr = audio["sampling_rate"]
+        else:
+            continue
+        if sr is None or arr is None:
             continue
         duration = len(arr) / sr
         if duration < 1.0 or duration > 10.0:
             # Too short: not enough signal. Too long: disproportionate
             # decode cost for a smoke set.
             continue
-        # FLEURS uses `transcription`, CV used `sentence`.
-        text = (row.get("transcription") or row.get("sentence") or "").strip()
+        # FLEURS uses `transcription`, CV used `sentence`, Golos uses `transcription`.
+        text = (row.get("transcription") or row.get("sentence") or row.get("text") or "").strip()
         if not text:
             continue
         candidates.append({"array": arr, "sample_rate": sr, "text": text, "duration": duration})
