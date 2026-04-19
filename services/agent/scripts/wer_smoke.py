@@ -93,7 +93,7 @@ def _load_wav_as_int16_pcm(path: Path) -> bytes:
     return data.tobytes()
 
 
-def _run_whisper(audio_bytes: bytes) -> tuple[str, float]:
+def _run_whisper(audio_bytes: bytes, audio_path: Path) -> tuple[str, float]:
     """Transcribe one utterance with faster-whisper. Returns (text, seconds)."""
     from faster_whisper import WhisperModel  # noqa: PLC0415
 
@@ -108,17 +108,20 @@ def _run_whisper(audio_bytes: bytes) -> tuple[str, float]:
     return text, time.monotonic() - t
 
 
-def _run_gigaam(audio_bytes: bytes) -> tuple[str, float]:
-    """Transcribe one utterance with GigaAM-v3. Returns (text, seconds)."""
+def _run_gigaam(audio_bytes: bytes, audio_path: Path) -> tuple[str, float]:
+    """Transcribe one utterance with GigaAM-v3. Returns (text, seconds).
+
+    GigaAM's transcribe() expects a file path — it shells out to ffmpeg
+    to decode. Pass the WAV path directly rather than the decoded bytes.
+    """
     import gigaam  # noqa: PLC0415
 
     global _gigaam_singleton  # noqa: PLW0603
     if "_gigaam_singleton" not in globals():
         _gigaam_singleton = gigaam.load_model("v3_ctc")
 
-    audio_float = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
     t = time.monotonic()
-    result = _gigaam_singleton.transcribe(audio_float)
+    result = _gigaam_singleton.transcribe(str(audio_path))
     text = result.text.strip() if hasattr(result, "text") else str(result).strip()
     return text, time.monotonic() - t
 
@@ -197,8 +200,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  skipped (audio load failed): {exc}")
             continue
 
-        whisper_text, whisper_s = _run_whisper(audio_bytes)
-        gigaam_text, gigaam_s = _run_gigaam(audio_bytes)
+        whisper_text, whisper_s = _run_whisper(audio_bytes, audio_path)
+        gigaam_text, gigaam_s = _run_gigaam(audio_bytes, audio_path)
 
         whisper_wer = _wer(entry["text"], whisper_text)
         gigaam_wer = _wer(entry["text"], gigaam_text)
