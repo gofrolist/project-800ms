@@ -22,7 +22,7 @@ from pipecat.frames.frames import InterruptionTaskFrame, TTSSpeakFrame
 from pipecat.pipeline.runner import PipelineRunner
 
 from env import MissingEnvError, require_env
-from models import get_whisper, load_whisper
+from models import get_whisper, load_gigaam, load_whisper
 from overrides import PerSessionOverrides, resolve_greeting
 from pipeline import AgentConfig, build_task
 
@@ -156,7 +156,15 @@ def main() -> None:
         sys.exit(2)
 
     # Pre-load heavy GPU/CPU models so the first dispatch is fast.
+    # Both STT models load during the A/B experiment window — if either
+    # fails, exit hard. We do not want a half-loaded agent that silently
+    # degrades one stack's results and contaminates the experiment.
     load_whisper()
+    try:
+        load_gigaam()
+    except Exception:  # noqa: BLE001 — intentional hard-fail at startup
+        logger.exception("GigaAM pre-load failed — refusing to start agent")
+        sys.exit(3)
 
     app = web.Application()
     app.router.add_post("/dispatch", handle_dispatch)
