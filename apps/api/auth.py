@@ -128,6 +128,14 @@ async def get_current_tenant(
     request.state.tenant_slug = identity.tenant_slug
     request.state.tenant_rate_limit_per_minute = identity.rate_limit_per_minute
     request.state.api_key_id = identity.api_key_id
+
+    # Populate observability context for JSON logs + Prometheus labels.
+    # Local import avoids a cycle: observability imports from request_id,
+    # which is imported here and in other deep-stack modules.
+    from observability import tenant_id_var, tenant_slug_var
+
+    tenant_id_var.set(identity.tenant_id)
+    tenant_slug_var.set(identity.tenant_slug)
     return identity
 
 

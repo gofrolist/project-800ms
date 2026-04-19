@@ -15,11 +15,13 @@ Docs surface (all publicly reachable):
 from __future__ import annotations
 
 import logging
+import os
 
 import errors
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from observability import configure_json_logging, install_metrics
 from rate_limit import limiter
 from request_id import RequestIdMiddleware
 from routes.admin import router as admin_router
@@ -35,6 +37,11 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import Response
 
 from settings import settings
+
+# Install JSON logging before anything else logs, so early startup
+# records (Settings() resolution, module imports) still come through
+# structured. Level comes from LOG_LEVEL env, default INFO.
+configure_json_logging(level=os.environ.get("LOG_LEVEL", "INFO"))
 
 logger = logging.getLogger("project-800ms.api")
 
@@ -203,6 +210,13 @@ app.include_router(transcripts_v1_router)
 app.include_router(transcripts_internal_router)
 app.include_router(usage_router)
 app.include_router(admin_router)
+
+
+# ─── Observability ───────────────────────────────────────────────────────
+# /metrics + the Prometheus middleware land last so they observe the
+# final response (after errors.install's exception handlers have
+# converted APIErrors to JSONResponses).
+install_metrics(app)
 
 
 @app.get("/health", tags=["system"], summary="Liveness probe")

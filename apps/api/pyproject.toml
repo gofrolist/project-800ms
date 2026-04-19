@@ -22,6 +22,9 @@ dependencies = [
     "cachetools==5.5.0",
     # ULID for request IDs — monotonic, sortable, URL-safe, shorter than UUID.
     "python-ulid==3.0.0",
+    # Prometheus instrumentation — request counters + latency histograms
+    # exposed at /metrics. See apps/api/observability.py.
+    "prometheus-client==0.21.1",
 ]
 
 [dependency-groups]

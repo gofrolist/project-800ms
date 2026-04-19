@@ -27,6 +27,7 @@ from auth import TenantIdentity
 from db import get_db
 from errors import APIError
 from models import Session as SessionRow
+from observability import room_var
 from rate_limit import enforce_tenant_rate_limit
 from schemas import CreateSessionRequest, CreateSessionResponse, SessionDetails
 from settings import settings
@@ -161,6 +162,7 @@ async def create_session(
     db: AsyncSession = Depends(get_db),
 ) -> CreateSessionResponse:
     room = f"room-{uuid.uuid4().hex[:8]}"
+    room_var.set(room)
     caller_identity = body.user_id or f"user-{uuid.uuid4().hex[:8]}"
 
     session = SessionRow(
@@ -233,6 +235,7 @@ async def get_session(
     identity: TenantIdentity = Depends(enforce_tenant_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> SessionDetails:
+    room_var.set(room)
     stmt = (
         select(SessionRow)
         .where(SessionRow.room == room)
