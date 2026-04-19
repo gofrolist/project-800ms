@@ -1,0 +1,7 @@
+# Russian eval set ground-truth — one JSON per line.
+# Format: {"audio": "clip-NNN.wav", "text": "<russian transcript>", "category": "<category>"}
+# Categories: clean | noisy | game_specific | stress | short
+# See README.md for composition guidance and sourcing.
+#
+# This file is a placeholder. Populate with ~100 entries before running
+# scripts/wer_smoke.py. Entries prefixed with "#" are ignored.
