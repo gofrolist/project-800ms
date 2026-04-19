@@ -51,6 +51,60 @@ import numpy as np
 # Eval set categories — see module docstring.
 CATEGORIES = ("clean", "noisy", "game_specific", "stress", "short")
 
+# Punctuation to strip before WER — Whisper emits ". , ? ! : ;" etc.,
+# ground truth is punctuation-free. Counting these as errors would
+# double-penalize Whisper for a stylistic difference, not a recognition
+# mistake.
+_PUNCT_CHARS = '.,?!:;"«»„“()[]{}—–-_/'
+
+# A conservative digit→spelled-Russian map for 0-20 + tens. Whisper tends
+# to emit digits for numbers in commands ("14"), truth has Russian words
+# ("четырнадцать"). This won't cover prices / years / dates, which still
+# count as real errors — we note the residual in phase-a-results.md.
+_DIGITS_RU = {
+    "0": "ноль",
+    "1": "один",
+    "2": "два",
+    "3": "три",
+    "4": "четыре",
+    "5": "пять",
+    "6": "шесть",
+    "7": "семь",
+    "8": "восемь",
+    "9": "девять",
+    "10": "десять",
+    "11": "одиннадцать",
+    "12": "двенадцать",
+    "13": "тринадцать",
+    "14": "четырнадцать",
+    "15": "пятнадцать",
+    "16": "шестнадцать",
+    "17": "семнадцать",
+    "18": "восемнадцать",
+    "19": "девятнадцать",
+    "20": "двадцать",
+}
+
+
+def _normalize(text: str) -> str:
+    """Lowercase, strip punctuation, expand small digits, collapse whitespace.
+
+    Removes the stylistic noise that makes Whisper look much worse than
+    it is on Golos (capitalization, punctuation, digit style). Leaves
+    real recognition errors (wrong words, hallucinations, Latin
+    transliteration of Cyrillic abbreviations) intact so they still
+    show up as WER.
+    """
+    text = text.lower()
+    # Strip punctuation by replacing with space (so "14К." → "14К " not "14К")
+    for ch in _PUNCT_CHARS:
+        text = text.replace(ch, " ")
+    # Expand 0-20 digits to Russian words where they appear as standalone
+    # tokens. Don't touch multi-digit numbers (years, prices) — covering
+    # those correctly needs num2words and would hide real errors anyway.
+    tokens = [_DIGITS_RU.get(t, t) for t in text.split()]
+    return " ".join(tokens).strip()
+
 
 def _wer(reference: str, hypothesis: str) -> float:
     """Word Error Rate via simple Levenshtein on tokens.
@@ -58,8 +112,8 @@ def _wer(reference: str, hypothesis: str) -> float:
     Avoids a heavy `jiwer` dep for this one-shot script. Reference:
     https://en.wikipedia.org/wiki/Word_error_rate
     """
-    ref = reference.split()
-    hyp = hypothesis.split()
+    ref = _normalize(reference).split()
+    hyp = _normalize(hypothesis).split()
     if not ref:
         return 0.0 if not hyp else 1.0
 
