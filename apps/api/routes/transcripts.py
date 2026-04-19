@@ -25,12 +25,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import TenantIdentity, enforce_tenant_origin
+from auth import TenantIdentity
 from db import get_db
 from errors import APIError
 from models import Session as SessionRow
 from models import SessionTranscript
-from rate_limit import V1_DEFAULT_LIMIT, limiter
+from rate_limit import enforce_tenant_rate_limit
 from settings import settings
 
 logger = logging.getLogger("project-800ms.api.transcripts")
@@ -136,11 +136,10 @@ async def write_transcript(
         "prevents a pathological query from scanning a huge table."
     ),
 )
-@limiter.limit(V1_DEFAULT_LIMIT)
 async def list_transcripts(
     request: Request,
     room: str,
-    identity: TenantIdentity = Depends(enforce_tenant_origin),
+    identity: TenantIdentity = Depends(enforce_tenant_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> TranscriptList:
     # Tenant-scoped session lookup first. A 404 here (not 403) prevents

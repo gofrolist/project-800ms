@@ -21,11 +21,11 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import TenantIdentity, enforce_tenant_origin
+from auth import TenantIdentity
 from db import get_db
 from errors import APIError
 from models import Session as SessionRow
-from rate_limit import V1_DEFAULT_LIMIT, limiter
+from rate_limit import enforce_tenant_rate_limit
 
 router = APIRouter(prefix="/v1", tags=["usage"])
 
@@ -61,7 +61,6 @@ class UsageResponse(BaseModel):
         "`sessions_count` but not `audio_seconds` until they terminate."
     ),
 )
-@limiter.limit(V1_DEFAULT_LIMIT)
 async def get_usage(
     request: Request,
     from_: datetime.date = Query(
@@ -73,7 +72,7 @@ async def get_usage(
         ...,
         description="Exclusive end date (UTC), YYYY-MM-DD.",
     ),
-    identity: TenantIdentity = Depends(enforce_tenant_origin),
+    identity: TenantIdentity = Depends(enforce_tenant_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> UsageResponse:
     if from_ >= to:

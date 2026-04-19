@@ -23,11 +23,11 @@ from livekit import api as lkapi
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from auth import TenantIdentity, enforce_tenant_origin
+from auth import TenantIdentity
 from db import get_db
 from errors import APIError
 from models import Session as SessionRow
-from rate_limit import V1_DEFAULT_LIMIT, limiter
+from rate_limit import enforce_tenant_rate_limit
 from schemas import CreateSessionRequest, CreateSessionResponse, SessionDetails
 from settings import settings
 
@@ -154,11 +154,10 @@ async def _dispatch_agent(room: str, body: CreateSessionRequest) -> None:
         **_COMMON_ERROR_RESPONSES,
     },
 )
-@limiter.limit(V1_DEFAULT_LIMIT)
 async def create_session(
     request: Request,
     body: CreateSessionRequest,
-    identity: TenantIdentity = Depends(enforce_tenant_origin),
+    identity: TenantIdentity = Depends(enforce_tenant_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> CreateSessionResponse:
     room = f"room-{uuid.uuid4().hex[:8]}"
@@ -228,11 +227,10 @@ async def create_session(
         **_COMMON_ERROR_RESPONSES,
     },
 )
-@limiter.limit(V1_DEFAULT_LIMIT)
 async def get_session(
     request: Request,
     room: str,
-    identity: TenantIdentity = Depends(enforce_tenant_origin),
+    identity: TenantIdentity = Depends(enforce_tenant_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> SessionDetails:
     stmt = (
