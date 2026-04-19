@@ -16,15 +16,24 @@
 
 ## VRAM verification (Unit 1 gate)
 
-| Component | Peak MiB | Peak GB |
-|---|---|---|
-| Baseline (before STT loads) | — | — |
-| + Whisper `large-v3` int8_float16 | — | — |
-| + GigaAM-v3 CTC | — | — |
-| + Silero VAD | — | — |
-| **Total** | — | — |
-| **Ceiling** | 22528 | 22.0 |
-| **Verdict** | — | — |
+**Run:** 2026-04-19 on `project-800ms-instance` (us-central1-a, L4 24 GB), image `agent-gigaam-test:latest` (18.8 GB on disk). L4 started empty (baseline 2.2 GB is NVIDIA CUDA container overhead + system).
+
+| Component | Peak MiB | Peak GB | Δ from previous |
+|---|---|---|---|
+| Baseline (before STT loads) | 2,292 | 2.24 | — |
+| + Whisper `large-v3` int8_float16 (25.7s load) | 4,307 | 4.21 | +2,015 MiB |
+| + GigaAM-v3 CTC (4.7s load) | 4,749 | 4.64 | +442 MiB |
+| + Silero VAD (0.1s load, CPU path) | 4,749 | 4.64 | +0 MiB |
+| **Total STT+VAD footprint** | **2,457 MiB** | **2.40 GB** | — |
+| **Peak resident** | **4,749 MiB** | **4.64 GB** | — |
+| **Ceiling** | 22,528 MiB | 22.0 GB | — |
+| **Verdict** | ✅ PASS | | peak is 21% of ceiling |
+
+**Observations:**
+- GigaAM-v3 is ~2× smaller than the brainstorm's ~1 GB estimate (442 MiB actual).
+- Whisper-large-v3 at `int8_float16` is ~1 GB smaller than estimated (2 GB vs 3 GB).
+- Startup time of both models combined: ~30s. Fast enough that agent restart isn't a deployment pain.
+- Plenty of headroom — vLLM (Qwen-7B-AWQ, ~13 GB) could comfortably co-reside if we ever decide to move LLM back on-box.
 
 ## Per-stack WER (Unit 3)
 
