@@ -231,6 +231,11 @@ services:
       # STT/LLM utterances to the api's /internal/transcripts endpoint.
       - API_BASE_URL=${API_BASE_URL:-http://api:8000}
       - AGENT_INTERNAL_TOKEN=${AGENT_INTERNAL_TOKEN:-}
+      # STT stack selection: "gigaam" (default, since 2026-04-19 A/B) or
+      # "whisper" (rollback). Both are pre-loaded at startup regardless,
+      # so the flip is a one-restart operation. See infra/.env.example
+      # and docs/experiments/2026-04-19-stt-ab/phase-a-results.md.
+      - STT_STACK=${STT_STACK:-gigaam}
       # INFO by default — DEBUG logs full STT transcripts and LLM
       # prompts/completions, which is a privacy issue if exposed via
       # docker logs. Set LOG_LEVEL=DEBUG in .env when actively debugging.
