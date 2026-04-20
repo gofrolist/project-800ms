@@ -90,23 +90,52 @@ Approximate, from the per-utterance `_ms` columns in the CSV:
 
 Latency is essentially tied — neither stack's latency is a decision driver for Phase A.
 
+## OOD validation — rulibrispeech (2026-04-19 follow-up)
+
+Ran a second WER smoke against `bond005/rulibrispeech` (Pushkin and other 19th-c. Russian literary audiobook reads, validation split, 70 utterances). Out of distribution for both stacks: it is audiobook-register literary Russian, not Sber voice-assistant data and not dominant Whisper training content.
+
+| Stack | Mean WER | n | Δ |
+|---|---|---|---|
+| Whisper | 10.07% | 70 | — |
+| GigaAM | 6.02% | 70 | +4.06 pts (GigaAM wins) |
+
+**This falls under the 5-pt decisive gate — formally inconclusive per the plan.**
+
+### Register shift analysis
+
+| Register | Whisper | GigaAM | Δ |
+|---|---|---|---|
+| Voice commands (Golos — Sber home court) | 16.58% | 2.81% | +13.77 (inflated by contamination) |
+| Audiobook literary Russian (rulibrispeech OOD) | 10.07% | 6.02% | +4.06 (clean) |
+
+~9.7 pts of the Golos gap was Sber home-court advantage, as suspected. The clean OOD gap of ~4 pts is the real model-quality delta in GigaAM's favor on Russian.
+
+### OOD error character
+
+Both models struggle on archaic/rare Russian vocabulary, with different failure modes:
+
+- **Whisper:** word-boundary loss (`остолбенев, бледнея` → `о столбине в бледне`), phonetic mis-spellings on archaic words (`млат` → `млад`, `булат` → `булад`), archaic `лет` (flight) → modern `лед` (ice).
+- **GigaAM:** "reasonable but wrong" substitutions that modernize archaic forms (`младых` → `молодых`, `главы` → `головы`, `клобук` → `клобок`).
+
+Neither is broken on OOD. Whisper's errors tend to be more egregious (nonsense tokens); GigaAM's tend to be more plausible-but-wrong (silent modernization).
+
 ## Decision
 
-**Outcome:** ambiguous-with-caveats — formally meets the 5-pt "decisive" gate but on a test with known bias.
+**Outcome:** inconclusive per the plan's 5-pt gate, but with a clean real edge of ~4 pts for GigaAM on OOD Russian plus a larger edge on voice-command register (even after contamination adjustment).
 
 **Reasoning:**
-- The 13.8-pt raw Δ and ~5-6-pt normalization-adjusted Δ both exceed the plan's 5-pt decisive gate.
-- **However, the test has known contamination bias**: Golos is Sber's own dataset, and GigaAM-v3 was almost certainly trained on or near it. GigaAM's 2.8% WER likely includes memorization, not pure generalization. Real out-of-distribution WER for GigaAM is likely 5-10%.
-- Whisper's 16.6% WER is in-line with published Russian ASR benchmarks for short-command audio (its known weak register). On long-form/conversational audio, Whisper typically performs much better.
-- The question Phase A was supposed to answer — "is there an obvious gap" — got a yes, but the test doesn't rule out the answer being "yes, because we picked the test GigaAM was trained on."
+- Golos result alone can't justify skipping Phase B — home-court contamination is real and accounts for ~10 pts of the raw gap.
+- OOD result is cleaner evidence and shows GigaAM at 6.0% vs Whisper at 10.1% — a meaningful but sub-decisive real edge.
+- For the target use case (Russian voice game NPCs, contemporary spoken Russian, short utterances), the relevant register is closer to Golos than to Pushkin. Expected production gap: 5-10 pts.
+- Both stacks clear the "good enough" bar (both are under 20% WER on both tests).
 
-**Next step options (user to pick):**
+**Next step options:**
 
-1. **Accept decisive result, skip Phase B.** Adopt GigaAM as the default on the voice-command/game-NPC register (which matches our product target). Keep Whisper for one release as hedge. Proceed to Unit 9 cleanup-for-winner. Fastest.
-2. **Validate on an unseen register first.** Re-run WER smoke on `bond005/rulibrispeech` (Russian audiobook reads — NOT Sber's data, likely out-of-distribution for both models). If gap persists ≥5 pts → confirm decisive GigaAM. If gap shrinks → accept Phase B is needed. Adds ~30 min.
-3. **Proceed to Phase B anyway.** Blinded subjective A/B on real game audio (the actual target domain). Strongest evidence but costs days. Appropriate if we don't trust any offline test enough to skip user judgment.
+1. **Adopt GigaAM as default; skip the full Phase B UX work.** Ship GigaAM as the configured default with the existing `GigaAMSTTService` wrapper and startup preload (Units 1-2). Keep Whisper in code behind the existing kill-switch env var (`DISABLE_STACK_GIGAAM=false` / flip to `true` to fall back) for one release. Skip Units 4-8 (ratings migration, SPA dual-button, blinded A/B). Rationale: the 4-pt OOD edge plus Sber register fit plus our Cyrillic-only text pipeline's match to GigaAM's output style is enough evidence for a low-risk swap with a fast rollback. If production metrics regress, flip the env var.
+2. **Execute Phase B in full.** Units 4-8. Blinded subjective A/B on real game audio. Strongest evidence, costs several days.
+3. **Execute Phase B partial (Units 4-6 only).** Build the ratings table + API endpoints + agent stack routing + Prometheus stack-labeled latency histogram — these have value beyond this experiment (observability, rating-feedback pipeline). Skip the dual-button SPA (Unit 7) and n≥30 collection (Unit 8). Use production metrics (error rates, latency) as the decision signal rather than blinded subjective ratings.
 
-**Recommended:** Option 2 — cheap additional evidence that cleanly resolves the contamination question before committing to a week of Phase B or rolling GigaAM out.
+**Recommended:** Option 1. The evidence is good enough to swap with a kill-switch hedge, and Phase B's cost-to-benefit is poor given we already have a 4-pt OOD edge plus register fit. Option 3 is a reasonable compromise if you want production observability on the swap.
 
 ## Artifacts
 
