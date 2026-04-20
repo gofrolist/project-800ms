@@ -147,3 +147,43 @@ async def enforce_tenant_rate_limit(
             f"Rate limit exceeded: {identity.rate_limit_per_minute}/minute",
         )
     return identity
+
+
+# ─── IP-based limits (unauth paths) ───────────────────────────────────────
+#
+# Buckets keyed on IP for routes that don't carry a tenant identity.
+# Defense-in-depth: even a constant-time key check can be brute-forced
+# online if nothing caps the request rate. These limits are generous
+# enough not to affect legitimate traffic but tight enough to make
+# sustained probing useless.
+
+_ADMIN_RATE_PER_MINUTE = 60  # human operator pace; brute-force still infeasible vs 256-bit key
+_WEBHOOK_RATE_PER_MINUTE = 1000  # well above real LiveKit event rates per source IP
+
+
+async def enforce_admin_ip_rate_limit(request: Request) -> None:
+    """IP-based rate limit for /v1/admin/*.
+
+    Runs *before* the admin-key check, so an attacker spraying bad keys
+    burns their rate budget without ever reaching `secrets.compare_digest`.
+    60/minute is far above what a human operator needs and well below
+    anything useful for online key enumeration against a 256-bit secret.
+    """
+    ip = _real_ip(request)
+    bucket = _get_bucket(f"admin-ip:{ip}", _ADMIN_RATE_PER_MINUTE)
+    if not bucket.consume():
+        raise APIError(429, "rate_limited", "Rate limit exceeded")
+
+
+async def enforce_webhook_ip_rate_limit(request: Request) -> None:
+    """IP-based rate limit for /v1/livekit-webhook.
+
+    JWT verification is cheap but not free; an attacker flooding invalid
+    signatures could burn CPU + log noise. LiveKit sends from a small
+    set of source IPs, and a single room generates well under 1000
+    events/min even under churn.
+    """
+    ip = _real_ip(request)
+    bucket = _get_bucket(f"webhook-ip:{ip}", _WEBHOOK_RATE_PER_MINUTE)
+    if not bucket.consume():
+        raise APIError(429, "rate_limited", "Rate limit exceeded")

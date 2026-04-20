@@ -133,7 +133,13 @@ async def write_transcript(
         "Return all transcript entries for a session owned by the calling "
         "tenant, ordered by `created_at` ascending. Capped at 1000 entries "
         "per call — a single session shouldn't produce more, and this "
-        "prevents a pathological query from scanning a huge table."
+        "prevents a pathological query from scanning a huge table.\n\n"
+        "**Security note:** `text` is raw user-generated content derived "
+        "from speech-to-text output. It is stored and returned verbatim "
+        "without HTML sanitization. Consumers that render transcripts in "
+        "an HTML context (dashboards, partner UIs) MUST escape the value "
+        "or run it through a sanitizer (e.g. DOMPurify). Do not interpolate "
+        "into HTML templates unescaped."
     ),
 )
 async def list_transcripts(

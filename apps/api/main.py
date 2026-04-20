@@ -196,6 +196,12 @@ if settings.cors_allowed_origins == ["*"]:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_allowed_origins,
+    # Methods intentionally limited to GET + POST. The /v1/admin/* surface
+    # uses PATCH but is server-only (operator tooling, curl/terraform) and
+    # is not designed to be reachable from browser clients — omitting PATCH
+    # here is defense-in-depth that blocks any future browser-driven admin
+    # UI from bypassing the server-only boundary. Extend deliberately, not
+    # reflexively, if that constraint ever needs to change.
     allow_methods=["GET", "POST"],
     # Client sends Content-Type + X-API-Key + optional X-Request-ID.
     allow_headers=["Content-Type", "X-API-Key", "X-Request-ID"],

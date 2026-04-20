@@ -34,9 +34,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db import get_db
 from errors import APIError
 from models import ApiKey, Tenant
+from rate_limit import enforce_admin_ip_rate_limit
 from settings import settings
 
-router = APIRouter(prefix="/v1/admin", tags=["admin"])
+# IP-based rate limit runs *before* the admin-key check on every route —
+# caps online brute-force of X-Admin-Key. Admin-key check is still the
+# real boundary; rate limit is defense-in-depth.
+router = APIRouter(
+    prefix="/v1/admin",
+    tags=["admin"],
+    dependencies=[Depends(enforce_admin_ip_rate_limit)],
+)
 
 
 # ─── Schemas ──────────────────────────────────────────────────────────────

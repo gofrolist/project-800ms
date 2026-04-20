@@ -35,6 +35,7 @@ from db import get_db
 from errors import APIError
 from fastapi import Depends
 from models import Session as SessionRow
+from rate_limit import enforce_webhook_ip_rate_limit
 from settings import settings
 
 logger = logging.getLogger("project-800ms.api.webhooks")
@@ -58,17 +59,22 @@ _receiver = lkapi.WebhookReceiver(
 async def livekit_webhook(
     request: Request,
     authorization: str | None = Header(default=None),
+    _: None = Depends(enforce_webhook_ip_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
+    # One generic 401 for both missing header and bad signature — don't
+    # let attackers distinguish "header not sent" from "signature bad",
+    # which would otherwise be a trivial probing primitive.
     if not authorization:
-        raise APIError(401, "unauthenticated", "Missing Authorization header")
+        logger.warning("Webhook: missing Authorization header")
+        raise APIError(401, "unauthenticated", "Webhook authentication failed")
 
     raw_body = (await request.body()).decode("utf-8")
     try:
         event = _receiver.receive(raw_body, authorization)
     except Exception as exc:  # JWT / signature / sha mismatch
         logger.warning("Webhook verification failed: %s", exc)
-        raise APIError(401, "unauthenticated", "Invalid webhook signature") from exc
+        raise APIError(401, "unauthenticated", "Webhook authentication failed") from exc
 
     room_name = event.room.name if event.room else ""
     if not room_name:
