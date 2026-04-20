@@ -27,10 +27,13 @@ tuning outcome gets committed to `services/agent/eval/results/`.
 from __future__ import annotations
 
 import asyncio
+import os
+import tempfile
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
 import numpy as np
+import soundfile as sf
 from loguru import logger
 from pipecat.frames.frames import ErrorFrame, TranscriptionFrame
 from pipecat.services.stt_service import SegmentedSTTService
@@ -107,10 +110,10 @@ class GigaAMSTTService(SegmentedSTTService):
 
         await self.start_processing_metrics()
         try:
-            # int16 PCM → float32 [-1.0, 1.0], same normalisation as the
-            # Whisper wrap. GigaAM's transcribe() accepts float32 np arrays.
-            audio_float = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
-            duration = len(audio_float) / _SAMPLE_RATE
+            # LiveKit + Pipecat upstream give us 16 kHz mono int16 PCM —
+            # 2 bytes per sample, no header.
+            sample_count = len(audio) // 2
+            duration = sample_count / _SAMPLE_RATE
 
             # Filter 1 — duration gate. Whisper's filter drops short segments
             # via no_speech_prob; we approximate with a hard duration floor.
@@ -122,12 +125,27 @@ class GigaAMSTTService(SegmentedSTTService):
                 )
                 return
 
+            # GigaAM's transcribe() only accepts a file path — it shells out
+            # to ffmpeg for decode. Write the incoming int16 PCM to a temp
+            # WAV and pass the path. Overhead is ~1-2ms for the write plus
+            # ~5-10ms for gigaam's internal ffmpeg subprocess. Acceptable
+            # given we're comparing against faster-whisper's GPU path.
+            fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="gigaam-stt-")
+            os.close(fd)
             try:
-                result = await asyncio.to_thread(self._loaded_model.transcribe, audio_float)
-            except Exception as exc:
-                logger.exception("GigaAM decode failed")
-                yield ErrorFrame(f"GigaAM decode failed: {exc}")
-                return
+                audio_int16 = np.frombuffer(audio, dtype=np.int16)
+                sf.write(tmp_path, audio_int16, _SAMPLE_RATE, subtype="PCM_16")
+                try:
+                    result = await asyncio.to_thread(self._loaded_model.transcribe, tmp_path)
+                except Exception as exc:
+                    logger.exception("GigaAM decode failed")
+                    yield ErrorFrame(f"GigaAM decode failed: {exc}")
+                    return
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
             # gigaam's transcribe() returns either a plain string or an
             # object with `.text`; normalise defensively since the library
