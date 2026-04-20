@@ -111,7 +111,11 @@ class GigaAMSTTService(SegmentedSTTService):
 
     async def run_stt(self, audio: bytes) -> AsyncGenerator[ErrorFrame | TranscriptionFrame, None]:
         if self._loaded_model is None:
-            yield ErrorFrame("GigaAM model not available")
+            # Shouldn't happen in prod — main.py preloads and injects the
+            # singleton. Log the internal cause, emit a generic message to
+            # the pipeline so client-visible errors don't disclose the stack.
+            logger.error("GigaAM model not bound — preload/injection missing")
+            yield ErrorFrame("STT unavailable")
             return
 
         await self.start_processing_metrics()
@@ -143,9 +147,13 @@ class GigaAMSTTService(SegmentedSTTService):
                 sf.write(tmp_path, audio_int16, _SAMPLE_RATE, subtype="PCM_16")
                 try:
                     result = await asyncio.to_thread(self._loaded_model.transcribe, tmp_path)
-                except Exception as exc:
+                except Exception:
+                    # Keep exception detail in server logs only — the
+                    # ErrorFrame can reach the LiveKit client and we don't
+                    # want internal paths or gigaam internals leaking into
+                    # a user-visible error surface.
                     logger.exception("GigaAM decode failed")
-                    yield ErrorFrame(f"GigaAM decode failed: {exc}")
+                    yield ErrorFrame("STT decode failed")
                     return
             finally:
                 try:

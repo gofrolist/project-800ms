@@ -153,7 +153,9 @@ class TestRunStt:
 
         assert len(frames) == 1
         assert isinstance(frames[0], ErrorFrame)
-        assert "CUDA OOM" in frames[0].error
+        # Exception detail (CUDA OOM, internal paths, gigaam internals) is
+        # redacted from the client-facing ErrorFrame and kept to server logs.
+        assert frames[0].error == "STT decode failed"
 
     def test_model_not_loaded_yields_error_frame(self):
         from pipecat.frames.frames import ErrorFrame
@@ -167,7 +169,8 @@ class TestRunStt:
 
         assert len(frames) == 1
         assert isinstance(frames[0], ErrorFrame)
-        assert "not available" in frames[0].error
+        # Generic client-facing message — exception detail lives in server logs.
+        assert "STT unavailable" in frames[0].error
 
     def test_normalizes_result_with_text_attribute(self):
         """Some gigaam return shapes expose `.text`; verify we unwrap."""
