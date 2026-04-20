@@ -21,6 +21,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.12 python3.12-venv \
         ca-certificates \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.4 /uv /uvx /usr/local/bin/
@@ -76,5 +77,19 @@ COPY --from=builder --chown=appuser:appuser /opt/venv /opt/venv
 COPY --from=builder --chown=appuser:appuser /app /app
 
 USER appuser
+
+# Bake GigaAM-v3 weights into the image so first-run latency doesn't
+# contaminate the A/B experiment (origin: STT A/B plan, Unit 1). This
+# adds ~1 GB to the image layer. The `gigaam` package's `load_model`
+# fetches weights from HF on first call; pre-fetching here materializes
+# them into HF_HOME (=/home/appuser/.cache/huggingface) at build time so
+# runtime starts cold-cache-free.
+#
+# This runs AFTER the USER appuser switch so the cache dir ownership is
+# correct and the downloaded files are readable without a chown pass.
+# The `python -c` invocation explicitly loads the v3 CTC checkpoint;
+# adjust the model name if the experiment moves to the RNNT variant.
+RUN python -c "import gigaam; gigaam.load_model('v3_ctc')" \
+    && echo "GigaAM-v3 weights baked into image"
 
 CMD ["python", "main.py"]

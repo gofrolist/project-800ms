@@ -22,7 +22,7 @@ from pipecat.frames.frames import InterruptionTaskFrame, TTSSpeakFrame
 from pipecat.pipeline.runner import PipelineRunner
 
 from env import MissingEnvError, require_env
-from models import get_whisper, load_whisper
+from models import get_gigaam, get_whisper, load_gigaam, load_whisper
 from overrides import PerSessionOverrides, resolve_greeting
 from pipeline import AgentConfig, build_task
 
@@ -81,7 +81,12 @@ async def _run_pipeline(room: str, overrides: PerSessionOverrides) -> None:
             **_base_config,
         )
 
-        task, transport = build_task(cfg, whisper_model=get_whisper(), overrides=overrides)
+        task, transport = build_task(
+            cfg,
+            whisper_model=get_whisper(),
+            gigaam_model=get_gigaam(),
+            overrides=overrides,
+        )
         greeting = resolve_greeting(overrides.persona, overrides.effective_language)
 
         @transport.event_handler("on_first_participant_joined")
@@ -139,12 +144,19 @@ def main() -> None:
         _api_key = require_env("LIVEKIT_API_KEY")
         _api_secret = require_env("LIVEKIT_API_SECRET")
 
+        stt_stack = os.environ.get("STT_STACK", "gigaam").lower()
+        if stt_stack not in {"gigaam", "whisper"}:
+            raise MissingEnvError(
+                f"STT_STACK={stt_stack!r} invalid; expected 'gigaam' or 'whisper'"
+            )
+
         _base_config = {
             "vllm_base_url": require_env("VLLM_BASE_URL"),
             "vllm_model": require_env("VLLM_MODEL", "qwen-7b"),
             "tts_voice": require_env("TTS_VOICE", "ru_RU-denis-medium"),
             "vllm_api_key": require_env("VLLM_API_KEY", "not-used"),
             "piper_voices_dir": Path(require_env("PIPER_VOICES_DIR", "/home/appuser/.cache/piper")),
+            "stt_stack": stt_stack,
             # Optional transcript persistence. Both must be set (or both
             # left empty — require_env with "" default accepts unset as
             # empty rather than raising).
@@ -155,8 +167,19 @@ def main() -> None:
         logger.error(str(exc))
         sys.exit(2)
 
-    # Pre-load heavy GPU/CPU models so the first dispatch is fast.
+    # Pre-load both STT models at startup. GigaAM is the default (see
+    # docs/experiments/2026-04-19-stt-ab/phase-a-results.md); Whisper stays
+    # loaded so flipping STT_STACK=whisper on restart is zero-latency
+    # rather than paying the 25s Whisper load at first dispatch. Hard-fail
+    # on either load — a half-loaded agent is worse than a down agent
+    # because the STT_STACK env toggle would silently not work.
     load_whisper()
+    try:
+        load_gigaam()
+    except Exception:  # noqa: BLE001 — intentional hard-fail at startup
+        logger.exception("GigaAM pre-load failed — refusing to start agent")
+        sys.exit(3)
+    logger.info("STT stack: {stack}", stack=stt_stack)
 
     app = web.Application()
     app.router.add_post("/dispatch", handle_dispatch)
