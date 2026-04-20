@@ -23,6 +23,7 @@ request consumes one token; if none are available we return 429.
 
 from __future__ import annotations
 
+import ipaddress
 import time
 from dataclasses import dataclass
 from threading import Lock
@@ -34,13 +35,46 @@ from slowapi.util import get_remote_address
 
 from auth import TenantIdentity, enforce_tenant_origin
 from errors import APIError
+from settings import settings
+
+
+def _is_trusted_proxy(client_host: str) -> bool:
+    """True when the direct TCP peer sits inside a configured proxy CIDR.
+
+    Only when this is true do we trust X-Forwarded-For. This replaces a
+    previous `startswith("172.")` heuristic which matched the entire
+    172.0.0.0/8 block (not just RFC1918 172.16.0.0/12) and, more
+    importantly, was a string prefix check rather than a real network
+    membership test. Returns False on bad input so no exception reaches
+    a request handler — rate limiting continues to work keyed on the
+    peer address instead.
+    """
+    if not client_host:
+        return False
+    try:
+        client_ip = ipaddress.ip_address(client_host)
+    except ValueError:
+        return False
+    for cidr in settings.trusted_proxy_cidrs:
+        try:
+            if client_ip in ipaddress.ip_network(cidr, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _real_ip(request: Request) -> str:
-    """Extract the real client IP when behind Caddy (matches legacy behavior)."""
+    """Extract the real client IP when behind a trusted reverse proxy.
+
+    X-Forwarded-For is honoured only when the TCP peer's address falls
+    inside settings.trusted_proxy_cidrs. In every other case we key on
+    the peer address directly — preventing a Docker-network attacker
+    from rotating XFF to unlock per-request IP-keyed buckets.
+    """
     xff = request.headers.get("X-Forwarded-For")
     client_host = request.client.host if request.client else ""
-    if xff and client_host.startswith("172."):
+    if xff and _is_trusted_proxy(client_host):
         return xff.split(",")[0].strip()
     return get_remote_address(request)
 
@@ -103,28 +137,33 @@ class _TokenBucket:
         )
 
 
-# Buckets live in a TTL cache so tenants we haven't seen in a while get
-# garbage-collected. 10 min TTL = idle tenants lose their bucket state
-# (they'll just start full again on the next request, which is fine).
-_buckets: TTLCache[str, _TokenBucket] = TTLCache(maxsize=4096, ttl=600)
+# Two separate caches so an unauth-IP flood can't LRU-evict authenticated
+# tenant rate-limit state. The tenant cache is sized for the expected max
+# live tenants on a single-box deploy; the IP cache is larger because
+# webhook / admin traffic legitimately spans many distinct IPs and we
+# don't want distinct-IP churn to evict still-active buckets. Keeping
+# both under _buckets_lock for test teardown simplicity.
+_tenant_buckets: TTLCache[str, _TokenBucket] = TTLCache(maxsize=4096, ttl=600)
+_ip_buckets: TTLCache[str, _TokenBucket] = TTLCache(maxsize=32768, ttl=600)
 _buckets_lock = Lock()
 
 
-def _get_bucket(tenant_id: str, rate_per_minute: int) -> _TokenBucket:
-    """Fetch or create a bucket, resetting capacity if the tenant's rate
-    changed since last request."""
+def _get_bucket(cache: TTLCache[str, _TokenBucket], key: str, rate_per_minute: int) -> _TokenBucket:
+    """Fetch or create a bucket in the given cache, resetting capacity if
+    the caller-configured rate changed since last request."""
     with _buckets_lock:
-        bucket = _buckets.get(tenant_id)
+        bucket = cache.get(key)
         if bucket is None or bucket.capacity != rate_per_minute:
             bucket = _TokenBucket.for_rate(rate_per_minute)
-            _buckets[tenant_id] = bucket
+            cache[key] = bucket
         return bucket
 
 
 def _reset_buckets_for_tests() -> None:
     """Tests only — drop all cached buckets so rate-limit tests start fresh."""
     with _buckets_lock:
-        _buckets.clear()
+        _tenant_buckets.clear()
+        _ip_buckets.clear()
 
 
 async def enforce_tenant_rate_limit(
@@ -139,7 +178,7 @@ async def enforce_tenant_rate_limit(
     Raises:
         APIError(429) — bucket empty for this tenant.
     """
-    bucket = _get_bucket(identity.tenant_id, identity.rate_limit_per_minute)
+    bucket = _get_bucket(_tenant_buckets, identity.tenant_id, identity.rate_limit_per_minute)
     if not bucket.consume():
         raise APIError(
             429,
@@ -153,12 +192,10 @@ async def enforce_tenant_rate_limit(
 #
 # Buckets keyed on IP for routes that don't carry a tenant identity.
 # Defense-in-depth: even a constant-time key check can be brute-forced
-# online if nothing caps the request rate. These limits are generous
-# enough not to affect legitimate traffic but tight enough to make
-# sustained probing useless.
-
-_ADMIN_RATE_PER_MINUTE = 60  # human operator pace; brute-force still infeasible vs 256-bit key
-_WEBHOOK_RATE_PER_MINUTE = 1000  # well above real LiveKit event rates per source IP
+# online if nothing caps the request rate. Limits are tunable via
+# settings.admin_ip_rate_per_minute / settings.webhook_ip_rate_per_minute
+# so ops can widen them for bulk automation (Terraform, CI) without
+# touching code.
 
 
 async def enforce_admin_ip_rate_limit(request: Request) -> None:
@@ -166,11 +203,17 @@ async def enforce_admin_ip_rate_limit(request: Request) -> None:
 
     Runs *before* the admin-key check, so an attacker spraying bad keys
     burns their rate budget without ever reaching `secrets.compare_digest`.
-    60/minute is far above what a human operator needs and well below
-    anything useful for online key enumeration against a 256-bit secret.
+
+    Short-circuits when `settings.admin_api_key` is empty — the admin
+    surface is already disabled in that case (every route returns 503
+    via `_require_admin`), so consuming an IP-bucket token would only
+    punish legitimate operators on a shared egress IP and let attackers
+    thrash the cache by probing a disabled endpoint.
     """
+    if not settings.admin_api_key:
+        return
     ip = _real_ip(request)
-    bucket = _get_bucket(f"admin-ip:{ip}", _ADMIN_RATE_PER_MINUTE)
+    bucket = _get_bucket(_ip_buckets, f"admin-ip:{ip}", settings.admin_ip_rate_per_minute)
     if not bucket.consume():
         raise APIError(429, "rate_limited", "Rate limit exceeded")
 
@@ -184,6 +227,6 @@ async def enforce_webhook_ip_rate_limit(request: Request) -> None:
     events/min even under churn.
     """
     ip = _real_ip(request)
-    bucket = _get_bucket(f"webhook-ip:{ip}", _WEBHOOK_RATE_PER_MINUTE)
+    bucket = _get_bucket(_ip_buckets, f"webhook-ip:{ip}", settings.webhook_ip_rate_per_minute)
     if not bucket.consume():
         raise APIError(429, "rate_limited", "Rate limit exceeded")

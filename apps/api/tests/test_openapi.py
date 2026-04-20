@@ -62,6 +62,19 @@ class TestOpenAPISpec:
         tag_names = {t["name"] for t in spec.get("tags", [])}
         assert {"sessions", "system"}.issubset(tag_names)
 
+    def test_transcript_list_flags_text_as_untrusted_ugc(self, client: TestClient) -> None:
+        """The GET /v1/sessions/{room}/transcripts description must tell
+        consumers that `text` is raw user-generated content that needs
+        HTML-escaping before rendering. This is the mitigation for XSS
+        in downstream dashboards — the server returns verbatim text."""
+        spec = client.get("/openapi.json").json()
+        describe = spec["paths"]["/v1/sessions/{room}/transcripts"]["get"]
+        description = describe.get("description", "")
+        # Pin the security-relevant phrases, not the exact prose.
+        assert "user-generated" in description.lower() or "ugc" in description.lower()
+        assert "html" in description.lower()
+        assert "sanitiz" in description.lower() or "escape" in description.lower()
+
 
 class TestDocsPages:
     def test_swagger_served(self, client: TestClient) -> None:

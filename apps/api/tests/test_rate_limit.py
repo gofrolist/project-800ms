@@ -14,6 +14,7 @@ from db import get_db
 from main import app
 from models import ApiKey, Tenant
 from rate_limit import _reset_buckets_for_tests
+from settings import settings
 
 pytestmark = pytest.mark.slow
 
@@ -177,3 +178,134 @@ def test_token_bucket_never_exceeds_capacity():
     # Consuming once triggers refill; 10 tokens then drop to 9.
     assert b.consume()
     assert b.tokens <= 10.0
+
+
+# ─── IP-based limits (admin + webhook) ─────────────────────────────────────
+
+
+@pytest.fixture
+def enable_admin():
+    """Temporarily configure an admin key so /v1/admin/* returns 401 (not 503)
+    on wrong-key requests — needed for tests that probe auth ordering."""
+    original = settings.admin_api_key
+    object.__setattr__(settings, "admin_api_key", "admin-test-" + "x" * 32)
+    yield
+    object.__setattr__(settings, "admin_api_key", original)
+
+
+async def test_admin_ip_rate_limit_fires_before_admin_key_check(client, enable_admin):
+    """Bad X-Admin-Key requests still consume the admin-ip bucket.
+
+    The router-level `enforce_admin_ip_rate_limit` must run before
+    `_require_admin`, otherwise an attacker can brute-force the admin key
+    at unlimited rate. Proof: send 60 requests with a wrong admin key
+    (each returns 401 after the bucket check consumes a token), then the
+    61st request from the same IP returns 429 — proving the rate limit is
+    still running even though auth is failing.
+    """
+    # Sanity: test reasons about a 60/min ceiling — if ops widened it,
+    # the 61st-request-is-429 assertion would flake. Pin it to the
+    # tested value.
+    original_rate = settings.admin_ip_rate_per_minute
+    object.__setattr__(settings, "admin_ip_rate_per_minute", 60)
+    _reset_buckets_for_tests()
+    try:
+        headers = {"X-Admin-Key": "not-the-real-key"}
+        for i in range(60):
+            r = await client.get("/v1/admin", headers=headers)
+            assert r.status_code == 401, (
+                f"request {i + 1}: expected 401 unauth, got {r.status_code}"
+            )
+
+        r = await client.get("/v1/admin", headers=headers)
+        assert r.status_code == 429
+        assert r.json()["error"]["code"] == "rate_limited"
+    finally:
+        object.__setattr__(settings, "admin_ip_rate_per_minute", original_rate)
+
+
+async def test_admin_ip_rate_limit_isolated_per_ip(client, enable_admin):
+    """Two distinct X-Forwarded-For values must get independent buckets.
+
+    Exhaust IP #1's budget via XFF, then send one request with XFF #2 —
+    it must not inherit IP #1's exhausted state. Requires overriding
+    `trusted_proxy_cidrs` to include the ASGI test client's loopback
+    peer so `_real_ip` actually honours the XFF header in the test.
+    """
+    original_cidrs = settings.trusted_proxy_cidrs
+    original_rate = settings.admin_ip_rate_per_minute
+    object.__setattr__(settings, "trusted_proxy_cidrs", ["127.0.0.0/8"])
+    object.__setattr__(settings, "admin_ip_rate_per_minute", 60)
+    _reset_buckets_for_tests()
+    try:
+        headers_a = {"X-Admin-Key": "not-the-real-key", "X-Forwarded-For": "1.2.3.4"}
+        headers_b = {"X-Admin-Key": "not-the-real-key", "X-Forwarded-For": "5.6.7.8"}
+
+        for _ in range(60):
+            r = await client.get("/v1/admin", headers=headers_a)
+            assert r.status_code == 401
+        r = await client.get("/v1/admin", headers=headers_a)
+        assert r.status_code == 429  # IP #1 exhausted
+
+        # IP #2 must still be able to hit the endpoint.
+        r = await client.get("/v1/admin", headers=headers_b)
+        assert r.status_code == 401  # auth fails, but NOT 429
+    finally:
+        object.__setattr__(settings, "trusted_proxy_cidrs", original_cidrs)
+        object.__setattr__(settings, "admin_ip_rate_per_minute", original_rate)
+
+
+async def test_webhook_ip_rate_limit_enforced(client):
+    """Webhook route respects the IP-based 429 ceiling.
+
+    Tune the webhook rate down to 5 via settings so we don't have to
+    send 1001 requests. Bucket capacity is re-read in `_get_bucket` on
+    each call, so a reset picks up the new cap immediately.
+    """
+    original = settings.webhook_ip_rate_per_minute
+    object.__setattr__(settings, "webhook_ip_rate_per_minute", 5)
+    _reset_buckets_for_tests()
+    try:
+        # Every call returns 401 (no valid auth) — but the rate-limit dep
+        # runs first and consumes a token. After 5 attempts the bucket is
+        # empty and the 6th call returns 429.
+        for i in range(5):
+            r = await client.post("/v1/livekit-webhook", content="{}")
+            assert r.status_code == 401, f"request {i + 1}: got {r.status_code}"
+
+        r = await client.post("/v1/livekit-webhook", content="{}")
+        assert r.status_code == 429
+        assert r.json()["error"]["code"] == "rate_limited"
+    finally:
+        object.__setattr__(settings, "webhook_ip_rate_per_minute", original)
+
+
+async def test_429_response_includes_retry_after_header(client):
+    """Programmatic clients key their backoff on Retry-After. Pin it so a
+    future refactor of the error handler doesn't drop the header."""
+    original = settings.webhook_ip_rate_per_minute
+    object.__setattr__(settings, "webhook_ip_rate_per_minute", 1)
+    _reset_buckets_for_tests()
+    try:
+        # First call consumes the only token (still fails auth at 401).
+        await client.post("/v1/livekit-webhook", content="{}")
+        # Second call is 429 and must carry Retry-After.
+        r = await client.post("/v1/livekit-webhook", content="{}")
+        assert r.status_code == 429
+        assert r.headers.get("Retry-After") == "60"
+    finally:
+        object.__setattr__(settings, "webhook_ip_rate_per_minute", original)
+
+
+async def test_admin_ip_rate_limit_skipped_when_admin_disabled(client):
+    """When settings.admin_api_key is empty, the admin surface is 503
+    and the IP rate limit must not consume tokens. Prevents probing a
+    disabled admin from evicting tenant buckets or punishing operators
+    on a shared egress with 429 instead of the diagnostic 503."""
+    # No `enable_admin` fixture here — admin_api_key stays empty.
+    _reset_buckets_for_tests()
+    # Send many more than the 60/min ceiling would allow if the limit
+    # were active. All must return 503, none 429.
+    for i in range(75):
+        r = await client.get("/v1/admin", headers={"X-Admin-Key": "whatever"})
+        assert r.status_code == 503, f"request {i + 1}: got {r.status_code}"

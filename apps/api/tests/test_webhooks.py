@@ -17,6 +17,7 @@ from sqlalchemy import select
 from db import get_db
 from main import app
 from models import Session as SessionRow
+from rate_limit import _reset_buckets_for_tests
 from settings import settings
 
 pytestmark = pytest.mark.slow
@@ -28,6 +29,7 @@ def override_db(db_session):
         yield db_session
 
     app.dependency_overrides[get_db] = _override_get_db
+    _reset_buckets_for_tests()
     yield
     app.dependency_overrides.clear()
 
@@ -93,6 +95,29 @@ async def test_missing_auth_returns_401(client):
     r = await client.post("/v1/livekit-webhook", content="{}")
     assert r.status_code == 401
     assert r.json()["error"]["code"] == "unauthenticated"
+    # Unified client-facing message — server log still distinguishes, but
+    # the wire response does not, so attackers can't probe the header
+    # handling by diffing error strings.
+    assert r.json()["error"]["message"] == "Webhook authentication failed"
+
+
+async def test_401_identical_between_missing_header_and_bad_signature(client):
+    """Both webhook 401 paths must return the same body — no probing primitive."""
+    r_missing = await client.post("/v1/livekit-webhook", content="{}")
+    r_bad_sig = await client.post(
+        "/v1/livekit-webhook",
+        content="{}",
+        headers={"Authorization": "clearly.not.a.valid.jwt"},
+    )
+    assert r_missing.status_code == 401
+    assert r_bad_sig.status_code == 401
+    # Fields that depend on response ordering (timestamp, request_id) aren't
+    # part of the API contract here — code + message are what the client
+    # sees and what an attacker could use to distinguish branches.
+    err_missing = r_missing.json()["error"]
+    err_bad_sig = r_bad_sig.json()["error"]
+    assert err_missing["code"] == err_bad_sig["code"] == "unauthenticated"
+    assert err_missing["message"] == err_bad_sig["message"] == "Webhook authentication failed"
 
 
 async def test_wrong_signature_rejected(client, seed_tenant, db_session):

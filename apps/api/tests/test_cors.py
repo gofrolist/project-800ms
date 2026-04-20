@@ -162,3 +162,31 @@ async def test_origin_check_runs_after_auth(client, seed_tenant):
     )
     assert r.status_code == 401
     assert r.json()["error"]["code"] == "unauthenticated"
+
+
+# ─── CORS method allowlist ─────────────────────────────────────────────────
+
+
+async def test_preflight_omits_patch_from_allowed_methods(client):
+    """Browser preflight for PATCH on /v1/admin/* must not be advertised.
+
+    The CORS middleware is configured with `allow_methods=["GET", "POST"]`
+    as intentional defense-in-depth: /v1/admin/* uses PATCH and is meant
+    to be server-only (curl, Terraform, CI), never reachable from a
+    browser. This test pins that contract so a future contributor who
+    reflexively adds PATCH to allow_methods gets a failing build.
+    """
+    r = await client.options(
+        "/v1/admin/tenants/some-slug",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "PATCH",
+            "Access-Control-Request-Headers": "X-Admin-Key",
+        },
+    )
+    allowed = r.headers.get("Access-Control-Allow-Methods", "")
+    methods = [m.strip().upper() for m in allowed.split(",") if m.strip()]
+    assert "PATCH" not in methods, (
+        f"PATCH leaked into Access-Control-Allow-Methods — admin surface must stay "
+        f"server-only. Got: {allowed!r}"
+    )

@@ -63,5 +63,30 @@ class Settings(BaseSettings):
     # reasonable tradeoff for a single-replica API.
     tenant_cache_ttl_seconds: int = 60
 
+    # CIDR ranges whose TCP peer we trust to pass a real-client IP via
+    # X-Forwarded-For. Default is RFC1918 172.16.0.0/12 — the Docker
+    # bridge range in our compose deploy, where Caddy is the only thing
+    # calling the API container. If the deploy topology changes (non-
+    # Docker proxy, ALB, etc.) override this with the proxy's actual
+    # subnet. An empty list disables XFF trust entirely — _real_ip will
+    # always fall back to the TCP peer address, which is safe when the
+    # API is reached directly without a proxy.
+    trusted_proxy_cidrs: list[str] = ["172.16.0.0/12"]
+
+    # IP-based rate limit for /v1/admin/* (defense-in-depth against online
+    # brute-force of admin_api_key). 60/minute is generous for a human
+    # operator and still infeasible against a 256-bit key. Raise for ops
+    # workflows that burst from one egress (Terraform for_each, CI seeding,
+    # bulk key rotation) — e.g. 300 or 600. Values are advisory; the real
+    # boundary remains secrets.compare_digest on the key itself.
+    admin_ip_rate_per_minute: int = 60
+
+    # IP-based rate limit for /v1/livekit-webhook. Guards against JWT-flood
+    # CPU burn on invalid signatures. 1000/minute is well above normal
+    # LiveKit event rates from a single egress IP; raise if your deploy
+    # runs many concurrent rooms behind one LiveKit instance and starts
+    # seeing legitimate 429s on the webhook path.
+    webhook_ip_rate_per_minute: int = 1000
+
 
 settings = Settings()  # type: ignore[call-arg]

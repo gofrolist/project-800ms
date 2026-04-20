@@ -2,13 +2,18 @@
 
 Gated by a master `X-Admin-Key` that is NOT a tenant key. There is only
 one admin key per process (read from ADMIN_API_KEY env); when it's
-empty, the whole /v1/admin/* surface returns 404 so operators who
-prefer out-of-band provisioning can fully disable it.
+empty, every route returns 503 so operators who prefer out-of-band
+provisioning can disable the surface.
 
 Returned tenant + api-key shapes deliberately match the internal ORM
-fields 1:1 so the surface stays trivial to reason about. Rate limiting
-is not applied here — this endpoint is called by an internal operator,
-not by game clients.
+fields 1:1 so the surface stays trivial to reason about.
+
+An IP-based rate limit (`enforce_admin_ip_rate_limit`) runs on every
+route as a router-level dependency — defense-in-depth against online
+brute-force of `ADMIN_API_KEY`. See `rate_limit.py` and the
+`ADMIN_IP_RATE_PER_MINUTE` setting. The cap is generous enough for a
+human operator; raise it via env if you run scripted admin flows from
+a shared egress IP.
 
 Key issuance notes:
     - The raw key is generated server-side (tk_<32-byte hex>) so clients

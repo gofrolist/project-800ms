@@ -79,9 +79,17 @@ def _envelope(code: str, message: str, extra: dict[str, Any] | None = None) -> d
 
 async def api_error_handler(_request: Request, exc: Exception) -> JSONResponse:
     assert isinstance(exc, APIError)
+    headers: dict[str, str] | None = None
+    if exc.code == "rate_limited":
+        # Tell programmatic clients (Terraform providers, CI runners, LiveKit
+        # webhook retry) when to try again. 60s is a conservative upper bound —
+        # a bucket refills in <= 60s for any configured rate, so a client that
+        # waits this long is guaranteed at least one token back.
+        headers = {"Retry-After": "60"}
     return JSONResponse(
         status_code=exc.status_code,
         content=_envelope(exc.code, exc.detail, exc.extra),
+        headers=headers,
     )
 
 

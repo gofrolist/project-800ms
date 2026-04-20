@@ -191,6 +191,10 @@ services:
       # Master key for /v1/admin/* endpoints. Empty disables the admin
       # surface entirely (403 -> 503 agent_unavailable on first call).
       - ADMIN_API_KEY=${ADMIN_API_KEY:-}
+      # IP-based rate limits on unauth surfaces (defense-in-depth).
+      # See infra/.env.example for tuning guidance.
+      - ADMIN_IP_RATE_PER_MINUTE=${ADMIN_IP_RATE_PER_MINUTE:-60}
+      - WEBHOOK_IP_RATE_PER_MINUTE=${WEBHOOK_IP_RATE_PER_MINUTE:-1000}
     ports:
       # Public — browsers POST /v1/sessions here. Rate-limited at the app
       # layer (slowapi).

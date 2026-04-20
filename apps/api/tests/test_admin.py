@@ -12,6 +12,7 @@ from auth import _clear_cache_for_tests, hash_key
 from db import get_db
 from main import app
 from models import ApiKey, Tenant
+from rate_limit import _reset_buckets_for_tests
 from settings import settings
 
 pytestmark = pytest.mark.slow
@@ -35,6 +36,7 @@ def override_db(db_session):
 
     app.dependency_overrides[get_db] = _override_get_db
     _clear_cache_for_tests()
+    _reset_buckets_for_tests()
     yield
     app.dependency_overrides.clear()
 
