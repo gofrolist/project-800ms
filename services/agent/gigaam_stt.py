@@ -80,20 +80,26 @@ class GigaAMSTTService(SegmentedSTTService):
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self._shared_model = model
         self._gigaam_settings = settings or GigaAMSettings()
-        self._loaded_model: object | None = None
+        # Bind the injected model eagerly so the service is usable the
+        # moment it's constructed. Pipecat 0.0.108's SegmentedSTTService
+        # does not call _load() on this path — deferring to _load() left
+        # _loaded_model=None in prod and every voice segment errored
+        # with "GigaAM model not available" (observed on the first live
+        # deploy of the gigaam stack). Keep _load() around only as a
+        # lazy fallback for callers that construct the service without
+        # preloading a model.
+        self._loaded_model: object | None = model
 
     async def _load(self):
-        """Bind the pre-loaded model, or lazy-load if one wasn't injected.
+        """Lazy-load a GigaAM model when one wasn't injected.
 
-        Tests inject a mock via `model=...`; prod wires via the shared
-        singleton from `models.get_gigaam()`. The lazy fallback path
-        exists as a safety net — in practice the agent's startup always
-        populates the singleton before the first pipeline builds.
+        Not reached in prod — main.py's load_gigaam() + get_gigaam()
+        preload and inject the shared singleton before the first
+        pipeline builds. Kept as a safety net for non-preloading
+        callers and for parity with FilteredWhisperSTTService.
         """
-        if self._shared_model is not None:
-            self._loaded_model = self._shared_model
+        if self._loaded_model is not None:
             return
         # Local import matches the pattern in models.py — avoids hard
         # import of gigaam on non-GPU environments.
