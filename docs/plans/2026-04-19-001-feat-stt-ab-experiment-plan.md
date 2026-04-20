@@ -427,7 +427,7 @@ sequenceDiagram
 **Patterns to follow:**
 - `apps/api/routes/sessions.py::get_session` — tenant-scoped lookup with 404-for-both-"not-found"-and-"cross-tenant" pattern.
 - `apps/api/routes/transcripts.py` — router structure, response schema shape, rate-limit dep wiring.
-- `apps/api/auth.py::enforce_tenant_rate_limit` — rate-limit dep that all `/v1/*` routes use.
+- `apps/api/rate_limit.py::enforce_tenant_rate_limit` — rate-limit dep that all `/v1/*` routes use.
 
 **Test scenarios:**
 - Happy path: POST with valid rating persists a row; response includes the rating id + session_id + created_at.

@@ -70,7 +70,7 @@ pre-commit run --all-files  # ruff, gitleaks, file hygiene, actionlint
 - **Whisper hallucination filter**: `stt_filter.py` drops segments by statistical properties (no_speech_prob, avg_logprob, compression_ratio) instead of a blocklist.
 - **Language routing**: `lang.py` detects CJK characters to reject unsupported scripts; everything else → Russian (single-language MVP).
 - **Transcript forwarding**: `transcript.py` debounces user STT fragments (1s) before sending to the web UI via LiveKit data channel. Assistant responses are buffered between LLMFullResponseStart/End frames.
-- **Rate limiting**: slowapi on API endpoints. When behind Caddy, `_real_ip()` reads X-Forwarded-For from trusted Docker bridge IPs only.
+- **Rate limiting**: token-bucket limiter in `apps/api/rate_limit.py` with separate caches for tenant (`_tenant_buckets`) and IP (`_ip_buckets`) keys. `enforce_tenant_rate_limit` protects authenticated `/v1/*` routes; `enforce_admin_ip_rate_limit` and `enforce_webhook_ip_rate_limit` protect the unauth admin and webhook surfaces. `_real_ip()` trusts X-Forwarded-For only when the TCP peer falls inside `settings.trusted_proxy_cidrs` (default RFC1918 172.16.0.0/12, configurable via env).
 - **CORS**: wildcard in dev, domain-derived in prod (set via `CORS_ALLOWED_ORIGINS`).
 - **Secrets flow (prod)**: Terraform → SSM Parameter Store → instance IAM role → `user_data.sh` fetches at boot → writes `infra/.env`.
 
@@ -86,3 +86,7 @@ pre-commit run --all-files  # ruff, gitleaks, file hygiene, actionlint
 - Python: type hints on all signatures, Pydantic for settings/validation, loguru with lazy `{name}` placeholders (not f-strings) for logger calls.
 - Docker images: multi-stage, non-root (UID 1001 `appuser`), BuildKit cache mounts for uv/pip.
 - Env vars validated at startup — `require_env()` in agent, Pydantic `Field(min_length=...)` in API settings.
+
+## Documented Solutions
+
+`docs/solutions/` — solutions to past problems (security issues, build errors, runtime issues, best practices), organized by category with YAML frontmatter (`title`, `module`, `tags`, `problem_type`). Relevant when implementing or debugging in documented areas.
