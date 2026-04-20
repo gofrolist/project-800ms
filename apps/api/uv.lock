@@ -624,7 +624,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = "==2.13.1" },
     { name = "python-ulid", specifier = "==3.0.0" },
     { name = "slowapi", specifier = "==0.1.9" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.40" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.49" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.44.0" },
 ]
 
