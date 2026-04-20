@@ -173,7 +173,12 @@ class GigaAMSTTService(SegmentedSTTService):
                 )
                 return
 
-            await self._handle_transcription(text, True, self._gigaam_settings.language)
+            # FilteredWhisperSTTService calls self._handle_transcription() here
+            # but it inherits from WhisperSTTService which provides that helper.
+            # SegmentedSTTService (our base) does not expose it in Pipecat
+            # 0.0.108, so calling it raises AttributeError and drops the frame.
+            # The yielded TranscriptionFrame is the real data path; no helper
+            # call is needed.
             logger.debug("GigaAM transcription: [{text}]", text=text)
             yield TranscriptionFrame(
                 text,
