@@ -264,6 +264,15 @@ jobs:
   # change; the thin application image (Dockerfile) layers source on top.
   # Both images are cached via GHA; on push to main both are pushed to
   # ghcr.io/<owner>/project-800ms-agent{,-base}.
+  #
+  # The base and app run as two separate buildx builds. With the default
+  # `docker-container` driver, each buildx invocation is isolated from the
+  # local docker daemon, so a `load: true` on the base doesn't make the
+  # image visible to the subsequent app build — the app's `FROM ${BASE}`
+  # would try to resolve against a public registry and fail. We stand up a
+  # throwaway local OCI registry (the `registry` service below) as a hand-
+  # off: base is pushed to localhost:5000, the app build references it by
+  # that URL via the BASE_IMAGE build-arg.
   docker-agent:
     name: Docker build (services/agent)
     runs-on: ubuntu-latest
@@ -271,6 +280,15 @@ jobs:
     permissions:
       contents: read
       packages: write  # push to ghcr.io on main
+    services:
+      # Ephemeral registry only this job can see. Lives for the job's
+      # lifetime, no auth needed. The hostPort -> containerPort binding
+      # exposes it on the runner's network namespace; buildx reaches it via
+      # network=host below.
+      registry:
+        image: registry:3
+        ports:
+          - 5000:5000
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -286,6 +304,11 @@ jobs:
           df -h
 
       - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+        with:
+          # network=host lets the buildx builder reach localhost:5000 (the
+          # registry service). Without it, buildx runs in its own network
+          # namespace and `localhost` inside the builder ≠ the runner host.
+          driver-opts: network=host
 
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -298,32 +321,43 @@ jobs:
       # Base image carries deps only. Cache scope is "agent-base" so a miss
       # only occurs when pyproject.toml / uv.lock change; the typical PR
       # reuses the cached layers in full and finishes fast.
-      - name: Compute agent-base image tags
+      - name: Build agent-base image (CI handoff to local registry)
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        with:
+          context: services/agent
+          file: services/agent/Dockerfile.base
+          # Always push to the local registry so the subsequent app build
+          # can `FROM localhost:5000/...`. No auth required.
+          push: true
+          tags: localhost:5000/project-800ms-agent-base:ci
+          cache-from: type=gha,scope=agent-base
+          cache-to: type=gha,scope=agent-base,mode=max
+
+      # Second base build: on main only, push to GHCR for downstream
+      # consumers (compose, terraform, etc.). Reuses the GHA cache from
+      # step above — all layers should hit, so this is ~instant after the
+      # remote manifest push.
+      - name: Compute agent-base image tags (GHCR)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: meta-agent-base
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6.0.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/project-800ms-agent-base
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest
+            type=raw,value=main
             type=sha,format=short
 
-      - name: Build agent-base image
+      - name: Push agent-base image to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
           context: services/agent
           file: services/agent/Dockerfile.base
-          # Load into the local daemon so the app build can `FROM` it via
-          # the BASE_IMAGE arg without a registry round-trip. On main, also
-          # push so consumers can pin by digest.
-          load: true
-          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          tags: |
-            ${{ steps.meta-agent-base.outputs.tags }}
-            project-800ms-agent-base:ci
+          push: true
+          tags: ${{ steps.meta-agent-base.outputs.tags }}
           labels: ${{ steps.meta-agent-base.outputs.labels }}
           cache-from: type=gha,scope=agent-base
-          cache-to: type=gha,scope=agent-base,mode=max
 
       - name: Compute agent image tags
         id: meta-agent
@@ -341,7 +375,7 @@ jobs:
           context: services/agent
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           build-args: |
-            BASE_IMAGE=project-800ms-agent-base:ci
+            BASE_IMAGE=localhost:5000/project-800ms-agent-base:ci
           tags: ${{ steps.meta-agent.outputs.tags }}
           labels: ${{ steps.meta-agent.outputs.labels }}
           cache-from: type=gha,scope=agent
