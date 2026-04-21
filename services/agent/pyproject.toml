@@ -31,10 +31,22 @@ dev = [
 [tool.uv]
 # `required-environments` declares which platforms `uv lock` must be able to
 # resolve for. Linux x86_64 is the Docker target (NVIDIA CUDA base image).
-# macOS arm64 is fine for editing/typing locally but cannot run Whisper on
+# macOS arm64 is fine for editing/typing locally but cannot run GigaAM on
 # GPU; uv will still resolve macOS wheels on demand for `uv sync`.
 required-environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+# Security hardening on transitive deps.
+#   - onnx: pulled by gigaam, which pins onnx==1.19.* in its pyproject.
+#     Versions <=1.20.1 have 6 open CVEs (4 high, 2 moderate) around
+#     path traversal + hub.load() + ExternalData handling. 1.21.0 is the
+#     first clean release. `override-dependencies` bypasses gigaam's
+#     equality pin; this is safe because gigaam never actually imports
+#     onnx — it imports onnxruntime. The `onnx` entry in gigaam's
+#     pyproject is a stale declaration (verified by grepping gigaam's
+#     source for `import onnx` / `from onnx` — only onnxruntime shows up).
+override-dependencies = [
+    "onnx>=1.21.0",
 ]
 
 [tool.ruff]
