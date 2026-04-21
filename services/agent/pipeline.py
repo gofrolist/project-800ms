@@ -97,7 +97,7 @@ def build_task(
     vad_processor = VADProcessor(vad_analyzer=vad_analyzer)
 
     stt = GigaAMSTTService(
-        model=gigaam_model,
+        gigaam_model=gigaam_model,
         settings=GigaAMSettings(language=language),
     )
 

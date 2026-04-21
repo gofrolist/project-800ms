@@ -62,7 +62,7 @@ def _build_service(*, transcribe_return, settings=None):
     """
     fake_model = MagicMock(name="gigaam_model")
     fake_model.transcribe = MagicMock(return_value=transcribe_return)
-    svc = GigaAMSTTService(model=fake_model, settings=settings)
+    svc = GigaAMSTTService(gigaam_model=fake_model, settings=settings)
     svc._loaded_model = fake_model
     svc.start_processing_metrics = AsyncMock()
     svc.stop_processing_metrics = AsyncMock()

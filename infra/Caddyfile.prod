@@ -21,6 +21,15 @@
 	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
 }
 
+# Plain-HTTP loopback-only health endpoint for docker healthcheck.
+# Bound to 127.0.0.1 and not exposed in compose `ports:` — only reachable
+# from inside the container. Avoids the "wget → http://localhost → 308 →
+# TLS handshake on an uncerted hostname" chain the 80/443 listeners cause.
+http://:2020 {
+	bind 127.0.0.1
+	respond 200
+}
+
 www.{$DOMAIN} {
 	redir https://{$DOMAIN}{uri} permanent
 }

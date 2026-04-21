@@ -80,7 +80,10 @@ services:
       livekit:
         condition: service_started
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80"]
+      # Hits the loopback-only :2020 site defined in Caddyfile.prod.
+      # The public 80/443 listeners redirect HTTP → HTTPS, which fails
+      # a plain wget probe against `localhost` (no cert for that name).
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2020/"]
       interval: 30s
       timeout: 5s
       retries: 3

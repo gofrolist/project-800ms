@@ -25,6 +25,7 @@ import numpy as np
 import soundfile as sf
 from loguru import logger
 from pipecat.frames.frames import ErrorFrame, TranscriptionFrame
+from pipecat.services.settings import STTSettings
 from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.utils.time import time_now_iso8601
 
@@ -36,6 +37,15 @@ _SAMPLE_RATE = 16_000
 # Unit 3 (WER smoke harness) against the committed Russian eval set.
 _DEFAULT_MIN_DURATION_SECONDS = 0.30
 _DEFAULT_MIN_TOKEN_COUNT = 2
+
+# TTFS p99 measured via pipecat-ai/stt-benchmark on the GCP L4 host
+# (2026-04-21, 40 samples from smart-turn-data-v3.1-train, vad_stop=0.3s):
+#   p50=0.744s  p95=0.992s  p99=1.022s
+# Pipecat's built-in 1.0s fallback assumes vad_stop=0.2; our 0.3s stop
+# shifts the p99 slightly above. 1.05s absorbs the measurement with a
+# small buffer against tail-samples not covered by 40 draws. Re-measure
+# when model/hardware/VAD params change.
+_MEASURED_TTFS_P99_LATENCY = 1.05
 
 
 @dataclass
@@ -71,12 +81,28 @@ class GigaAMSTTService(SegmentedSTTService):
     def __init__(
         self,
         *,
-        model: object | None = None,
+        gigaam_model: object | None = None,
         settings: GigaAMSettings | None = None,
         **kwargs,
     ):
-        super().__init__(**kwargs)
-        self._gigaam_settings = settings or GigaAMSettings()
+        gigaam_settings = settings or GigaAMSettings()
+        # Apply the benchmarked p99 default unless the caller overrode it.
+        # Pipecat's base class hardcodes 1.0s when unset, which is calibrated
+        # for vad_stop_secs=0.2 — our pipeline uses 0.3s.
+        kwargs.setdefault("ttfs_p99_latency", _MEASURED_TTFS_P99_LATENCY)
+        # Populate Pipecat's base STTSettings with the model name + language
+        # so the framework's settings tracking has non-NOT_GIVEN values.
+        # Without this, Pipecat logs:
+        #   "STTSettings: the following fields are NOT_GIVEN: model, language"
+        # on every pipeline start.
+        super().__init__(
+            settings=STTSettings(
+                model=gigaam_settings.model_name,
+                language=gigaam_settings.language,
+            ),
+            **kwargs,
+        )
+        self._gigaam_settings = gigaam_settings
         # Bind the injected model eagerly so the service is usable the
         # moment it's constructed. Pipecat 0.0.108's SegmentedSTTService
         # does not call _load() on this path — deferring to _load() left
@@ -85,7 +111,7 @@ class GigaAMSTTService(SegmentedSTTService):
         # deploy of the gigaam stack). Keep _load() around only as a
         # lazy fallback for callers that construct the service without
         # preloading a model.
-        self._loaded_model: object | None = model
+        self._loaded_model: object | None = gigaam_model
 
     async def _load(self):
         """Lazy-load a GigaAM model when one wasn't injected.
