@@ -27,28 +27,89 @@ env:
   IMAGE_OWNER: ${{ github.repository_owner }}
 
 jobs:
+  # ─── Path-filter preflight ───────────────────────────────────────────────
+  # Detects which service folders changed so the rest of the workflow can
+  # skip no-op work. A change to the workflow file itself triggers every
+  # downstream job — that's the one place a mistake in here can hide, so
+  # we always re-run everything when ci.yml changes.
+  #
+  # Matrix jobs (lint/test) read these outputs in a per-matrix-entry gate
+  # step and short-circuit; required-check statuses stay green for both
+  # matrix entries even when only one service changed. Single-service jobs
+  # use job-level `if:` and genuinely don't spin up a runner on unrelated
+  # PRs — their required-check stays "expected" (same behaviour as the
+  # stale Pre-commit hooks check), admins merge via --admin.
+  changes:
+    name: Detect file changes
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+      agent: ${{ steps.filter.outputs.agent }}
+      web: ${{ steps.filter.outputs.web }}
+      workflow: ${{ steps.filter.outputs.workflow }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d  # v4.0.1
+        id: filter
+        with:
+          filters: |
+            api:
+              - 'apps/api/**'
+            agent:
+              - 'services/agent/**'
+            web:
+              - 'apps/web/**'
+            workflow:
+              - '.github/workflows/ci.yml'
+
   # ─── Python: lint both services ──────────────────────────────────────────
   python-lint:
     name: Lint Python (${{ matrix.service }})
     runs-on: ubuntu-latest
+    needs: changes
     strategy:
       fail-fast: false
       matrix:
         service: [apps/api, services/agent]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Gate on relevant changes
+        id: gate
+        shell: bash
+        env:
+          SERVICE: ${{ matrix.service }}
+          API_CHANGED: ${{ needs.changes.outputs.api }}
+          AGENT_CHANGED: ${{ needs.changes.outputs.agent }}
+          WORKFLOW_CHANGED: ${{ needs.changes.outputs.workflow }}
+        run: |
+          case "$SERVICE" in
+            apps/api) CHANGED="$API_CHANGED" ;;
+            services/agent) CHANGED="$AGENT_CHANGED" ;;
+            *) CHANGED=true ;;
+          esac
+          if [ "$CHANGED" = "true" ] || [ "$WORKFLOW_CHANGED" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No changes under $SERVICE or workflow — skipping lint."
+          fi
 
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           version: "0.11.4"
           enable-cache: true
           cache-dependency-glob: ${{ matrix.service }}/uv.lock
 
-      - name: Ruff check
+      - if: steps.gate.outputs.run == 'true'
+        name: Ruff check
         working-directory: ${{ matrix.service }}
         run: uvx ruff@0.13.3 check .
 
-      - name: Ruff format check
+      - if: steps.gate.outputs.run == 'true'
+        name: Ruff format check
         working-directory: ${{ matrix.service }}
         run: uvx ruff@0.13.3 format --check .
 
@@ -59,25 +120,50 @@ jobs:
   python-test:
     name: Test Python (${{ matrix.service }})
     runs-on: ubuntu-latest
-    needs: python-lint
+    needs: [python-lint, changes]
     strategy:
       fail-fast: false
       matrix:
         service: [apps/api, services/agent]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+      - name: Gate on relevant changes
+        id: gate
+        shell: bash
+        env:
+          SERVICE: ${{ matrix.service }}
+          API_CHANGED: ${{ needs.changes.outputs.api }}
+          AGENT_CHANGED: ${{ needs.changes.outputs.agent }}
+          WORKFLOW_CHANGED: ${{ needs.changes.outputs.workflow }}
+        run: |
+          case "$SERVICE" in
+            apps/api) CHANGED="$API_CHANGED" ;;
+            services/agent) CHANGED="$AGENT_CHANGED" ;;
+            *) CHANGED=true ;;
+          esac
+          if [ "$CHANGED" = "true" ] || [ "$WORKFLOW_CHANGED" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No changes under $SERVICE or workflow — skipping pytest."
+          fi
 
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - if: steps.gate.outputs.run == 'true'
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
         with:
           version: "0.11.4"
           enable-cache: true
           cache-dependency-glob: ${{ matrix.service }}/uv.lock
 
-      - name: Sync deps (incl. dev)
+      - if: steps.gate.outputs.run == 'true'
+        name: Sync deps (incl. dev)
         working-directory: ${{ matrix.service }}
         run: uv sync --frozen
 
-      - name: Run pytest
+      - if: steps.gate.outputs.run == 'true'
+        name: Run pytest
         working-directory: ${{ matrix.service }}
         run: uv run pytest -v
 
@@ -85,6 +171,8 @@ jobs:
   web:
     name: Web (bun install + build)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.workflow == 'true'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
@@ -118,7 +206,8 @@ jobs:
   docker-web:
     name: Docker build (apps/web)
     runs-on: ubuntu-latest
-    needs: web
+    needs: [web, changes]
+    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.workflow == 'true'
     permissions:
       contents: read
       packages: write
@@ -191,7 +280,8 @@ jobs:
   docker-api:
     name: Docker build (apps/api)
     runs-on: ubuntu-latest
-    needs: python-lint
+    needs: [python-lint, changes]
+    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.workflow == 'true'
     permissions:
       contents: read
       packages: write  # push to ghcr.io on main
@@ -272,7 +362,8 @@ jobs:
   docker-agent:
     name: Docker build (services/agent)
     runs-on: ubuntu-latest
-    needs: python-lint
+    needs: [python-lint, changes]
+    if: needs.changes.outputs.agent == 'true' || needs.changes.outputs.workflow == 'true'
     permissions:
       contents: read
       packages: write  # push to ghcr.io on main
