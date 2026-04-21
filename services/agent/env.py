@@ -1,5 +1,5 @@
 """Tiny env-var helper. Lives in its own module so it can be unit-tested
-without pulling in pipecat / faster-whisper / CUDA at import time."""
+without pulling in pipecat / gigaam / CUDA at import time."""
 
 from __future__ import annotations
 

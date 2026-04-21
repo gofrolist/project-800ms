@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Real-time voice assistant: browser ↔ LiveKit (WebRTC) ↔ Pipecat agent (VAD → Whisper STT → LLM → TTS) with a FastAPI token-minting backend. Target: first audio out <800ms after end-of-speech.
+Real-time voice assistant: browser ↔ LiveKit (WebRTC) ↔ Pipecat agent (VAD → GigaAM STT → LLM → TTS) with a FastAPI token-minting backend. Target: first audio out <800ms after end-of-speech.
 
 ## Architecture
 
@@ -13,7 +13,7 @@ Browser (React + LiveKit SDK)  ──WebRTC──►  LiveKit SFU (:7880)
        │                                        │
        │ POST /sessions                   Pipecat Agent (:8001)
        ▼                                   ├─ Silero VAD (CPU)
-FastAPI (:8000) ──POST /dispatch──►        ├─ Faster-Whisper STT (GPU, shared)
+FastAPI (:8000) ──POST /dispatch──►        ├─ GigaAM-v3 STT (GPU, shared)
   mint LiveKit JWT                         ├─ LLM → vLLM or Groq/OpenAI
   dispatch agent to room                   └─ Piper TTS (CPU)
 ```
@@ -52,7 +52,16 @@ bun run build               # tsc -b && vite build
 ### Full stack (Docker)
 ```bash
 cp infra/.env.example infra/.env  # edit secrets first
-docker compose --env-file infra/.env -f infra/docker-compose.yml up -d
+
+# One-time (and after any services/agent dep change): build the heavy
+# agent BASE image. ~5–7 GB, dominated by CUDA + PyTorch + faster-whisper.
+docker build \
+  -f services/agent/Dockerfile.base \
+  -t project-800ms-agent-base:local \
+  services/agent/
+
+# The app build is a thin COPY of source on top of the base — seconds.
+docker compose --env-file infra/.env -f infra/docker-compose.yml up -d --build
 docker compose -f infra/docker-compose.yml logs -f vllm  # wait for model load
 curl http://localhost:8000/health
 ```
@@ -67,7 +76,7 @@ pre-commit run --all-files  # ruff, gitleaks, file hygiene, actionlint
 
 - **Dynamic rooms**: each /sessions call creates a unique room and dispatches an agent pipeline via POST to the agent's HTTP server (:8001/dispatch). Rooms are isolated — callers can't hear each other.
 - **Agent token minting**: agent mints a LiveKit JWT per room (30min TTL). API mints caller tokens (15min TTL).
-- **Whisper hallucination filter**: `stt_filter.py` drops segments by statistical properties (no_speech_prob, avg_logprob, compression_ratio) instead of a blocklist.
+- **GigaAM hallucination filter**: `gigaam_stt.py` drops segments below a duration floor (300ms) or token-count floor (2 tokens) — GigaAM doesn't expose Whisper-style per-segment confidence signals.
 - **Language routing**: `lang.py` detects CJK characters to reject unsupported scripts; everything else → Russian (single-language MVP).
 - **Transcript forwarding**: `transcript.py` debounces user STT fragments (1s) before sending to the web UI via LiveKit data channel. Assistant responses are buffered between LLMFullResponseStart/End frames.
 - **Rate limiting**: token-bucket limiter in `apps/api/rate_limit.py` with separate caches for tenant (`_tenant_buckets`) and IP (`_ip_buckets`) keys. `enforce_tenant_rate_limit` protects authenticated `/v1/*` routes; `enforce_admin_ip_rate_limit` and `enforce_webhook_ip_rate_limit` protect the unauth admin and webhook surfaces. `_real_ip()` trusts X-Forwarded-For only when the TCP peer falls inside `settings.trusted_proxy_cidrs` (default RFC1918 172.16.0.0/12, configurable via env).
@@ -85,6 +94,7 @@ pre-commit run --all-files  # ruff, gitleaks, file hygiene, actionlint
 - Commit format: `type(scope): description` — types: feat, fix, refactor, docs, test, chore, perf, ci. Scopes: api, agent, web, infra, ci.
 - Python: type hints on all signatures, Pydantic for settings/validation, loguru with lazy `{name}` placeholders (not f-strings) for logger calls.
 - Docker images: multi-stage, non-root (UID 1001 `appuser`), BuildKit cache mounts for uv/pip.
+- Agent image split: `services/agent/Dockerfile.base` carries CUDA + Python deps (rebuilt only when `pyproject.toml` / `uv.lock` change); `services/agent/Dockerfile` is a thin `FROM ${BASE_IMAGE}` + `COPY . /app` layer on top. Model weights are NOT baked — the `hf_cache_agent` named volume persists HF downloads across restarts.
 - Env vars validated at startup — `require_env()` in agent, Pydantic `Field(min_length=...)` in API settings.
 
 ## Documented Solutions

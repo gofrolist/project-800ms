@@ -4,24 +4,22 @@ version = "0.1.0"
 description = "Pipecat voice agent (STT → LLM → TTS) for project-800ms"
 requires-python = "==3.12.*"
 dependencies = [
-    # Pipecat + the concrete SDKs we use (livekit, faster-whisper, piper, openai, silero).
-    "pipecat-ai[livekit,whisper,piper,openai,silero]==0.0.108",
+    # Pipecat + the concrete SDKs we use (livekit, piper, openai, silero).
+    # The [whisper] extra is intentionally not pulled in — GigaAM is the
+    # only STT since the 2026-04-19 A/B experiment, and retiring Whisper
+    # removed the CUDA 12 ABI pin on ctranslate2.
+    "pipecat-ai[livekit,piper,openai,silero]==0.0.108",
     "livekit-api==1.1.0",
     "loguru==0.7.3",
     "aiohttp>=3.11,<4",
-    # Pinned transitively-critical. faster-whisper → ctranslate2 is linked against
-    # libcublas.so.12 and libcudnn*.so.9 — the CUDA 12.x Docker base must match.
-    # Kept one release as the rollback path behind STT_STACK=whisper; delete
-    # once GigaAM has been stable in prod long enough to retire the hedge.
-    "faster-whisper==1.2.1",
-    # GigaAM-v3 (Sber, MIT) — the default STT since the 2026-04-19 A/B
+    # GigaAM-v3 (Sber, MIT) — the only STT since the 2026-04-19 A/B
     # experiment (docs/experiments/2026-04-19-stt-ab/phase-a-results.md).
     # PyPI 0.1.0 is v1/v2-only; v3 requires git source + the `torch` extra
     # for PyTorch runtime. SHA pinned — do not follow `main`.
     "gigaam[torch] @ git+https://github.com/salute-developers/GigaAM@6e4b027c6fb554e09e8b9059b757a175295ab879",
     # gigaam_stt.py writes incoming int16 PCM to a temp WAV per segment
     # because GigaAM's public transcribe() only accepts file paths (shells
-    # out to ffmpeg). Production dep, not experiment scaffolding.
+    # out to ffmpeg).
     "soundfile>=0.12,<0.14",
 ]
 

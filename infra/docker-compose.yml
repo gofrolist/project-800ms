@@ -218,6 +218,17 @@ services:
     build:
       context: ../services/agent
       dockerfile: Dockerfile
+      args:
+        # Two-stage image strategy: heavy deps live in a separately-tagged
+        # base image (services/agent/Dockerfile.base) that's rebuilt only
+        # when pyproject.toml / uv.lock change. The app Dockerfile is a
+        # thin COPY layer on top, so source-only rebuilds finish in seconds.
+        # Build the base first (one-time, or after a dep change):
+        #   docker build -f ../services/agent/Dockerfile.base \
+        #     -t project-800ms-agent-base:local ../services/agent/
+        # Override AGENT_BASE_IMAGE in infra/.env to pin a registry digest
+        # in prod (e.g. ghcr.io/<owner>/project-800ms-agent-base@sha256:…).
+        BASE_IMAGE: ${AGENT_BASE_IMAGE:-project-800ms-agent-base:local}
     restart: unless-stopped
     <<: *gpu
     environment:
@@ -235,19 +246,14 @@ services:
       # STT/LLM utterances to the api's /internal/transcripts endpoint.
       - API_BASE_URL=${API_BASE_URL:-http://api:8000}
       - AGENT_INTERNAL_TOKEN=${AGENT_INTERNAL_TOKEN:-}
-      # STT stack selection: "gigaam" (default, since 2026-04-19 A/B) or
-      # "whisper" (rollback). Both are pre-loaded at startup regardless,
-      # so the flip is a one-restart operation. See infra/.env.example
-      # and docs/experiments/2026-04-19-stt-ab/phase-a-results.md.
-      - STT_STACK=${STT_STACK:-gigaam}
       # INFO by default — DEBUG logs full STT transcripts and LLM
       # prompts/completions, which is a privacy issue if exposed via
       # docker logs. Set LOG_LEVEL=DEBUG in .env when actively debugging.
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
     # No host port needed — API reaches agent via docker network (agent:8001).
     volumes:
-      # Dedicated HF cache for the agent (Faster-Whisper weights). See
-      # vllm.volumes above for why this is split from the vllm cache.
+      # Dedicated HF cache for the agent (GigaAM weights). See vllm.volumes
+      # above for why this is split from the vllm cache.
       - hf_cache_agent:/home/appuser/.cache/huggingface
       - piper_voices:/home/appuser/.cache/piper
     healthcheck:

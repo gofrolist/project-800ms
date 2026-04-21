@@ -259,7 +259,11 @@ jobs:
 
   # ─── Docker: services/agent ──────────────────────────────────────────────
   # CUDA base image is ~6 GB — free disk on the runner before building.
-  # On push to main: also push to ghcr.io/<owner>/project-800ms-agent.
+  # Two-stage image strategy: a heavy BASE image (Dockerfile.base) carries
+  # CUDA + Python deps and is rebuilt only when pyproject.toml / uv.lock
+  # change; the thin application image (Dockerfile) layers source on top.
+  # Both images are cached via GHA; on push to main both are pushed to
+  # ghcr.io/<owner>/project-800ms-agent{,-base}.
   docker-agent:
     name: Docker build (services/agent)
     runs-on: ubuntu-latest
@@ -291,6 +295,36 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Base image carries deps only. Cache scope is "agent-base" so a miss
+      # only occurs when pyproject.toml / uv.lock change; the typical PR
+      # reuses the cached layers in full and finishes fast.
+      - name: Compute agent-base image tags
+        id: meta-agent-base
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6.0.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/project-800ms-agent-base
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=short
+
+      - name: Build agent-base image
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        with:
+          context: services/agent
+          file: services/agent/Dockerfile.base
+          # Load into the local daemon so the app build can `FROM` it via
+          # the BASE_IMAGE arg without a registry round-trip. On main, also
+          # push so consumers can pin by digest.
+          load: true
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          tags: |
+            ${{ steps.meta-agent-base.outputs.tags }}
+            project-800ms-agent-base:ci
+          labels: ${{ steps.meta-agent-base.outputs.labels }}
+          cache-from: type=gha,scope=agent-base
+          cache-to: type=gha,scope=agent-base,mode=max
+
       - name: Compute agent image tags
         id: meta-agent
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6.0.0
@@ -306,6 +340,8 @@ jobs:
         with:
           context: services/agent
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          build-args: |
+            BASE_IMAGE=project-800ms-agent-base:ci
           tags: ${{ steps.meta-agent.outputs.tags }}
           labels: ${{ steps.meta-agent.outputs.labels }}
           cache-from: type=gha,scope=agent

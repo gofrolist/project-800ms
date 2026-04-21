@@ -58,12 +58,6 @@ updates:
     ignore:
       - dependency-name: "pipecat-ai"
         update-types: ["version-update:semver-major"]
-      # faster-whisper / ctranslate2 majors can require CUDA ABI changes
-      # (the whole reason we're pinned to CUDA 12.x); gate manually.
-      - dependency-name: "faster-whisper"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "ctranslate2"
-        update-types: ["version-update:semver-major"]
     groups:
       python-minor-and-patch:
         applies-to: version-updates

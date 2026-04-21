@@ -1,11 +1,5 @@
 """Pipecat-compatible STT wrapper around GigaAM-v3.
 
-Experiment half-life: this module exists for the STT A/B experiment
-(docs/plans/2026-04-19-001-feat-stt-ab-experiment-plan.md). If GigaAM
-wins, this becomes the default STT and FilteredWhisperSTTService is
-deleted; if Whisper wins, this file is deleted. Either way, it's
-short-lived scaffolding — don't build infrastructure on top of it.
-
 Base class choice — `SegmentedSTTService` not `WhisperSTTService`:
 GigaAM has no Whisper-style per-segment confidence signals
 (no_speech_prob, avg_logprob, compression_ratio), so subclassing the
@@ -13,15 +7,10 @@ Whisper base would force us to synthesize fake values. SegmentedSTTService
 is the right abstraction — per-VAD-segment audio in, TranscriptionFrame
 out — and matches how the current Pipecat pipeline feeds STT input.
 
-Filter parity — pinned as an explicit second variable for the A/B:
-FilteredWhisperSTTService drops segments by statistical signals;
-GigaAM doesn't expose those signals, so we reject by behavioural
-parity instead — same gross outcome ("short / near-empty utterances
-are rejected"), different mechanism (duration + token gate instead of
-logprob + compression). Threshold values will be tuned in Unit 3
-against the WER eval set so both stacks reject a similar proportion
-of false positives. The defaults below are the starting point; the
-tuning outcome gets committed to `services/agent/eval/results/`.
+Filter rationale: the thresholds below (min duration + min token count)
+reject short / near-empty utterances without leaning on statistical
+confidence signals GigaAM doesn't expose. They were tuned during the
+2026-04-19 STT A/B experiment against the committed Russian eval set.
 """
 
 from __future__ import annotations
@@ -66,10 +55,9 @@ class GigaAMSettings:
 class GigaAMSTTService(SegmentedSTTService):
     """Segmented STT service wrapping GigaAM-v3.
 
-    Accepts an optional pre-loaded GigaAM model (same pattern as
-    FilteredWhisperSTTService with its `model` kwarg) to avoid reloading
-    on each pipeline start. Runtime agent preloads via
-    `models.load_gigaam()` at startup.
+    Accepts an optional pre-loaded GigaAM model to avoid reloading on each
+    pipeline start. Runtime agent preloads via `models.load_gigaam()` at
+    startup.
     """
 
     def __init__(
@@ -96,8 +84,7 @@ class GigaAMSTTService(SegmentedSTTService):
 
         Not reached in prod — main.py's load_gigaam() + get_gigaam()
         preload and inject the shared singleton before the first
-        pipeline builds. Kept as a safety net for non-preloading
-        callers and for parity with FilteredWhisperSTTService.
+        pipeline builds. Kept as a safety net for non-preloading callers.
         """
         if self._loaded_model is not None:
             return
@@ -181,12 +168,9 @@ class GigaAMSTTService(SegmentedSTTService):
                 )
                 return
 
-            # FilteredWhisperSTTService calls self._handle_transcription() here
-            # but it inherits from WhisperSTTService which provides that helper.
-            # SegmentedSTTService (our base) does not expose it in Pipecat
-            # 0.0.108, so calling it raises AttributeError and drops the frame.
-            # The yielded TranscriptionFrame is the real data path; no helper
-            # call is needed.
+            # SegmentedSTTService (our base) does not expose
+            # _handle_transcription() in Pipecat 0.0.108 — the yielded
+            # TranscriptionFrame is the data path; no helper call is needed.
             logger.debug("GigaAM transcription: [{text}]", text=text)
             yield TranscriptionFrame(
                 text,

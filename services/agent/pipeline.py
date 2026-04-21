@@ -1,7 +1,7 @@
 """Pipecat voice pipeline for project-800ms.
 
 Graph:
-    LiveKit mic audio  →  Silero VAD  →  Faster-Whisper (GPU)  →
+    LiveKit mic audio  →  Silero VAD  →  GigaAM-v3 (GPU)  →
     LLM (vLLM or external)  →  Piper TTS (CPU)  →  LiveKit speaker
 
 Everything streams. First audio out should land ~700ms after end-of-speech
@@ -30,14 +30,10 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.piper.tts import PiperTTSService
-from pipecat.services.whisper.stt import Model as WhisperModelSize
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
-
-from faster_whisper import WhisperModel
 
 from gigaam_stt import GigaAMSettings, GigaAMSTTService
 from overrides import PerSessionOverrides, build_system_prompt
-from stt_filter import FilteredWhisperSTTService
 from transcript import AssistantTranscriptForwarder, UserTranscriptForwarder
 from transcript_sink import TranscriptSink
 
@@ -54,16 +50,6 @@ class AgentConfig:
     tts_voice: str  # e.g. "ru_RU-denis-medium"
     vllm_api_key: str
     piper_voices_dir: Path = Path("/home/appuser/.cache/piper")
-    whisper_model: WhisperModelSize = WhisperModelSize.LARGE
-    whisper_device: str = "cuda"
-    whisper_compute_type: str = "int8_float16"
-    # STT stack selector. "gigaam" is the default after the 2026-04-19
-    # A/B experiment (docs/experiments/2026-04-19-stt-ab/phase-a-results.md):
-    # 4-pt OOD WER edge on Russian + Cyrillic-only output matches the
-    # text pipeline's normalization expectations. "whisper" is the
-    # rollback path — both models are pre-loaded at startup so the flip
-    # is zero-latency and doesn't need a service restart if env is reread.
-    stt_stack: str = "gigaam"
     # When both values are set, final STT and LLM utterances are also
     # POSTed to the API's /internal/transcripts endpoint. Empty = in-UI
     # transcripts only (no DB persistence).
@@ -74,7 +60,6 @@ class AgentConfig:
 def build_task(
     cfg: AgentConfig,
     *,
-    whisper_model: WhisperModel | None = None,
     gigaam_model: object | None = None,
     overrides: PerSessionOverrides | None = None,
 ) -> tuple[PipelineTask, LiveKitTransport]:
@@ -111,26 +96,10 @@ def build_task(
     vad_analyzer = SileroVADAnalyzer(params=vad_params)
     vad_processor = VADProcessor(vad_analyzer=vad_analyzer)
 
-    if cfg.stt_stack == "gigaam":
-        stt = GigaAMSTTService(
-            model=gigaam_model,
-            settings=GigaAMSettings(language=language),
-        )
-    elif cfg.stt_stack == "whisper":
-        stt = FilteredWhisperSTTService(
-            model=whisper_model,
-            device=cfg.whisper_device,
-            compute_type=cfg.whisper_compute_type,
-            settings=FilteredWhisperSTTService.Settings(
-                model=cfg.whisper_model.value,
-                language=language,
-                no_speech_prob=0.4,
-                min_avg_logprob=-0.7,
-                max_compression_ratio=2.4,
-            ),
-        )
-    else:
-        raise ValueError(f"Unknown STT_STACK={cfg.stt_stack!r}; expected 'gigaam' or 'whisper'")
+    stt = GigaAMSTTService(
+        model=gigaam_model,
+        settings=GigaAMSettings(language=language),
+    )
 
     llm = OpenAILLMService(
         base_url=cfg.vllm_base_url,

@@ -1,0 +1,95 @@
+# syntax=docker/dockerfile:1.7
+
+# Agent BASE image: CUDA runtime + system libs + Python deps.
+#
+# This image is expensive to build (~5–7 GB, dominated by PyTorch + CUDA
+# wheels pulled in by gigaam[torch]). It is intentionally split out from
+# the application image so source-code changes don't trigger dep reinstalls.
+#
+# Rebuild this image only when `pyproject.toml` or `uv.lock` change:
+#
+#   docker build \
+#     -f services/agent/Dockerfile.base \
+#     -t project-800ms-agent-base:local \
+#     services/agent/
+#
+# The thin application Dockerfile (`services/agent/Dockerfile`) then does
+# `FROM ${BASE_IMAGE}` and adds only the source on top — its builds finish
+# in seconds.
+#
+# CUDA 12.x: the lockfile's torch wheels bundle their own cu13 libs so
+# they work on either base, but this image stays on 12.9.1 until a
+# follow-up validates 13.x on real GPU hardware. The ctranslate2 pin
+# that previously made CUDA 12 mandatory was retired with the Whisper
+# rollback path.
+
+# ---- builder ---------------------------------------------------------------
+FROM nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PYTHON=/usr/bin/python3.12
+
+# System python3.12 is Ubuntu 24.04's default — use it instead of downloading
+# a second standalone interpreter. python3.12-venv gives uv a `venv` module to
+# materialise /opt/venv from.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 python3.12-venv \
+        ca-certificates \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.11.4 /uv /uvx /usr/local/bin/
+
+WORKDIR /app
+
+# Install deps only (no project install — the project source isn't copied
+# into the base image at all). BuildKit cache mount keeps wheels across
+# rebuilds on the same host.
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --no-dev
+
+# ---- runtime ---------------------------------------------------------------
+FROM nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PATH="/opt/venv/bin:$PATH" \
+    HF_HOME=/home/appuser/.cache/huggingface \
+    PIPER_VOICES_DIR=/home/appuser/.cache/piper
+
+# Runtime apt deps:
+#   - python3.12: the venv's shebangs point at /usr/bin/python3.12
+#   - ffmpeg: GigaAM's transcribe() shells out to ffmpeg for decode
+#   - libsndfile1: gigaam_stt.py writes temp WAVs via soundfile (libsndfile)
+#   - espeak-ng: Piper's phonemizer backend for Russian + English
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.12 \
+        ffmpeg libsndfile1 espeak-ng \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Run as a non-root user. The NVIDIA container runtime exposes GPU device
+# files with permissions accessible to non-root processes, so dropping root
+# does not break CUDA. The HF_HOME / PIPER_VOICES_DIR cache dirs live under
+# the user's home and are pre-created here so the volume mounts in
+# docker-compose.yml have a writable target with the right ownership.
+RUN groupadd --system --gid 1001 appuser && \
+    useradd --system --uid 1001 --gid 1001 \
+            --home-dir /home/appuser --create-home \
+            --shell /usr/sbin/nologin appuser && \
+    mkdir -p /home/appuser/.cache/huggingface /home/appuser/.cache/piper && \
+    chown -R appuser:appuser /home/appuser
+
+COPY --from=builder --chown=appuser:appuser /opt/venv /opt/venv
+
+WORKDIR /app
+USER appuser
+
+# No CMD — this is a base image. The application Dockerfile sets CMD.

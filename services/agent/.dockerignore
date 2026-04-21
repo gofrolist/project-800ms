@@ -1,0 +1,28 @@
+# Kept out of the Docker build context so source-only rebuilds stay tiny
+# and caches aren't invalidated by local noise.
+
+# Python build/runtime caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Local venvs and tooling state
+.venv/
+.env
+.env.*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Tests run in CI, not inside the runtime image
+tests/
+
+# Docker files themselves don't need to travel into the image
+Dockerfile
+Dockerfile.base
+.dockerignore

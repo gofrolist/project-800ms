@@ -30,7 +30,7 @@ graph TD
 ```mermaid
 graph LR
     Mic["Mic audio"] --> VAD["Silero VAD<br/>(CPU)"]
-    VAD --> STT["Faster-Whisper<br/>(GPU, shared)"]
+    VAD --> STT["GigaAM-v3<br/>(GPU, shared)"]
     STT --> LLM["LLM"]
     LLM --> TTS["Piper TTS<br/>(CPU)"]
     TTS --> Speaker["Speaker audio"]
@@ -40,9 +40,9 @@ graph LR
 
 1. User opens `https://coastalai.ai` and clicks **Start call**
 2. Browser `POST /sessions` to the API, which creates a unique room and dispatches an agent
-3. Agent spawns an isolated Pipecat pipeline for that room (Whisper model is pre-loaded, so startup is instant)
+3. Agent spawns an isolated Pipecat pipeline for that room (GigaAM model is pre-loaded, so startup is instant)
 4. Browser joins the room via LiveKit WebRTC, publishes mic audio
-5. Agent pipeline: VAD detects speech end, Whisper transcribes, LLM generates response, Piper synthesizes speech
+5. Agent pipeline: VAD detects speech end, GigaAM transcribes, LLM generates response, Piper synthesizes speech
 6. Audio streams back to the browser in real-time
 
 ## Prerequisites

@@ -17,4 +17,4 @@ Make sure the backend stack is up (`docker compose -f infra/docker-compose.yml u
 2. Browser: `POST /sessions` → `{url, token, room, identity}`
 3. `<LiveKitRoom>` connects via WebRTC, publishes mic, subscribes to agent audio
 4. The agent (already sitting in the `demo` room) greets you
-5. Speak — Pipecat runs VAD → Whisper → Qwen2.5 → Piper, round-trip target ≤1s
+5. Speak — Pipecat runs VAD → GigaAM → Qwen2.5 → Piper, round-trip target ≤1s
