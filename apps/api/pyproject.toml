@@ -14,7 +14,7 @@ dependencies = [
     "slowapi==0.1.9",
     "httpx>=0.28.1",
     # SQLAlchemy 2.0 async + asyncpg + Alembic for tenant/session persistence.
-    "sqlalchemy[asyncio]>=2.0.40",
+    "sqlalchemy[asyncio]>=2.0.49",
     "asyncpg==0.30.0",
     "alembic==1.14.0",
     # TTL cache for authenticated tenant lookup — avoids hitting Postgres
