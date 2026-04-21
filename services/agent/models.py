@@ -19,13 +19,15 @@ from loguru import logger
 _gigaam_model: object | None = None
 
 
-def load_gigaam(model_name: str = "v3_ctc") -> object:
+def load_gigaam(model_name: str = "v3_e2e_rnnt") -> object:
     """Load the GigaAM model once. Subsequent calls return the cached instance.
 
     Weights are fetched from HuggingFace on first call into HF_HOME
     (=/home/appuser/.cache/huggingface), which is mounted as the
     `hf_cache_agent` named volume in docker-compose.yml. First-run startup
-    pays a one-time download (~400 MB for v3_ctc); subsequent container
+    pays a one-time download (a few hundred MB — v3_e2e_rnnt carries the
+    RNNT predictor/joint network plus the punctuation + text-normalization
+    head on top of the shared v3 SSL backbone); subsequent container
     restarts hit the volume cache and load from local disk.
 
     Returns the gigaam.Model instance; typed as `object` because gigaam

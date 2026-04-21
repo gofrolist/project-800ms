@@ -79,8 +79,8 @@ class TestLoadGigaam:
         fake_model = MagicMock(name="gigaam_model")
         _gigaam_stub.load_model.return_value = fake_model
 
-        first = load_gigaam("v3_ctc")
-        second = load_gigaam("v3_ctc")
+        first = load_gigaam("v3_e2e_rnnt")
+        second = load_gigaam("v3_e2e_rnnt")
 
         assert first is fake_model
         assert second is fake_model

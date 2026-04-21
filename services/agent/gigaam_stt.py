@@ -47,7 +47,15 @@ class GigaAMSettings:
     """
 
     language: str = "ru"
-    model_name: str = "v3_ctc"  # alternatives: "v3_rnnt"
+    # v3_e2e_rnnt emits cased, punctuated, normalized text directly (no
+    # post-processing step needed before feeding the LLM). RNNT over CTC
+    # costs a small per-utterance latency delta for the autoregressive
+    # predictor, but we already run non-streaming on VAD-bounded segments
+    # so the streaming capability is unused either way — the choice here
+    # is accuracy + formatting, not latency behaviour.
+    # Alternatives: "v3_e2e_ctc" (same formatting, slightly faster, slightly
+    # lower accuracy), "v3_ctc" / "v3_rnnt" (raw lowercase, no punctuation).
+    model_name: str = "v3_e2e_rnnt"
     min_duration_seconds: float = _DEFAULT_MIN_DURATION_SECONDS
     min_token_count: int = _DEFAULT_MIN_TOKEN_COUNT
 
