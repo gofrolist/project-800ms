@@ -27,7 +27,6 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
-from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.piper.tts import PiperTTSService
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
@@ -87,14 +86,18 @@ def build_task(
         ),
     )
 
+    # start_secs=0.2 makes interruption snap in quickly: user has to speak
+    # continuously for 200ms before the barge-in fires. Raising above 0.3
+    # means the bot keeps talking past short interjections ("стой", "wait")
+    # because VAD hasn't confirmed a start yet. stop_secs=0.3 keeps a bit of
+    # tail buffer so we don't cut the user's last syllable.
     vad_params = VADParams(
         confidence=0.5,
-        start_secs=0.3,
+        start_secs=0.2,
         stop_secs=0.3,
         min_volume=0.1,
     )
     vad_analyzer = SileroVADAnalyzer(params=vad_params)
-    vad_processor = VADProcessor(vad_analyzer=vad_analyzer)
 
     stt = GigaAMSTTService(
         gigaam_model=gigaam_model,
@@ -136,10 +139,15 @@ def build_task(
     user_transcript = UserTranscriptForwarder(transport, sink=sink)
     assistant_transcript = AssistantTranscriptForwarder(transport, sink=sink)
 
+    # The aggregator's LLMUserAggregatorParams(vad_analyzer=...) runs VAD
+    # internally via its own VADController and broadcasts the resulting
+    # VADUserStartedSpeakingFrame / VADUserStoppedSpeakingFrame both
+    # upstream (reaching STT for segment gating) and downstream (reaching
+    # LLM/TTS for barge-in). Adding a separate VADProcessor here was the
+    # pre-0.0.99 pattern and is double-work on top of the aggregator.
     pipeline = Pipeline(
         [
             transport.input(),
-            vad_processor,
             stt,
             user_transcript,
             user_agg,
