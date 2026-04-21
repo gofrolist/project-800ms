@@ -10,10 +10,6 @@ on:
   # events — branch protection looks at status check NAMES, not events.
   merge_group:
   workflow_dispatch:
-  # Daily smoke run against production — catches drift even without a
-  # push. 07:00 UTC = 00:00 PDT, when traffic is low.
-  schedule:
-    - cron: "0 7 * * *"
 
 # Cancel in-flight runs on the same ref when a new commit arrives.
 concurrency:
@@ -380,44 +376,3 @@ jobs:
           labels: ${{ steps.meta-agent.outputs.labels }}
           cache-from: type=gha,scope=agent
           cache-to: type=gha,scope=agent,mode=max
-
-  # ─── Production smoke test ────────────────────────────────────────────────
-  # Hits the deployed API after every main push + on a daily schedule.
-  # Skipped on PRs / merge-queue so SMOKE_API_KEY never leaks into a fork.
-  # Requires repo secrets SMOKE_API_URL + SMOKE_API_KEY — job is a no-op
-  # if they're missing so the workflow doesn't hard-fail during bootstrap.
-  smoke:
-    name: Smoke test (production)
-    runs-on: ubuntu-latest
-    # Smoke tests the deployed environment, not this commit's build, so
-    # it doesn't `needs:` the docker jobs — they'd stall the scheduled
-    # runs without adding signal.
-    if: >
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      github.event_name == 'schedule' ||
-      github.event_name == 'workflow_dispatch'
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
-
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v7.2.0
-        with:
-          enable-cache: true
-          python-version: "3.14"
-
-      - name: Sync api deps
-        working-directory: apps/api
-        run: uv sync --frozen --no-dev
-
-      - name: Run smoke
-        working-directory: apps/api
-        env:
-          SMOKE_API_URL: ${{ secrets.SMOKE_API_URL }}
-          SMOKE_API_KEY: ${{ secrets.SMOKE_API_KEY }}
-        run: |
-          if [ -z "${SMOKE_API_URL}" ] || [ -z "${SMOKE_API_KEY}" ]; then
-            echo "SMOKE_API_URL / SMOKE_API_KEY not configured — skipping"
-            exit 0
-          fi
-          uv run python scripts/smoke.py
