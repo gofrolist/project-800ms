@@ -17,14 +17,13 @@
 # `FROM ${BASE_IMAGE}` and adds only the source on top — its builds finish
 # in seconds.
 #
-# CUDA 12.x: the lockfile's torch wheels bundle their own cu13 libs so
-# they work on either base, but this image stays on 12.9.1 until a
-# follow-up validates 13.x on real GPU hardware. The ctranslate2 pin
-# that previously made CUDA 12 mandatory was retired with the Whisper
-# rollback path.
+# CUDA 13.x: the lockfile resolves torch (via gigaam[torch]) with
+# nvidia-cudnn-cu13 + nvidia-cublas 13.x, and the Whisper/ctranslate2
+# stack that previously pinned us to CUDA 12 was retired. Host NVIDIA
+# driver must be R580 or newer for the CUDA 13 runtime to load.
 
 # ---- builder ---------------------------------------------------------------
-FROM nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04 AS builder
+FROM nvidia/cuda:13.2.1-cudnn-runtime-ubuntu24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -55,7 +54,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev
 
 # ---- runtime ---------------------------------------------------------------
-FROM nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04
+FROM nvidia/cuda:13.2.1-cudnn-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \

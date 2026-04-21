@@ -231,8 +231,10 @@ resource "google_secret_manager_secret_iam_member" "instance_accessor" {
 }
 
 # =============================================================================
-# Boot image — Deep Learning VM with CUDA 12.4, PyTorch, Docker, and
-# nvidia-container-toolkit preinstalled.
+# Boot image — Deep Learning VM with NVIDIA driver R580, Docker, and
+# nvidia-container-toolkit preinstalled. The agent container ships its own
+# CUDA 13 runtime; the host toolkit version is immaterial. See
+# variables.tf::image_family for why the driver version is what matters.
 # =============================================================================
 
 data "google_compute_image" "dlvm" {

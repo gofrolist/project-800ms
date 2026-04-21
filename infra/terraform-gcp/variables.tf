@@ -65,8 +65,11 @@ variable "use_spot" {
 variable "image_family" {
   description = <<-EOT
     Deep Learning VM image family. common-cu129-ubuntu-2204-nvidia-580 ships
-    Ubuntu 22.04 with CUDA 12.9, NVIDIA driver 580, Docker, and
-    nvidia-container-toolkit preinstalled.
+    Ubuntu 22.04 with NVIDIA driver R580, Docker, and nvidia-container-toolkit
+    preinstalled. The host CUDA toolkit (12.9) is irrelevant — the agent
+    container brings its own CUDA 13 runtime via the nvidia/cuda base image.
+    What matters is the kernel-mode driver version: R580 is the first driver
+    family to support CUDA 13 forward-compat, which is our runtime floor.
     Verify current families with:
       gcloud compute images list --project deeplearning-platform-release \
         --filter="family ~ cu1" --format="value(family)" | sort -u
