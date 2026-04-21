@@ -98,7 +98,7 @@ services:
   # for Whisper (~2GB) + OS.
   # ─────────────────────────────────────────────────────────────────────────
   vllm:
-    image: vllm/vllm-openai:v0.19.0
+    image: vllm/vllm-openai:v0.19.1
     restart: unless-stopped
     # Only start when the `local-llm` profile is active. Default stack skips
     # vllm and relies on an external LLM (LLM_BASE_URL). Opt in with:
