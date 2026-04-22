@@ -7,9 +7,15 @@ code review.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# Whitelisted TTS engines the agent knows how to dispatch. Mirrors
+# services/agent/overrides.py::_VALID_TTS_ENGINES and pipeline.py's
+# _VALID_TTS_ENGINES — kept in sync by hand because the API and agent
+# live in separate Python environments (3.14 vs 3.12).
+TtsEngine = Literal["piper", "silero", "qwen3"]
 
 
 class CreateSessionRequest(BaseModel):
@@ -59,6 +65,15 @@ class CreateSessionRequest(BaseModel):
     context: dict[str, Any] | None = Field(
         default=None,
         description="Arbitrary game-state context passed to the agent.",
+    )
+    tts_engine: TtsEngine | None = Field(
+        default=None,
+        description=(
+            "TTS engine for this session — one of 'piper', 'silero', 'qwen3'. "
+            "Falls back to the agent's TTS_ENGINE env default when omitted. "
+            "Used by the demo site's three-button selector to route each "
+            "session to a different backend without restarting the agent."
+        ),
     )
 
 

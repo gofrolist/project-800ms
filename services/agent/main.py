@@ -179,11 +179,25 @@ def main() -> None:
         logger.exception("GigaAM pre-load failed — refusing to start agent")
         sys.exit(3)
 
-    # Conditional Silero pre-load. Only pay the torch.hub download +
-    # GPU-bind cost when Silero is the active engine — otherwise Piper
-    # and Qwen3 deployments would eat an unnecessary ~200 MB download
-    # and warm-start delay. Same hard-fail semantics as GigaAM above.
-    if _base_config["tts_engine"] == "silero":
+    # Conditional Silero pre-load. The `TTS_PRELOAD_ENGINES` env var is a
+    # comma-separated list of engines the agent should be ready to serve
+    # per-session (see PerSessionOverrides.tts_engine). Silero is the only
+    # engine with an agent-side preload cost — Piper has none (loaded
+    # lazily inside PiperTTSService) and Qwen3's model lives in the
+    # sidecar container. Default: `TTS_ENGINE`'s value, preserving the
+    # single-engine operator workflow. Set `TTS_PRELOAD_ENGINES=piper,silero,qwen3`
+    # when the demo site's three-button selector needs all three ready
+    # without a cold-load on first dispatch. Same hard-fail semantics as
+    # GigaAM above.
+    preload_engines = {
+        e.strip()
+        for e in os.environ.get(
+            "TTS_PRELOAD_ENGINES",
+            str(_base_config["tts_engine"]),
+        ).split(",")
+        if e.strip()
+    }
+    if "silero" in preload_engines:
         try:
             load_silero()
         except Exception:  # noqa: BLE001 — intentional hard-fail at startup

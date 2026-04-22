@@ -142,6 +142,47 @@ async def test_create_session_forwards_payload_to_agent(client, seed_tenant, age
     assert "context" not in dispatched
 
 
+async def test_create_session_forwards_tts_engine_to_agent(client, seed_tenant, agent_stub):
+    """Three-button demo contract: POST /v1/sessions with tts_engine flows
+    through the dispatch payload so the agent can pick the right TTS
+    backend per-session."""
+    _tenant, raw_key = seed_tenant
+    for engine in ("piper", "silero", "qwen3"):
+        agent_stub.post.reset_mock()
+        r = await client.post(
+            "/v1/sessions",
+            headers={"X-API-Key": raw_key},
+            json={"tts_engine": engine},
+        )
+        assert r.status_code == 201, r.text
+        dispatched = agent_stub.post.await_args.kwargs["json"]
+        assert dispatched["tts_engine"] == engine
+
+
+async def test_create_session_omits_tts_engine_when_unset(client, seed_tenant, agent_stub):
+    """Empty body must NOT inject tts_engine — the agent's TTS_ENGINE env
+    default has to win when the client is silent about engine choice."""
+    _tenant, raw_key = seed_tenant
+    r = await client.post("/v1/sessions", headers={"X-API-Key": raw_key}, json={})
+    assert r.status_code == 201
+    dispatched = agent_stub.post.await_args.kwargs["json"]
+    assert "tts_engine" not in dispatched
+
+
+async def test_create_session_rejects_unknown_tts_engine(client, seed_tenant, agent_stub):
+    """Pydantic Literal validation refuses unknown engine values BEFORE
+    the dispatch call — keeps bogus strings from ever reaching the agent."""
+    _tenant, raw_key = seed_tenant
+    r = await client.post(
+        "/v1/sessions",
+        headers={"X-API-Key": raw_key},
+        json={"tts_engine": "bogus"},
+    )
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "validation_error"
+    assert agent_stub.post.await_count == 0
+
+
 async def test_create_session_rejects_unknown_fields(client, seed_tenant, agent_stub):
     _tenant, raw_key = seed_tenant
     r = await client.post(

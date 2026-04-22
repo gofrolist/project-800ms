@@ -315,14 +315,23 @@ services:
       - VLLM_API_KEY=${LLM_API_KEY:?LLM_API_KEY is required}
       - TTS_VOICE=${TTS_VOICE:-ru_RU-denis-medium}
       # TTS engine selector — one of "piper" (default), "silero", "qwen3".
-      # Must be wired through compose or the agent container never sees
-      # env-file edits. The agent's AgentConfig validates the value at
-      # construction time (services/agent/pipeline.py:AgentConfig).
+      # Session-level overrides from POST /v1/sessions.tts_engine take
+      # precedence (see services/agent/overrides.py); this env is the
+      # fallback when a session omits the field. The agent's AgentConfig
+      # validates the value at construction time.
       - TTS_ENGINE=${TTS_ENGINE:-piper}
-      # Qwen3-TTS sidecar endpoint + API key. Only read when
-      # TTS_ENGINE=qwen3; the agent factory raises ValueError if either
-      # is empty at dispatch time (services/agent/tts_factory.py). Leave
-      # unset on Piper / Silero deploys.
+      # Comma-separated list of engines to pre-load at agent startup.
+      # Silero is the only engine with an agent-side preload (torch.hub
+      # model fetch); listing "silero" here makes Silero-backed sessions
+      # ready without a cold-load on first dispatch. Defaults to
+      # TTS_ENGINE so single-engine operators keep their old behavior.
+      # Demo deployments with the three-button selector set
+      # TTS_PRELOAD_ENGINES=piper,silero,qwen3.
+      - TTS_PRELOAD_ENGINES=${TTS_PRELOAD_ENGINES:-${TTS_ENGINE:-piper}}
+      # Qwen3-TTS sidecar endpoint + API key. Required when any session
+      # may select TTS_ENGINE=qwen3 — the factory raises ValueError at
+      # dispatch time if either is empty. Leave unset on Piper/Silero-only
+      # deploys.
       - QWEN3_TTS_BASE_URL=${QWEN3_TTS_BASE_URL:-}
       - QWEN3_TTS_API_KEY=${QWEN3_TTS_API_KEY:-}
       - HF_HOME=/home/appuser/.cache/huggingface
@@ -367,6 +376,14 @@ services:
       # LLM_BASE_URL), vllm is skipped and this dependency is ignored.
       # Requires docker compose >= 2.20 for `required: false`.
       vllm:
+        condition: service_healthy
+        required: false
+      # Optional — only materializes when the `tts-qwen3` profile is
+      # active. For deploys that expose Qwen3 through /v1/sessions, wait
+      # for the sidecar's /health to pass before accepting traffic so the
+      # first Qwen3-engine session isn't served against a cold model. With
+      # the profile off, compose ignores the dependency entirely.
+      qwen3-tts:
         condition: service_healthy
         required: false
 

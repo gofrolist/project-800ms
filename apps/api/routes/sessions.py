@@ -122,6 +122,8 @@ async def _dispatch_agent(room: str, body: CreateSessionRequest) -> None:
         payload["llm_model"] = body.llm_model
     if body.context is not None:
         payload["context"] = body.context
+    if body.tts_engine is not None:
+        payload["tts_engine"] = body.tts_engine
 
     async with httpx.AsyncClient(timeout=10) as client:
         try:
