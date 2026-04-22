@@ -87,12 +87,22 @@ def _attach_client(svc, cm):
     return create
 
 
-class TestQwen3StreamingBody:
-    def test_stream_true_is_sent_in_request_body(self):
-        """The critical latency fix: extra_body={"stream": True} must
-        reach the sidecar. Without it, the sidecar buffers the full
-        utterance (observed TTFB ~20s on L4 with 1.7B-CustomVoice)
-        instead of streaming as generated."""
+class TestQwen3RequestBody:
+    def test_stream_flag_not_sent(self):
+        """Regression guard: extra_body must NOT carry stream=True.
+
+        On our L4 the Qwen3 wrapper's streaming path emits PCM chunks
+        slower than realtime (RTF ~3x) — the browser audio buffer
+        underruns between chunks and playback stutters. We deliberately
+        use non-streaming requests so the sidecar ships the complete
+        audio after generation, guaranteeing smooth playback at the
+        cost of higher TTFB.
+
+        If a future deploy swaps in a faster GPU and wants streaming
+        back, it has to go through this test: either delete it and
+        re-enable extra_body={"stream": True}, or add a mode flag.
+        Silent regressions are what the test exists to catch.
+        """
         svc = _make_service()
         _response, cm = _mock_streaming_response(body_chunks=(b"\x00" * 48,))
         create = _attach_client(svc, cm)
@@ -101,7 +111,8 @@ class TestQwen3StreamingBody:
 
         create.assert_called_once()
         kwargs = create.call_args.kwargs
-        assert kwargs.get("extra_body") == {"stream": True}
+        extra_body = kwargs.get("extra_body") or {}
+        assert "stream" not in extra_body
 
     def test_clone_prefix_voice_passes_through_unchanged(self):
         """Voice values starting with ``clone:`` are voice-library

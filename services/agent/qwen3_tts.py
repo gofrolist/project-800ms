@@ -113,12 +113,24 @@ class Qwen3TTSService(OpenAITTSService):
             if self._settings.speed:
                 create_params["speed"] = self._settings.speed
 
-            # The Qwen3-TTS wrapper reads ``stream`` from the request
-            # body (api/routers/openai_compatible.py:425). openai-sdk
-            # does not define ``stream`` on audio.speech.create, so we
-            # inject it via extra_body, which the SDK forwards verbatim.
+            # Non-streaming synthesis: the sidecar buffers the full
+            # utterance before shipping 4KB chunks over the wire. The
+            # wrapper DOES support stream=True (extra_body={"stream":
+            # True}) but on our L4 the model's RTF is ~3x for both
+            # 0.6B-Base and 1.7B-CustomVoice — streaming chunks arrive
+            # slower than realtime playback needs, so the browser's
+            # audio buffer underruns between chunks and the user hears
+            # stutter/drop-outs. Non-streaming pays a bigger TTFB (~5-8s
+            # for short utterances) but the whole audio arrives in a
+            # burst after generation completes, so LiveKit plays it
+            # smoothly at realtime with no underruns.
+            #
+            # Revisit when (a) we move to a faster GPU (A100/H100 should
+            # land RTF < 1x and streaming would be the obvious win), or
+            # (b) the Qwen3-TTS wrapper grows a "pre-roll N seconds"
+            # mode that buffers enough of a lead to survive streaming
+            # gaps.
             async with self._client.audio.speech.with_streaming_response.create(
-                extra_body={"stream": True},
                 **create_params,
             ) as r:
                 if r.status_code != 200:
