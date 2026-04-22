@@ -28,13 +28,13 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.services.piper.tts import PiperTTSService
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 
 from gigaam_stt import GigaAMSettings, GigaAMSTTService
 from overrides import PerSessionOverrides, build_system_prompt
 from transcript import AssistantTranscriptForwarder, UserTranscriptForwarder
 from transcript_sink import TranscriptSink
+from tts_factory import build_tts_service
 
 
 @dataclass(frozen=True)
@@ -49,6 +49,10 @@ class AgentConfig:
     tts_voice: str  # e.g. "ru_RU-denis-medium"
     vllm_api_key: str
     piper_voices_dir: Path = Path("/home/appuser/.cache/piper")
+    # TTS engine selector. "piper" is the day-one default; "silero" (Unit 3)
+    # and "qwen3" (Unit 4) are added by the tts_factory in later units.
+    # Unknown values raise at build_task time via build_tts_service.
+    tts_engine: str = "piper"
     # When both values are set, final STT and LLM utterances are also
     # POSTed to the API's /internal/transcripts endpoint. Empty = in-UI
     # transcripts only (no DB persistence).
@@ -114,11 +118,7 @@ def build_task(
         ),
     )
 
-    tts = PiperTTSService(
-        settings=PiperTTSService.Settings(voice=voice),
-        download_dir=cfg.piper_voices_dir,
-        use_cuda=False,
-    )
+    tts = build_tts_service(cfg.tts_engine, cfg=cfg, voice=voice)
 
     context = LLMContext()
     user_agg, assistant_agg = LLMContextAggregatorPair(

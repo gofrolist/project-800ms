@@ -149,6 +149,10 @@ def main() -> None:
             "tts_voice": require_env("TTS_VOICE", "ru_RU-denis-medium"),
             "vllm_api_key": require_env("VLLM_API_KEY", "not-used"),
             "piper_voices_dir": Path(require_env("PIPER_VOICES_DIR", "/home/appuser/.cache/piper")),
+            # TTS engine selector — "piper" (default), "silero" (Unit 3),
+            # "qwen3" (Unit 4). The factory in tts_factory.py raises
+            # ValueError on unknown values when a pipeline is built.
+            "tts_engine": require_env("TTS_ENGINE", "piper"),
             # Optional transcript persistence. Both must be set (or both
             # left empty — require_env with "" default accepts unset as
             # empty rather than raising).
