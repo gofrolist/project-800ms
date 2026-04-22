@@ -229,3 +229,10 @@ yarn-error.log*
 .next/
 .vite/
 *.tsbuildinfo
+
+# Local Claude Code runtime state (keep .claude/skills/ tracked)
+.claude/scheduled_tasks.lock
+.claude/settings.json
+
+# Compound-engineering run artifacts (ce-code-review, ce-ideate, etc.)
+.context/
