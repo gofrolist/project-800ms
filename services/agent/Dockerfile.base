@@ -66,11 +66,20 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # Runtime apt deps:
 #   - python3.12: the venv's shebangs point at /usr/bin/python3.12
-#   - ffmpeg: GigaAM's transcribe() shells out to ffmpeg for decode
+#   - libpython3.12: libpython3.12.so.1.0, required by torchcodec's
+#     ffmpeg-6 loader (torchcodec/_core/libtorchcodec_core6.so dlopens it
+#     via `ctypes.CDLL`). Ubuntu's python3.12 package is statically-linked
+#     and does NOT ship the shared lib on its own; adding it fixes
+#     `OSError: libpython3.12.so.1.0: cannot open shared object file`
+#     observed from XTTS synth paths that route through torchaudio.load()
+#     → torchcodec (prod incident 2026-04-22).
+#   - ffmpeg: GigaAM's transcribe() shells out to ffmpeg for decode,
+#     AND torchcodec dlopens libav*.so from this install (Ubuntu 24.04
+#     ships ffmpeg 6.x → torchcodec's core6 loader).
 #   - libsndfile1: gigaam_stt.py writes temp WAVs via soundfile (libsndfile)
 #   - espeak-ng: Piper's phonemizer backend for Russian + English
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3.12 \
+        python3.12 libpython3.12 \
         ffmpeg libsndfile1 espeak-ng \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
