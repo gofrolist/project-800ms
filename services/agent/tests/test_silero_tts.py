@@ -266,6 +266,13 @@ class TestRunTts:
         assert apply_kwargs["text"] == "привет мир"
         assert apply_kwargs["put_accent"] is True
         assert apply_kwargs["put_yo"] is True
+        # Regression guard: adapter MUST pass speaker — v5_cis_base's
+        # apply_tts silently falls back to its default speaker
+        # (ru_zhadyra) when speaker= is omitted, so a missing kwarg
+        # would look like "voice picker broken" from the user's POV.
+        # Default SileroSettings.speaker = "ru_zhadyra" flows into
+        # TTSSettings.voice which run_tts reads.
+        assert apply_kwargs["speaker"] == "ru_zhadyra"
 
     def test_real_torch_tensor_survives_detach_cpu_numpy_chain(self):
         """Using a genuine torch.Tensor (not a MagicMock) exercises the
@@ -445,12 +452,29 @@ class TestRunTts:
         assert svc._settings.model == "v5_custom_ru"
         assert svc._settings.voice == "v5_custom_ru"
 
-    def test_default_settings_use_v5_cis_base(self):
-        """Default SileroSettings match the spike's chosen model."""
+    def test_default_settings_use_ru_zhadyra_speaker(self):
+        """Default SileroSettings.speaker matches v5_cis_base's own
+        apply_tts default (ru_zhadyra). Keeps behavior unchanged for
+        deploys that don't set a speaker explicitly."""
         svc, _ = _build_service(apply_tts_return=_make_audio_tensor())
 
-        # Default SileroSettings populates TTSSettings with the
-        # v5_cis_base speaker and the ru language code.
-        assert svc._settings.model == "v5_cis_base"
-        assert svc._settings.voice == "v5_cis_base"
+        # SileroSettings.speaker is what apply_tts(speaker=...) reads
+        # at synth time — NOT the torch.hub.load model name.
+        assert svc._settings.model == "ru_zhadyra"
+        assert svc._settings.voice == "ru_zhadyra"
         assert svc._settings.language == "ru"
+
+    def test_speaker_flows_to_apply_tts(self):
+        """Setting SileroSettings.speaker must reach apply_tts(speaker=...)
+        — otherwise the model silently falls back to its built-in default
+        (ru_zhadyra) and the voice picker is a no-op from the user's
+        POV."""
+        svc, fake_model = _build_service(
+            apply_tts_return=_make_audio_tensor(),
+            settings=SileroSettings(speaker="ru_dmitriy"),
+        )
+
+        asyncio.run(_drain(svc.run_tts("текст", "ctx")))
+
+        fake_model.apply_tts.assert_called_once()
+        assert fake_model.apply_tts.call_args.kwargs["speaker"] == "ru_dmitriy"

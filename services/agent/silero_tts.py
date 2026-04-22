@@ -93,11 +93,16 @@ class SileroSettings:
     service directly can opt into explicit configuration.
     """
 
-    # Silero speaker / model identifier. Passed through to
-    # ``torch.hub.load(..., speaker=...)`` at preload time — *not* at
-    # synth time. Echoed into ``TTSSettings.voice`` for framework
-    # visibility.
-    speaker: str = "v5_cis_base"
+    # Silero per-call speaker id. The v5_cis_base model bundles ~60
+    # speakers across CIS languages — apply_tts(speaker=...) picks one
+    # per synth call. Russian speakers are prefixed ``ru_`` (e.g.
+    # ``ru_dmitriy``, ``ru_ekaterina``, ``ru_eduard``). Default matches
+    # the model's own apply_tts default so a blank config keeps the
+    # pre-existing voice. Passed into apply_tts at runtime; echoed into
+    # TTSSettings.voice for framework visibility. DO NOT confuse with
+    # the torch.hub.load ``speaker=`` arg used at MODEL load time
+    # (that's always "v5_cis_base" for us — see models.load_silero).
+    speaker: str = "ru_zhadyra"
     # Language code in the TTS settings store. Silero's Russian v5 model
     # only produces Russian output; attempting to synthesize other
     # languages will emit gibberish. The factory does not currently
@@ -221,6 +226,7 @@ class SileroTTSService(TTSService):
                 audio_tensor = await asyncio.to_thread(
                     self._loaded_model.apply_tts,
                     text=text,
+                    speaker=self._settings.voice,
                     sample_rate=_SILERO_SAMPLE_RATE,
                     put_accent=True,
                     put_yo=True,
