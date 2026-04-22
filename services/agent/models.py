@@ -17,7 +17,10 @@ from loguru import logger
 
 
 _gigaam_model: object | None = None
-_silero_model: object | None = None
+# Keyed cache so a silent model-name swap surfaces as a clear error
+# instead of returning the wrong model. ``None`` means uncached;
+# ``(name, model)`` means the given model is loaded.
+_silero_cached: tuple[str, object] | None = None
 
 
 def load_gigaam(model_name: str = "v3_e2e_rnnt") -> object:
@@ -58,7 +61,7 @@ def get_gigaam() -> object:
 
 
 def load_silero(model_name: str = "v5_cis_base") -> object:
-    """Load the Silero v5 Russian TTS model once. Cached on subsequent calls.
+    """Load the Silero v5 Russian TTS model once. Cached by model_name.
 
     Silero v5 has no PyPI package; the model is fetched via ``torch.hub``
     from ``snakers4/silero-models``. First call performs a network fetch
@@ -71,13 +74,27 @@ def load_silero(model_name: str = "v5_cis_base") -> object:
     — ``torch.hub.load`` returns a CPU-bound model by default and
     ``apply_tts`` would otherwise run on CPU even on the L4 host.
 
+    The cache is keyed on ``model_name``: repeat calls with the same
+    name return the cached singleton; calls with a different name
+    raise ``RuntimeError`` rather than silently returning the wrong
+    model. Switching speakers requires an agent restart. This guards
+    against the scenario where a configuration edit changes the
+    expected speaker but the already-loaded model keeps serving
+    traffic.
+
     Returns the Silero model instance; typed as ``object`` because
     ``torch.hub.load`` returns a ``torch.nn.Module`` whose exact type
     isn't re-exported from a stable public path.
     """
-    global _silero_model
-    if _silero_model is not None:
-        return _silero_model
+    global _silero_cached
+    if _silero_cached is not None:
+        cached_name, cached_model = _silero_cached
+        if cached_name == model_name:
+            return cached_model
+        raise RuntimeError(
+            f"load_silero already loaded {cached_name!r}; "
+            f"cannot switch to {model_name!r} without agent restart"
+        )
 
     # Local import — torch is a multi-hundred-MB dep and this module is
     # imported by the test suite on CPU-only CI where torch is not
@@ -104,20 +121,20 @@ def load_silero(model_name: str = "v5_cis_base") -> object:
         logger.info("Silero model moved to CUDA")
     else:
         logger.info("Silero running on CPU (no CUDA device available)")
-    _silero_model = model
+    _silero_cached = (model_name, model)
     logger.info("Silero model loaded in {elapsed:.1f}s", elapsed=time.monotonic() - t0)
-    return _silero_model
+    return model
 
 
 def get_silero() -> object:
     """Return the pre-loaded Silero TTS model. Raises if not loaded."""
-    if _silero_model is None:
+    if _silero_cached is None:
         raise RuntimeError("Silero model not loaded — call load_silero() first")
-    return _silero_model
+    return _silero_cached[1]
 
 
 def _reset_models_for_tests() -> None:
     """Reset cached singletons. Tests only — do not call from runtime."""
-    global _gigaam_model, _silero_model
+    global _gigaam_model, _silero_cached
     _gigaam_model = None
-    _silero_model = None
+    _silero_cached = None

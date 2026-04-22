@@ -174,10 +174,21 @@ services:
       # backend for Unit 4 and flip to optimized in Unit 5 if bench
       # numbers justify it. See wrapper README "Failure modes".
       - TTS_BACKEND=official
+      # Wire QWEN3_VARIANT from .env into the wrapper's TTS_MODEL_NAME
+      # (api/config.py:26). Upstream's default model id points at the
+      # maintainer's local filesystem — setting this ensures the sidecar
+      # fetches the HuggingFace-hosted weights instead. Defaults to the
+      # 0.6B variant we committed to in the plan (R8).
+      - TTS_MODEL_NAME=${QWEN3_VARIANT:-0.6B-Base}
       - HOST=0.0.0.0
       # Agent-internal docker-network port. The host-side mapping below
       # (127.0.0.1:8002:8000) exists only for debugging curl from host.
       - PORT=8000
+      # Bearer-token auth on /v1/audio/speech (local patch — wrapper
+      # README "Local patches" §1). Empty disables auth; set to the same
+      # value as QWEN3_TTS_API_KEY on the agent so Pipecat's OpenAI client
+      # sends it via the Authorization header.
+      - TTS_API_KEY=${QWEN3_TTS_API_KEY:-}
     volumes:
       # Dedicated HF cache for Qwen3-TTS. Don't share with hf_cache_agent
       # (GigaAM) or hf_cache_vllm — different UIDs inside each image would
@@ -303,6 +314,17 @@ services:
       - VLLM_MODEL=${LLM_MODEL:-qwen-7b}
       - VLLM_API_KEY=${LLM_API_KEY:?LLM_API_KEY is required}
       - TTS_VOICE=${TTS_VOICE:-ru_RU-denis-medium}
+      # TTS engine selector — one of "piper" (default), "silero", "qwen3".
+      # Must be wired through compose or the agent container never sees
+      # env-file edits. The agent's AgentConfig validates the value at
+      # construction time (services/agent/pipeline.py:AgentConfig).
+      - TTS_ENGINE=${TTS_ENGINE:-piper}
+      # Qwen3-TTS sidecar endpoint + API key. Only read when
+      # TTS_ENGINE=qwen3; the agent factory raises ValueError if either
+      # is empty at dispatch time (services/agent/tts_factory.py). Leave
+      # unset on Piper / Silero deploys.
+      - QWEN3_TTS_BASE_URL=${QWEN3_TTS_BASE_URL:-}
+      - QWEN3_TTS_API_KEY=${QWEN3_TTS_API_KEY:-}
       - HF_HOME=/home/appuser/.cache/huggingface
       - HF_HUB_DISABLE_XET=1
       - PIPER_VOICES_DIR=/home/appuser/.cache/piper
@@ -332,6 +354,12 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+      # With TTS_ENGINE=silero the main.py preload does a torch.hub
+      # clone (~200 MB) plus CUDA init before binding :8001 — we have
+      # seen 5-60s on cold cache depending on network. 300s tolerates
+      # that worst case; subsequent restarts hit torch_cache_agent and
+      # finish in seconds. Mirrors the vllm + qwen3-tts start_period.
+      start_period: 300s
     depends_on:
       livekit:
         condition: service_healthy

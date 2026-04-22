@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 import numpy as np
 
+from ..voice_mapping import VOICE_MAPPING
+
 logger = logging.getLogger(__name__)
 
 CONFIG_PATH = Path.home() / "qwen3-tts" / "config.yaml"
@@ -290,12 +292,14 @@ class OptimizedQwen3TTSBackend:
         emit_every_frames = streaming_opts.get("emit_every_frames", 4)
 
         voice_name = voice
-        openai_mapping = {
-            "alloy": "Vivian", "echo": "Ryan", "fable": "Sophia",
-            "nova": "Isabella", "onyx": "Evan", "shimmer": "Lily",
-        }
-        if voice.lower() in openai_mapping:
-            voice_name = openai_mapping[voice.lower()]
+        # Local patch (adversarial/ADV-005 in ce-code-review). Upstream
+        # had a hardcoded table here referencing voices (``Sophia``,
+        # ``Isabella``, ``Lily``) that don't exist in the model; the
+        # streaming path silently fell back to defaults on those
+        # aliases. Use the canonical table from api/voice_mapping.py
+        # so streaming + non-streaming paths stay synchronized.
+        if voice.lower() in VOICE_MAPPING:
+            voice_name = VOICE_MAPPING[voice.lower()]
 
         for chunk, sr in self.model.stream_generate_custom_voice(
             text=text,

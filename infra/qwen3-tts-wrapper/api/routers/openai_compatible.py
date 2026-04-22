@@ -17,9 +17,10 @@ from typing import List, Optional
 
 import numpy as np
 import soundfile as sf
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
+from ..security import verify_api_key
 from ..structures.schemas import (
     OpenAISpeechRequest,
     ModelInfo,
@@ -29,12 +30,18 @@ from ..structures.schemas import (
 )
 from ..services.text_processing import normalize_text
 from ..services.audio_encoding import encode_audio, get_content_type, DEFAULT_SAMPLE_RATE
+from ..voice_mapping import VOICE_MAPPING
 
 logger = logging.getLogger(__name__)
 
+# Local patch: Bearer-token auth on all /v1/* endpoints (security/S1 in
+# ce-code-review). When TTS_API_KEY is empty the dependency is a no-op,
+# so the vendored wrapper remains drop-in compatible with operators who
+# haven't set the env var yet.
 router = APIRouter(
     tags=["OpenAI Compatible TTS"],
     responses={404: {"description": "Not found"}},
+    dependencies=[Depends(verify_api_key)],
 )
 
 # GPU lock: serializes TTS generation to prevent GPU contention
@@ -156,17 +163,10 @@ for lang_code in LANGUAGE_CODE_MAPPING.keys():
     MODEL_MAPPING[f"tts-1-{lang_code}"] = "qwen3-tts"
     MODEL_MAPPING[f"tts-1-hd-{lang_code}"] = "qwen3-tts"
 
-# OpenAI voice mapping to Qwen voices
-# Must map to voices that actually exist in the model:
-# aiden, dylan, eric, ono_anna, ryan, serena, sohee, uncle_fu, vivian
-VOICE_MAPPING = {
-    "alloy": "Vivian",
-    "echo": "Ryan",
-    "fable": "Serena",
-    "nova": "Aiden",
-    "onyx": "Eric",
-    "shimmer": "Dylan",
-}
+# VOICE_MAPPING is now canonical in ``..voice_mapping``; this module
+# still re-exports it (imported above) for backwards compatibility with
+# anyone grep-hunting the original in-router definition. See local
+# patches §5 in infra/qwen3-tts-wrapper/README.md.
 
 
 def extract_language_from_model(model_name: str) -> Optional[str]:

@@ -23,8 +23,8 @@ import asyncio
 import sys
 from unittest.mock import AsyncMock, MagicMock
 
-import numpy as np
 import pytest
+import torch
 
 # gigaam lives alongside silero in models.py; stub it so shared imports
 # through ``models`` don't fail when this test module loads first.
@@ -76,19 +76,16 @@ async def _drain(async_gen):
     return [frame async for frame in async_gen]
 
 
-def _make_audio_tensor(n_samples: int = 24000) -> MagicMock:
-    """Build a mock torch tensor with a ``numpy()`` method.
+def _make_audio_tensor(n_samples: int = 24000) -> torch.Tensor:
+    """Build a real torch.Tensor mirroring Silero's apply_tts return type.
 
-    Silero returns a torch.Tensor whose ``.numpy()`` method gives a
-    float32 ndarray in [-1, 1]. We mock the shape: a real tensor with
-    non-zero content flows through the int16 conversion without the
-    whole array collapsing to zero bytes.
+    Silero returns a float32 torch.Tensor in [-1, 1]. Using a real
+    tensor — not a MagicMock — ensures the ``.detach().cpu().numpy()``
+    chain the adapter invokes is actually exercised in tests; a
+    MagicMock would fake any attribute access and mask regressions
+    like a bare ``.numpy()`` call against a CUDA tensor.
     """
-    tensor = MagicMock(name="audio_tensor")
-    # Use a small non-zero signal so the int16 conversion produces
-    # non-empty audio bytes the framing helper doesn't drop.
-    tensor.numpy.return_value = np.linspace(-0.5, 0.5, n_samples, dtype=np.float32)
-    return tensor
+    return torch.linspace(-0.5, 0.5, n_samples, dtype=torch.float32)
 
 
 def _build_service(*, apply_tts_return, settings=None):
@@ -131,7 +128,33 @@ class TestLoadSilero:
         assert first is fake_model
         assert second is fake_model
         # Cached singleton — torch.hub.load called exactly once across
-        # two load_silero() invocations.
+        # two load_silero() invocations with the same model name.
+        assert mock_torch_hub.hub_load.call_count == 1
+
+    def test_second_load_with_different_name_raises(self, mock_torch_hub):
+        """Switching speakers at runtime must not silently serve the
+        already-loaded model.
+
+        Upstream behavior returned the cached model regardless of
+        ``model_name``, which masked config drift. We raise explicitly
+        so the operator sees the mismatch on agent boot.
+        """
+        fake_model = MagicMock(name="silero_model")
+        mock_torch_hub.hub_load.return_value = (fake_model, {})
+
+        load_silero("v5_cis_base")
+
+        with pytest.raises(RuntimeError) as exc_info:
+            load_silero("v5_ru")
+
+        message = str(exc_info.value)
+        # Both the cached name and the requested name appear in the
+        # error so the operator can see what's loaded and what they
+        # asked for.
+        assert "'v5_cis_base'" in message
+        assert "'v5_ru'" in message
+        # The second call must NOT hit torch.hub.load — otherwise we
+        # would download and discard a model before raising.
         assert mock_torch_hub.hub_load.call_count == 1
 
     def test_load_passes_speaker_and_repo_to_torch_hub(self, mock_torch_hub):
@@ -219,20 +242,31 @@ class TestRunTts:
         assert apply_kwargs["put_accent"] is True
         assert apply_kwargs["put_yo"] is True
 
-    def test_apply_tts_runs_off_the_event_loop(self):
-        """asyncio.to_thread prevents the blocking synth from stalling I/O."""
-        tensor = _make_audio_tensor()
-        svc, fake_model = _build_service(apply_tts_return=tensor)
+    def test_real_torch_tensor_survives_detach_cpu_numpy_chain(self):
+        """Using a genuine torch.Tensor (not a MagicMock) exercises the
+        ``.detach().cpu().numpy()`` conversion path end-to-end.
 
-        # Record that apply_tts was called — the to_thread wrapper means
-        # the call happens in a worker thread, not the main asyncio
-        # loop, but the MagicMock is invoked regardless. Proving
-        # non-blocking behaviour from a unit test without timing
-        # instrumentation is infeasible; the call count gate is the
-        # best we can do here. The mechanism is verified at the
-        # integration level via the live deploy check in Unit 3's
-        # verification steps.
-        asyncio.run(_drain(svc.run_tts("hello", context_id="ctx")))
+        A ``MagicMock`` fakes any attribute access, which would silently
+        succeed even if the adapter called a non-existent chain. Using
+        a real CPU tensor asserts the actual method chain works and
+        produces non-empty PCM output — and would fail loudly if
+        someone regressed to bare ``.numpy()`` against a CUDA-resident
+        tensor, because the same call path is what prod would hit.
+        """
+        from pipecat.frames.frames import TTSAudioRawFrame  # noqa: PLC0415
+
+        real_tensor = torch.zeros(12000, dtype=torch.float32)
+        # Fill with a small non-zero ramp so the int16 conversion
+        # produces non-trivial PCM bytes the framing helper won't drop.
+        real_tensor += torch.linspace(-0.5, 0.5, 12000)
+
+        svc, fake_model = _build_service(apply_tts_return=real_tensor)
+
+        frames = asyncio.run(_drain(svc.run_tts("hello", context_id="ctx")))
+
+        audio_frames = [f for f in frames if isinstance(f, TTSAudioRawFrame)]
+        assert len(audio_frames) == 1
+        assert len(audio_frames[0].audio) > 0
         fake_model.apply_tts.assert_called_once()
 
     def test_empty_text_drops_without_synth(self):
@@ -267,6 +301,88 @@ class TestRunTts:
         assert "CUDA" not in error_frames[0].error
         assert "OOM" not in error_frames[0].error
 
+    def test_stop_ttfb_metrics_fires_exactly_once_on_happy_path(self):
+        """A completed synth calls stop_ttfb_metrics exactly once.
+
+        Previously the method was called inside the async-for loop AND
+        in ``finally``, so a single happy-path synth incremented the
+        stop counter twice. The sentinel-flag pattern must gate the
+        ``finally`` branch so it never duplicates work.
+        """
+        svc, _ = _build_service(apply_tts_return=_make_audio_tensor())
+
+        asyncio.run(_drain(svc.run_tts("привет мир", context_id="ctx")))
+
+        assert svc.stop_ttfb_metrics.call_count == 1
+
+    def test_concurrent_apply_tts_calls_are_serialized(self):
+        """Two concurrent ``run_tts`` calls against the shared Silero
+        singleton must NOT execute ``apply_tts`` in parallel.
+
+        PyTorch ``nn.Module`` isn't thread-safe; interleaved calls on
+        the same module via the threadpool executor can corrupt hidden
+        state. The module-level ``_silero_apply_lock`` serializes
+        access. We prove serialization by tracking in-flight counts
+        inside the mock — if the lock is removed, the max in-flight
+        count climbs to 2 and the assertion fails.
+        """
+        import threading  # noqa: PLC0415
+
+        in_flight = 0
+        max_in_flight = 0
+        lock = threading.Lock()
+        start_event = threading.Event()
+
+        def fake_apply_tts(**_kwargs):
+            nonlocal in_flight, max_in_flight
+            with lock:
+                in_flight += 1
+                max_in_flight = max(max_in_flight, in_flight)
+            # Hold the "GPU" long enough for the concurrent call to
+            # reach the same critical section if the lock weren't
+            # there. Short enough that tests don't run slow.
+            start_event.wait(timeout=0.1)
+            with lock:
+                in_flight -= 1
+            return torch.linspace(-0.5, 0.5, 12000, dtype=torch.float32)
+
+        svc_a, fake_model_a = _build_service(apply_tts_return=None)
+        fake_model_a.apply_tts = fake_apply_tts
+        svc_b, fake_model_b = _build_service(apply_tts_return=None)
+        fake_model_b.apply_tts = fake_apply_tts
+
+        async def _race():
+            # Release the waiting thread after both run_tts calls have
+            # been kicked off — otherwise the first call finishes
+            # before the second starts and we don't test contention.
+            async def _release_after_both_started():
+                await asyncio.sleep(0.02)
+                start_event.set()
+
+            asyncio.get_event_loop().create_task(_release_after_both_started())
+            await asyncio.gather(
+                _drain(svc_a.run_tts("hello a", context_id="ctx-a")),
+                _drain(svc_b.run_tts("hello b", context_id="ctx-b")),
+            )
+
+        asyncio.run(_race())
+
+        # If the lock were absent, both apply_tts calls would enter
+        # fake_apply_tts concurrently and max_in_flight would reach 2.
+        assert max_in_flight == 1, (
+            f"expected serialized apply_tts calls, got max_in_flight={max_in_flight}"
+        )
+
+    def test_stop_ttfb_metrics_fires_exactly_once_on_error_path(self):
+        """When apply_tts raises before any frame yields, stop_ttfb_metrics
+        must still fire exactly once (from the ``finally`` branch)."""
+        svc, fake_model = _build_service(apply_tts_return=_make_audio_tensor())
+        fake_model.apply_tts.side_effect = RuntimeError("boom")
+
+        asyncio.run(_drain(svc.run_tts("привет", context_id="ctx")))
+
+        assert svc.stop_ttfb_metrics.call_count == 1
+
     def test_model_not_loaded_yields_error_frame(self):
         from pipecat.frames.frames import ErrorFrame  # noqa: PLC0415
 
@@ -285,7 +401,13 @@ class TestRunTts:
         assert "TTS unavailable" in frames[0].error
 
     def test_custom_speaker_flows_into_tts_settings(self):
-        """SileroSettings.speaker populates TTSSettings.voice at init time."""
+        """SileroSettings.speaker populates TTSSettings at init time.
+
+        The SileroSettings instance itself is consumed eagerly in
+        ``__init__`` (no stored reference), so the assertion moves to
+        the framework's TTSSettings store which IS the single source
+        of truth after construction.
+        """
         svc, _ = _build_service(
             apply_tts_return=_make_audio_tensor(),
             settings=SileroSettings(speaker="v5_custom_ru"),
@@ -293,15 +415,17 @@ class TestRunTts:
 
         # The framework TTSSettings store is populated so pipecat's
         # settings-tracking logs don't warn about NOT_GIVEN fields on
-        # every pipeline start.
+        # every pipeline start. TTSSettings.voice + .model both carry
+        # the speaker id (SileroSettings echoes it into both).
         assert svc._settings.model == "v5_custom_ru"
-        # The adapter's own settings object also carries the speaker,
-        # which is what load_silero / torch.hub.load would consume.
-        assert svc._silero_settings.speaker == "v5_custom_ru"
+        assert svc._settings.voice == "v5_custom_ru"
 
     def test_default_settings_use_v5_cis_base(self):
         """Default SileroSettings match the spike's chosen model."""
         svc, _ = _build_service(apply_tts_return=_make_audio_tensor())
 
-        assert svc._silero_settings.speaker == "v5_cis_base"
-        assert svc._silero_settings.language == "ru"
+        # Default SileroSettings populates TTSSettings with the
+        # v5_cis_base speaker and the ru language code.
+        assert svc._settings.model == "v5_cis_base"
+        assert svc._settings.voice == "v5_cis_base"
+        assert svc._settings.language == "ru"

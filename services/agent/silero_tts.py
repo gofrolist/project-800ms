@@ -31,7 +31,7 @@ rationale; this is an accepted MVP limitation, not a bug.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass
 
 import numpy as np
@@ -52,6 +52,27 @@ _SILERO_SAMPLE_RATE = 24_000
 # LiveKit-compatible little-endian PCM bytes.
 _INT16_SCALE = 32767
 
+# Module-level lock that serializes ``apply_tts`` calls across every
+# ``SileroTTSService`` instance in the process.
+#
+# The cached Silero model is a single ``torch.nn.Module`` stored in
+# ``models._silero_cached``; every ``SileroTTSService`` created for a
+# dispatched room holds a reference to the same Module. PyTorch's
+# ``nn.Module`` is NOT thread-safe — concurrent ``apply_tts`` calls
+# interleave writes to the model's hidden state via the default
+# executor's worker threads and can corrupt tensors or raise obscure
+# CUDA errors.
+#
+# Tradeoff: one TTS synth at a time, globally. At the experiment's
+# single-session load this is invisible; the lock is held for the
+# duration of a ``to_thread`` wrapped ``apply_tts`` call (tens of ms
+# on L4). If we later scale to concurrent sessions, options are
+# (a) clone the model per worker (expensive — ~200 MB each, and
+# torch.hub doesn't give us a cheap deep-copy path for Silero's
+# custom scripted module), or (b) move to a multi-GPU setup. For now,
+# lock-serialize.
+_silero_apply_lock = asyncio.Lock()
+
 
 @dataclass
 class SileroSettings:
@@ -62,18 +83,39 @@ class SileroSettings:
     ``v5_ru``). Accent + ё normalization are always on: they're cheap,
     they improve quality for the kind of game-domain text this pipeline
     handles, and there's no observed reason to expose them as tunables.
+
+    Passthrough semantics: the fields here are consumed eagerly at
+    ``__init__`` time — the speaker is echoed into ``TTSSettings.model``
+    / ``TTSSettings.voice`` and the language into ``TTSSettings.language``.
+    After construction there is no stored reference to the
+    ``SileroSettings`` instance; it exists for API symmetry with the
+    ``GigaAMSettings`` constructor pattern so operators wiring the
+    service directly can opt into explicit configuration.
     """
 
     # Silero speaker / model identifier. Passed through to
     # ``torch.hub.load(..., speaker=...)`` at preload time — *not* at
-    # synth time. Stored here so the service can echo it into
-    # ``TTSSettings.voice`` for framework visibility.
+    # synth time. Echoed into ``TTSSettings.voice`` for framework
+    # visibility.
     speaker: str = "v5_cis_base"
     # Language code in the TTS settings store. Silero's Russian v5 model
     # only produces Russian output; attempting to synthesize other
     # languages will emit gibberish. The factory does not currently
     # route non-Russian traffic to this service.
     language: str = "ru"
+
+
+async def _single_shot_audio_iterator(pcm: bytes) -> AsyncIterator[bytes]:
+    """Wrap a complete PCM buffer as a one-yield async iterator.
+
+    This is the shape Pipecat's ``_stream_audio_frames_from_iterator``
+    expects for file-at-a-time TTS engines like Silero: the whole
+    utterance is synthesized off-thread into a single buffer, then
+    fed back as a one-element async iterator so the framing helper can
+    chunk it into ``TTSAudioRawFrame``\\s at the configured sample
+    rate.
+    """
+    yield pcm
 
 
 class SileroTTSService(TTSService):
@@ -117,7 +159,6 @@ class SileroTTSService(TTSService):
             ),
             **kwargs,
         )
-        self._silero_settings = silero_settings
         # Bind eagerly. Pipecat 0.0.108's TTSService does not call
         # _load(); waiting for lazy load leaves _loaded_model=None in
         # prod and every synth errors with "TTS model not bound".
@@ -160,39 +201,56 @@ class SileroTTSService(TTSService):
             return
 
         logger.debug("Silero TTS: synthesizing [{text}]", text=text)
+        # Sentinel flag so stop_ttfb_metrics() fires exactly once per
+        # synth — on the first yielded frame on the happy path, or in
+        # ``finally`` on the error path before any frame has flowed.
+        # Previously it was called inside the async-for loop AND in
+        # ``finally``, so a single happy-path synth incremented the TTFB
+        # stop counter twice.
+        ttfb_stopped = False
         try:
             await self.start_tts_usage_metrics(text)
 
             # Blocking synth off-thread. On L4 GPU this takes ~60ms for
             # a one-second utterance (RTF ~0.06 per upstream bench).
-            audio_tensor = await asyncio.to_thread(
-                self._loaded_model.apply_tts,
-                text=text,
-                sample_rate=_SILERO_SAMPLE_RATE,
-                put_accent=True,
-                put_yo=True,
-            )
+            # The module-level lock serializes ``apply_tts`` so two
+            # concurrent ``SileroTTSService`` instances can't corrupt
+            # the shared ``nn.Module``'s hidden state via interleaved
+            # threadpool workers. See ``_silero_apply_lock`` comment.
+            async with _silero_apply_lock:
+                audio_tensor = await asyncio.to_thread(
+                    self._loaded_model.apply_tts,
+                    text=text,
+                    sample_rate=_SILERO_SAMPLE_RATE,
+                    put_accent=True,
+                    put_yo=True,
+                )
 
             # Silero returns float32 in [-1, 1]; LiveKit expects int16
             # PCM little-endian. 32767 (not 32768) keeps the positive
             # saturation one step below the int16 max — matches the
             # standard WAV/CD conversion and avoids a rare one-sample
             # overflow when the model clips to exactly +1.0.
-            audio_np = audio_tensor.numpy()
+            # ``.detach().cpu().numpy()`` handles both CPU- and
+            # CUDA-resident tensors: ``.numpy()`` alone raises
+            # "can't convert cuda tensor" when the model is on GPU, and
+            # ``.detach()`` drops any autograd state just in case.
+            audio_np = audio_tensor.detach().cpu().numpy()
             pcm_bytes = (audio_np * _INT16_SCALE).astype(np.int16).tobytes()
 
-            async def _one_shot():
-                yield pcm_bytes
-
             async for frame in self._stream_audio_frames_from_iterator(
-                _one_shot(),
+                _single_shot_audio_iterator(pcm_bytes),
                 in_sample_rate=_SILERO_SAMPLE_RATE,
                 context_id=context_id,
             ):
                 # Stop the TTFB timer on the first yielded frame — before
                 # the frame is consumed downstream. Matches PiperTTSService
-                # (piper/tts.py:171).
-                await self.stop_ttfb_metrics()
+                # (piper/tts.py:171). Only fires once; the sentinel flag
+                # guards against duplicate calls from later iterations +
+                # the ``finally`` block below.
+                if not ttfb_stopped:
+                    await self.stop_ttfb_metrics()
+                    ttfb_stopped = True
                 yield frame
         except Exception:
             # Keep exception detail in server logs only — the ErrorFrame
@@ -202,7 +260,10 @@ class SileroTTSService(TTSService):
             logger.exception("Silero TTS synth failed")
             yield ErrorFrame("TTS synth failed")
         finally:
-            # Ensure TTFB is stopped even on the error path — otherwise
-            # subsequent metrics emissions would show a stale start time.
-            await self.stop_ttfb_metrics()
+            # Only stop TTFB here if the happy path never yielded a
+            # frame — i.e. the error path fired before the async-for
+            # produced anything. Otherwise the async-for block already
+            # called it exactly once.
+            if not ttfb_stopped:
+                await self.stop_ttfb_metrics()
             logger.debug("Silero TTS: finished [{text}]", text=text)

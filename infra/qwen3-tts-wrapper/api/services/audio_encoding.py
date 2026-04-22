@@ -146,38 +146,55 @@ def encode_audio(
     if format == "pcm":
         return convert_to_pcm(audio)
     
-    # For compressed formats, use pydub if available, otherwise fall back to wav
+    # For compressed formats, use pydub if available.
+    #
+    # Local patch (adversarial/ADV-004 in ce-code-review): when pydub
+    # is missing, RAISE rather than silently returning WAV bytes.
+    # Upstream fell through to ``convert_to_wav`` and returned the
+    # result from an endpoint whose Content-Type header claimed the
+    # requested (non-wav) format. Pipecat's OpenAITTSService sees
+    # Content-Type: audio/mpeg but actually receives a RIFF header
+    # followed by PCM, and renders the WAV magic bytes + metadata as
+    # audible artifacts.
+    # requirements.txt pins pydub, so this path only triggers on
+    # intentionally slimmed image builds — the explicit failure makes
+    # that regression loud instead of silent.
     try:
         from pydub import AudioSegment
-        
+    except ImportError as exc:
+        raise RuntimeError(
+            f"pydub is required for {format!r} encoding; install pydub in the wrapper image"
+        ) from exc
+
+    try:
         # Convert to WAV first
         wav_bytes = convert_to_wav(audio, sample_rate)
-        
+
         # Load into pydub
         segment = AudioSegment.from_wav(io.BytesIO(wav_bytes))
-        
+
         # Export to target format
         output = io.BytesIO()
-        
+
         format_params = {
             "mp3": {"format": "mp3", "bitrate": "192k"},
             "opus": {"format": "opus", "bitrate": "128k"},
             "aac": {"format": "adts", "bitrate": "192k"},  # AAC in ADTS container
             "flac": {"format": "flac"},
         }
-        
+
         params = format_params.get(format, {"format": format})
         export_format = params.pop("format", format)
-        
+
         segment.export(output, format=export_format, **params)
         return output.getvalue()
-        
-    except ImportError:
-        # Fall back to WAV if pydub not available
-        logger.warning(f"pydub not available, returning WAV instead of {format}")
-        return convert_to_wav(audio, sample_rate)
+
     except Exception as e:
-        # Fall back to WAV on any encoding error
+        # Fall back to WAV on any non-ImportError encoding error. The
+        # symbol-mismatch hazard that motivated the raise-on-ImportError
+        # patch above doesn't apply here — this branch is a runtime
+        # failure of the encoder, and returning SOME audio is better
+        # than erroring out mid-stream.
         logger.warning(f"Failed to encode to {format} ({e}), returning WAV")
         return convert_to_wav(audio, sample_rate)
 

@@ -155,7 +155,13 @@ Our plan deploys the 0.6B variant (R8 committed). We must either:
 
 ## Local patches
 
-*(none as of 2026-04-21 — this section populates when we diverge from upstream)*
+Patches applied on top of upstream commit `eb14f6e6a50445cf442979abb9203ff0d5042c43`:
+
+1. **Bearer-token auth on `/v1/audio/speech`** (security/S1) — upstream accepts all requests without credentials; our compose internal network would expose the sidecar to every container. Added a simple dependency (`api/security.py::verify_api_key`) that validates the `Authorization: Bearer <token>` header against the `TTS_API_KEY` env var. Backwards-compatible: when `TTS_API_KEY` is unset the dependency is a no-op, so operators who haven't opted in keep upstream behavior.
+2. **`/health` returns 503 when model not ready** (reliability/R2) — upstream returned 200 with `status=initializing` even while the backend was still loading weights; the compose healthcheck marked the container healthy before synth worked. Patched `api/main.py::health_check` to raise `HTTPException(status_code=503, ...)` when `backend.is_ready()` is False, so the healthcheck correctly stays in the "starting" state during first-boot weight download.
+3. **CORS tightened to loopback by default** (security/S4) — upstream defaulted to `CORS_ORIGINS="*"` with `allow_credentials=True` on an unauthenticated endpoint; we default to `"http://localhost"` in `api/main.py`. Operators can restore the wildcard explicitly via env; the default stops being unsafe.
+4. **Pydub-absent compressed-format fallback raises instead of silent** (adversarial/ADV-004) — upstream's compressed-audio path (mp3/opus/aac/flac) silently fell through to `convert_to_wav` when pydub was missing, returning WAV bytes behind an mp3/opus Content-Type header. Pipecat's downstream interpreted the RIFF header as raw PCM and rendered it as audio artifacts. Changed to raise `RuntimeError("pydub is required for <fmt> encoding")` so the failure is loud. `requirements.txt` pins pydub so the normal path is unaffected.
+5. **VOICE_MAPPING canonicalised to `api/voice_mapping.py`** (adversarial/ADV-005) — upstream had two divergent copies of the OpenAI→Qwen voice table. The router's non-streaming path used the correct table; `api/backends/optimized_backend.py::generate_speech_streaming` hardcoded a different table referencing voices (`Sophia`, `Isabella`, `Lily`) that don't exist in the model catalog, so streaming requests for those OpenAI aliases silently fell back to defaults. Extracted the canonical table to `api/voice_mapping.py` and imported it from both call paths.
 
 ## References
 

@@ -44,7 +44,14 @@ TTS_WARMUP_ON_START = os.getenv("TTS_WARMUP_ON_START", "false").lower() == "true
 GPU_KEEPALIVE_INTERVAL = int(os.getenv("GPU_KEEPALIVE_INTERVAL", "0"))
 
 # CORS configuration
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
+#
+# Local patch (security/S4 in ce-code-review): default origins tightened
+# from "*" to "http://localhost". Upstream defaulted to a fully open
+# wildcard with ``allow_credentials=True``, which a browser-origin
+# attacker could leverage through the now-authenticated endpoint.
+# Operators can still restore wildcard behavior by setting
+# ``CORS_ORIGINS=*`` explicitly; the default just stops being unsafe.
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost").split(",")
 
 # Voice Studio configuration
 ENABLE_VOICE_STUDIO = os.getenv("ENABLE_VOICE_STUDIO", "false").lower() == "true"
@@ -256,19 +263,46 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint with backend information."""
+    """Health check endpoint with backend information.
+
+    Local patch (reliability/R2 in ce-code-review): returns HTTP 503
+    when the backend is not yet ready. Upstream returned 200 with
+    ``status=initializing`` in the body, which caused the compose
+    healthcheck to mark the container "healthy" before the model
+    finished loading and other services started routing traffic into
+    a sidecar that would block on the first request.
+    """
+    from fastapi import HTTPException  # noqa: PLC0415
+
     try:
         from .backends import get_backend
 
         backend = get_backend()
         device_info = backend.get_device_info()
 
+        if not backend.is_ready():
+            # Compose healthcheck sees a non-2xx response and keeps the
+            # container in the "starting" state until the model finishes
+            # loading. Keep the body informative so operators scraping
+            # /health directly still see what's happening.
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "initializing",
+                    "backend": {
+                        "name": backend.get_backend_name(),
+                        "model_id": backend.get_model_id(),
+                        "ready": False,
+                    },
+                },
+            )
+
         return {
-            "status": "healthy" if backend.is_ready() else "initializing",
+            "status": "healthy",
             "backend": {
                 "name": backend.get_backend_name(),
                 "model_id": backend.get_model_id(),
-                "ready": backend.is_ready(),
+                "ready": True,
             },
             "device": {
                 "type": device_info.get("device"),
@@ -279,17 +313,26 @@ async def health_check():
             },
             "version": "0.1.0",
         }
+    except HTTPException:
+        # Let our own 503 propagate — we raised it intentionally above.
+        raise
     except Exception as e:
         logger.error(f"Health check error: {e}")
-        return {
-            "status": "error",
-            "error": str(e),
-            "backend": {
-                "name": TTS_BACKEND,
-                "ready": False,
+        # Backend accessor itself raised (e.g. initialization crashed
+        # outright) — this is a hard error, not a transient initializing
+        # state. 503 here still signals "don't route traffic yet".
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "error",
+                "error": str(e),
+                "backend": {
+                    "name": TTS_BACKEND,
+                    "ready": False,
+                },
+                "version": "0.1.0",
             },
-            "version": "0.1.0",
-        }
+        )
 
 
 def main():

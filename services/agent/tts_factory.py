@@ -134,15 +134,18 @@ def build_tts_service(
         )
 
     if engine == "qwen3":
-        # Lazy import — only pull OpenAITTSService (and its openai client
-        # transitive) when the Qwen3 branch actually dispatches. Matches
-        # the lazy-import pattern above.
-        from pipecat.services.openai.tts import OpenAITTSService  # noqa: PLC0415
+        # Lazy import — only pull Qwen3TTSService (which extends
+        # pipecat.services.openai.tts.OpenAITTSService with network-error
+        # redaction; see ``services/agent/qwen3_tts.py``) when the Qwen3
+        # branch actually dispatches. Matches the lazy-import pattern
+        # above and keeps openai-sdk + httpx out of the Piper/Silero
+        # startup import graph.
+        from qwen3_tts import Qwen3TTSService  # noqa: PLC0415
 
-        if not cfg.qwen3_base_url or not cfg.qwen3_api_key:
-            raise ValueError(
-                "qwen3 TTS engine requires QWEN3_TTS_BASE_URL and QWEN3_TTS_API_KEY envs to be set"
-            )
+        if not cfg.qwen3_base_url:
+            raise ValueError("qwen3 TTS engine requires QWEN3_TTS_BASE_URL to be set")
+        if not cfg.qwen3_api_key:
+            raise ValueError("qwen3 TTS engine requires QWEN3_TTS_API_KEY to be set")
 
         # Substitute out-of-whitelist voices to avoid KeyError at dispatch
         # time. The wrapper maps OpenAI voice names onto Qwen3's internal
@@ -151,13 +154,18 @@ def build_tts_service(
         # recommends as the Russian-synthesis starting default.
         effective_voice = voice
         if voice not in _QWEN3_VALID_VOICES:
+            # Loguru does not honor the ``!r`` conversion flag in its
+            # format-spec parser the way stdlib str.format does, so
+            # precompute reprs and pass them as plain string kwargs.
+            # Without this the literal ``!r`` would reach the log output
+            # as ``{voice!r}`` rather than a quoted repr.
             logger.warning(
-                "TTS_VOICE={voice!r} is not a Pipecat OpenAITTSService "
-                "whitelist voice; substituting {default!r} for the Qwen3 "
+                "TTS_VOICE={voice_repr} is not a Pipecat OpenAITTSService "
+                "whitelist voice; substituting {default_repr} for the Qwen3 "
                 "sidecar dispatch. Set TTS_VOICE to one of {valid} to "
                 "silence this warning.",
-                voice=voice,
-                default=_QWEN3_DEFAULT_VOICE,
+                voice_repr=repr(voice),
+                default_repr=repr(_QWEN3_DEFAULT_VOICE),
                 valid=sorted(_QWEN3_VALID_VOICES),
             )
             effective_voice = _QWEN3_DEFAULT_VOICE
@@ -170,7 +178,7 @@ def build_tts_service(
         # alias list. `language=` is intentionally not a kwarg here — the
         # OpenAI-compat schema doesn't expose it; the model alias is the
         # only clean way to route language without patching Pipecat.
-        return OpenAITTSService(
+        return Qwen3TTSService(
             base_url=cfg.qwen3_base_url,
             api_key=cfg.qwen3_api_key,
             model="tts-1-ru",

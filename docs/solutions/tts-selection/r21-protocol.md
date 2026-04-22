@@ -1,7 +1,7 @@
 ---
 title: "R21 Phase-0 premise blind-listen protocol"
 date: 2026-04-21
-module: docs/solutions/tts-selection
+module: services/agent
 component: tts
 category: tts-selection
 problem_type: best_practice

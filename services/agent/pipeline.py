@@ -37,6 +37,9 @@ from transcript_sink import TranscriptSink
 from tts_factory import build_tts_service
 
 
+_VALID_TTS_ENGINES: frozenset[str] = frozenset({"piper", "silero", "qwen3"})
+
+
 @dataclass(frozen=True)
 class AgentConfig:
     """Runtime config for one agent instance."""
@@ -51,7 +54,10 @@ class AgentConfig:
     piper_voices_dir: Path = Path("/home/appuser/.cache/piper")
     # TTS engine selector. "piper" is the day-one default; "silero" (Unit 3)
     # and "qwen3" (Unit 4) are added by the tts_factory in later units.
-    # Unknown values raise at build_task time via build_tts_service.
+    # Validated at construction time (``__post_init__``); the factory still
+    # raises on unknown values when build_task() calls it, but failing at
+    # AgentConfig instantiation surfaces the config error on agent boot
+    # instead of on the first dispatched room.
     tts_engine: str = "piper"
     # Qwen3-TTS sidecar endpoint + API key. Empty on Piper/Silero deploys —
     # the factory's qwen3 branch validates non-empty at dispatch time, so
@@ -63,6 +69,13 @@ class AgentConfig:
     # transcripts only (no DB persistence).
     api_base_url: str = ""
     agent_internal_token: str = ""
+
+    def __post_init__(self) -> None:
+        if self.tts_engine not in _VALID_TTS_ENGINES:
+            raise ValueError(
+                f"AgentConfig.tts_engine must be one of "
+                f"{sorted(_VALID_TTS_ENGINES)!r}; got {self.tts_engine!r}"
+            )
 
 
 def build_task(

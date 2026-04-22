@@ -39,7 +39,12 @@ class CreateSessionRequest(BaseModel):
     voice: str | None = Field(
         default=None,
         max_length=64,
-        description="Piper voice id, e.g. 'ru_RU-denis-medium'.",
+        description=(
+            "Provider-specific voice id. piper: e.g. 'ru_RU-denis-medium'. "
+            "silero: e.g. 'v5_cis_base'. qwen3: one of the OpenAI voice names "
+            "(alloy, echo, fable, nova, onyx, shimmer). Defaults to the "
+            "TTS_VOICE env var."
+        ),
     )
     language: str | None = Field(
         default=None,
