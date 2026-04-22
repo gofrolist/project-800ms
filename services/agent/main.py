@@ -22,7 +22,7 @@ from pipecat.frames.frames import InterruptionTaskFrame, TTSSpeakFrame
 from pipecat.pipeline.runner import PipelineRunner
 
 from env import MissingEnvError, require_env
-from models import get_gigaam, load_gigaam
+from models import get_gigaam, load_gigaam, load_silero
 from overrides import PerSessionOverrides, resolve_greeting
 from pipeline import AgentConfig, build_task
 
@@ -149,6 +149,17 @@ def main() -> None:
             "tts_voice": require_env("TTS_VOICE", "ru_RU-denis-medium"),
             "vllm_api_key": require_env("VLLM_API_KEY", "not-used"),
             "piper_voices_dir": Path(require_env("PIPER_VOICES_DIR", "/home/appuser/.cache/piper")),
+            # TTS engine selector — "piper" (default), "silero" (Unit 3),
+            # "qwen3" (Unit 4). The factory in tts_factory.py raises
+            # ValueError on unknown values when a pipeline is built.
+            "tts_engine": require_env("TTS_ENGINE", "piper"),
+            # Qwen3-TTS sidecar wiring. Optional at agent startup — the
+            # factory validates non-empty at dispatch time only when
+            # TTS_ENGINE=qwen3, so Piper/Silero deploys don't need to set
+            # them. Use os.environ.get() instead of require_env() which
+            # rejects empty-string defaults.
+            "qwen3_base_url": os.environ.get("QWEN3_TTS_BASE_URL", ""),
+            "qwen3_api_key": os.environ.get("QWEN3_TTS_API_KEY", ""),
             # Optional transcript persistence. Both must be set (or both
             # left empty — require_env with "" default accepts unset as
             # empty rather than raising).
@@ -167,6 +178,17 @@ def main() -> None:
     except Exception:  # noqa: BLE001 — intentional hard-fail at startup
         logger.exception("GigaAM pre-load failed — refusing to start agent")
         sys.exit(3)
+
+    # Conditional Silero pre-load. Only pay the torch.hub download +
+    # GPU-bind cost when Silero is the active engine — otherwise Piper
+    # and Qwen3 deployments would eat an unnecessary ~200 MB download
+    # and warm-start delay. Same hard-fail semantics as GigaAM above.
+    if _base_config["tts_engine"] == "silero":
+        try:
+            load_silero()
+        except Exception:  # noqa: BLE001 — intentional hard-fail at startup
+            logger.exception("Silero pre-load failed — refusing to start agent")
+            sys.exit(3)
 
     app = web.Application()
     app.router.add_post("/dispatch", handle_dispatch)

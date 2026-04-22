@@ -1,0 +1,957 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Qwen3-TTS - OpenAI-Compatible TTS API</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Consolas', monospace;
+            background: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 50%, #16213e 100%);
+            color: #e0e0e0;
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* ASCII Art Header */
+        .ascii-header {
+            text-align: center;
+            padding: 30px 0;
+            background: linear-gradient(180deg, rgba(0, 255, 136, 0.1) 0%, transparent 100%);
+            border-bottom: 1px solid rgba(0, 255, 136, 0.2);
+            margin-bottom: 40px;
+        }
+
+        .ascii-art {
+            color: #00ff88;
+            font-size: clamp(8px, 2vw, 14px);
+            line-height: 1.2;
+            white-space: pre;
+            text-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+            margin-bottom: 20px;
+        }
+
+        .tagline {
+            color: #888;
+            font-size: 14px;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+
+        /* Main Content */
+        .main-content {
+            display: grid;
+            gap: 30px;
+        }
+
+        /* Card Styles */
+        .card {
+            background: rgba(26, 26, 46, 0.8);
+            border: 1px solid rgba(0, 255, 136, 0.2);
+            border-radius: 12px;
+            padding: 25px;
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+        }
+
+        .card:hover {
+            border-color: rgba(0, 255, 136, 0.5);
+            box-shadow: 0 0 30px rgba(0, 255, 136, 0.1);
+        }
+
+        .card h2 {
+            color: #00ff88;
+            margin-bottom: 20px;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .card h2::before {
+            content: '▸';
+            color: #00aaff;
+        }
+
+        /* TTS Form */
+        .tts-form {
+            display: grid;
+            gap: 20px;
+        }
+
+        .form-group {
+            display: grid;
+            gap: 8px;
+        }
+
+        label {
+            color: #888;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        textarea, select, input[type="range"] {
+            background: rgba(10, 10, 15, 0.8);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 15px;
+            color: #fff;
+            font-family: inherit;
+            font-size: 14px;
+            resize: vertical;
+            transition: all 0.3s ease;
+        }
+
+        textarea {
+            min-height: 120px;
+        }
+
+        textarea:focus, select:focus {
+            outline: none;
+            border-color: #00ff88;
+            box-shadow: 0 0 15px rgba(0, 255, 136, 0.2);
+        }
+
+        select {
+            cursor: pointer;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%2300ff88' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 15px center;
+        }
+
+        /* Range Slider */
+        .range-container {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        input[type="range"] {
+            flex: 1;
+            padding: 0;
+            height: 8px;
+            -webkit-appearance: none;
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #00ff88;
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+        }
+
+        .range-value {
+            color: #00ff88;
+            font-size: 14px;
+            min-width: 50px;
+            text-align: right;
+        }
+
+        /* Form Row */
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        @media (max-width: 600px) {
+            .form-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Button */
+        .btn {
+            background: linear-gradient(135deg, #00ff88 0%, #00cc6a 100%);
+            color: #0a0a0f;
+            border: none;
+            border-radius: 8px;
+            padding: 15px 30px;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(0, 255, 136, 0.3);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn:disabled {
+            background: #333;
+            color: #666;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .btn .spinner {
+            width: 20px;
+            height: 20px;
+            border: 2px solid transparent;
+            border-top-color: currentColor;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            display: none;
+        }
+
+        .btn.loading .spinner {
+            display: block;
+        }
+
+        .btn.loading .btn-text {
+            display: none;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Audio Player */
+        .audio-container {
+            margin-top: 20px;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            display: none;
+        }
+
+        .audio-container.visible {
+            display: block;
+        }
+
+        audio {
+            width: 100%;
+            outline: none;
+        }
+
+        /* Links Section */
+        .links-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+        }
+
+        .link-card {
+            background: rgba(10, 10, 15, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 20px;
+            text-decoration: none;
+            color: inherit;
+            transition: all 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .link-card:hover {
+            border-color: #00aaff;
+            background: rgba(0, 170, 255, 0.1);
+            transform: translateY(-3px);
+        }
+
+        .link-card .icon {
+            font-size: 24px;
+        }
+
+        .link-card .title {
+            color: #00aaff;
+            font-weight: 600;
+        }
+
+        .link-card .desc {
+            color: #666;
+            font-size: 12px;
+        }
+
+        /* Code Example */
+        .code-block {
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 8px;
+            padding: 20px;
+            overflow-x: auto;
+        }
+
+        .code-block code {
+            color: #e0e0e0;
+            font-size: 13px;
+            line-height: 1.8;
+        }
+
+        .code-block .keyword { color: #ff79c6; }
+        .code-block .string { color: #f1fa8c; }
+        .code-block .comment { color: #6272a4; }
+        .code-block .function { color: #50fa7b; }
+
+        /* Status Messages */
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            display: none;
+        }
+
+        .status.visible {
+            display: block;
+        }
+
+        .status.error {
+            background: rgba(255, 85, 85, 0.2);
+            border: 1px solid rgba(255, 85, 85, 0.5);
+            color: #ff5555;
+        }
+
+        .status.success {
+            background: rgba(0, 255, 136, 0.2);
+            border: 1px solid rgba(0, 255, 136, 0.5);
+            color: #00ff88;
+        }
+
+        /* Footer */
+        footer {
+            text-align: center;
+            padding: 40px 20px;
+            color: #555;
+            font-size: 12px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            margin-top: 50px;
+        }
+
+        footer a {
+            color: #00aaff;
+            text-decoration: none;
+        }
+
+        /* Backend Status Styles */
+        .status-grid {
+            display: grid;
+            gap: 15px;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        }
+
+        .status-item {
+            background: rgba(10, 10, 15, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            padding: 15px;
+        }
+
+        .status-item .label {
+            color: #888;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 5px;
+        }
+
+        .status-item .value {
+            color: #00ff88;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .status-badge.healthy {
+            background: rgba(0, 255, 136, 0.2);
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+
+        .status-badge.initializing {
+            background: rgba(255, 170, 0, 0.2);
+            color: #ffaa00;
+            border: 1px solid #ffaa00;
+        }
+
+        .status-badge.error {
+            background: rgba(255, 50, 50, 0.2);
+            color: #ff3232;
+            border: 1px solid #ff3232;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- ASCII Art Header -->
+        <header class="ascii-header">
+            <pre class="ascii-art">
+ ██████╗ ██╗    ██╗███████╗███╗   ██╗██████╗       ████████╗████████╗███████╗
+██╔═══██╗██║    ██║██╔════╝████╗  ██║╚════██╗      ╚══██╔══╝╚══██╔══╝██╔════╝
+██║   ██║██║ █╗ ██║█████╗  ██╔██╗ ██║ █████╔╝█████╗   ██║      ██║   ███████╗
+██║▄▄ ██║██║███╗██║██╔══╝  ██║╚██╗██║ ╚═══██╗╚════╝   ██║      ██║   ╚════██║
+╚██████╔╝╚███╔███╔╝███████╗██║ ╚████║██████╔╝         ██║      ██║   ███████║
+ ╚══▀▀═╝  ╚══╝╚══╝ ╚══════╝╚═╝  ╚═══╝╚═════╝          ╚═╝      ╚═╝   ╚══════╝
+            </pre>
+            <p class="tagline">OpenAI-Compatible Text-to-Speech API</p>
+        </header>
+
+        <main class="main-content">
+            <!-- TTS Demo Card -->
+            <section class="card">
+                <h2>Text-to-Speech Demo</h2>
+                <form class="tts-form" id="ttsForm">
+                    <div class="form-group">
+                        <label for="text">Enter Text</label>
+                        <textarea id="text" placeholder="Type or paste the text you want to convert to speech...">Hello! Welcome to Qwen3-TTS, a powerful text-to-speech system. This is an example of synthesized speech.</textarea>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="voice">Voice</label>
+                            <select id="voice">
+                                <option value="Vivian">Vivian (Female, English)</option>
+                                <option value="Ryan">Ryan (Male, English)</option>
+                                <option value="Sophia">Sophia (Female, English)</option>
+                                <option value="Isabella">Isabella (Female, English)</option>
+                                <option value="Evan">Evan (Male, English)</option>
+                                <option value="Lily">Lily (Female, English)</option>
+                                <option value="alloy">Alloy (OpenAI)</option>
+                                <option value="echo">Echo (OpenAI)</option>
+                                <option value="nova">Nova (OpenAI)</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="format">Audio Format</label>
+                            <select id="format">
+                                <option value="mp3">MP3</option>
+                                <option value="opus">Opus</option>
+                                <option value="wav">WAV</option>
+                                <option value="flac">FLAC</option>
+                                <option value="aac">AAC</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="speed">Speed: <span id="speedValue">1.0x</span></label>
+                        <div class="range-container">
+                            <input type="range" id="speed" min="0.25" max="4.0" step="0.05" value="1.0">
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn" id="generateBtn">
+                        <span class="btn-text">▶ Generate Speech</span>
+                        <span class="spinner"></span>
+                    </button>
+
+                    <div class="status" id="status"></div>
+
+                    <div class="audio-container" id="audioContainer">
+                        <audio id="audioPlayer" controls></audio>
+                    </div>
+                </form>
+            </section>
+
+            <!-- Voice Cloning Card -->
+            <section class="card" id="voiceCloneCard" style="display: none;">
+                <h2>Voice Cloning</h2>
+                <p style="color: #888; margin-bottom: 20px; font-size: 13px;">
+                    Clone a voice from reference audio. Upload a 5-10 second audio sample and generate speech in that voice.
+                </p>
+                <form class="tts-form" id="voiceCloneForm">
+                    <div class="form-group">
+                        <label for="cloneMode">Clone Mode</label>
+                        <select id="cloneMode">
+                            <option value="icl">ICL Mode (Best quality - requires transcript)</option>
+                            <option value="xvector">X-Vector Mode (No transcript needed)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="refAudio">Reference Audio</label>
+                        <input type="file" id="refAudio" accept="audio/*" style="
+                            background: rgba(10, 10, 15, 0.8);
+                            border: 1px solid rgba(255, 255, 255, 0.1);
+                            border-radius: 8px;
+                            padding: 15px;
+                            color: #fff;
+                            width: 100%;
+                        ">
+                        <small style="color: #666; font-size: 11px;">Upload a 5-10 second audio file (WAV, MP3, etc.)</small>
+                    </div>
+
+                    <div class="audio-container" id="refAudioPreview" style="margin-top: 0;">
+                        <label style="margin-bottom: 10px; display: block;">Reference Audio Preview</label>
+                        <audio id="refAudioPlayer" controls style="width: 100%;"></audio>
+                    </div>
+
+                    <div class="form-group" id="refTextGroup">
+                        <label for="refText">Reference Text (Transcript)</label>
+                        <textarea id="refText" placeholder="Enter the exact transcript of the reference audio..."></textarea>
+                        <small style="color: #666; font-size: 11px;">Required for ICL mode. Type exactly what is said in the reference audio.</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="cloneText">Text to Synthesize</label>
+                        <textarea id="cloneText" placeholder="Enter the text you want to generate with the cloned voice...">Hello! This is a test of the voice cloning feature.</textarea>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="cloneLanguage">Language</label>
+                            <select id="cloneLanguage">
+                                <option value="Auto">Auto-detect</option>
+                                <option value="English">English</option>
+                                <option value="Chinese">Chinese</option>
+                                <option value="Japanese">Japanese</option>
+                                <option value="Korean">Korean</option>
+                                <option value="German">German</option>
+                                <option value="French">French</option>
+                                <option value="Spanish">Spanish</option>
+                                <option value="Russian">Russian</option>
+                                <option value="Portuguese">Portuguese</option>
+                                <option value="Italian">Italian</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="cloneFormat">Audio Format</label>
+                            <select id="cloneFormat">
+                                <option value="mp3">MP3</option>
+                                <option value="opus">Opus</option>
+                                <option value="wav">WAV</option>
+                                <option value="flac">FLAC</option>
+                                <option value="aac">AAC</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="cloneSpeed">Speed: <span id="cloneSpeedValue">1.0x</span></label>
+                        <div class="range-container">
+                            <input type="range" id="cloneSpeed" min="0.25" max="4.0" step="0.05" value="1.0">
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn" id="cloneBtn">
+                        <span class="btn-text">Clone Voice</span>
+                        <span class="spinner"></span>
+                    </button>
+
+                    <div class="status" id="cloneStatus"></div>
+
+                    <div class="audio-container" id="cloneAudioContainer">
+                        <label style="margin-bottom: 10px; display: block;">Generated Audio</label>
+                        <audio id="cloneAudioPlayer" controls></audio>
+                    </div>
+                </form>
+            </section>
+
+            <!-- Backend Status Card -->
+            <section class="card">
+                <h2>Backend Status</h2>
+                <div id="backendStatus">
+                    <p style="color: #666;">Loading backend information...</p>
+                </div>
+            </section>
+
+            <!-- Quick Links -->
+            <section class="card">
+                <h2>API Endpoints</h2>
+                <div class="links-grid">
+                    <a href="/docs" class="link-card">
+                        <span class="icon">📖</span>
+                        <span class="title">/docs</span>
+                        <span class="desc">Swagger UI Documentation</span>
+                    </a>
+                    <a href="/redoc" class="link-card">
+                        <span class="icon">📚</span>
+                        <span class="title">/redoc</span>
+                        <span class="desc">ReDoc Documentation</span>
+                    </a>
+                    <a href="/v1/models" class="link-card">
+                        <span class="icon">🤖</span>
+                        <span class="title">/v1/models</span>
+                        <span class="desc">List Available Models</span>
+                    </a>
+                    <a href="/v1/voices" class="link-card">
+                        <span class="icon">🎤</span>
+                        <span class="title">/v1/voices</span>
+                        <span class="desc">List Available Voices</span>
+                    </a>
+                </div>
+            </section>
+
+            <!-- Code Example -->
+            <section class="card">
+                <h2>Python Example</h2>
+                <div class="code-block">
+                    <code>
+<span class="keyword">from</span> openai <span class="keyword">import</span> OpenAI
+
+<span class="comment"># Create client pointing to local server</span>
+client = OpenAI(
+    base_url=<span class="string">"http://localhost:8880/v1"</span>,
+    api_key=<span class="string">"not-needed"</span>
+)
+
+<span class="comment"># Generate speech</span>
+response = client.audio.speech.<span class="function">create</span>(
+    model=<span class="string">"qwen3-tts"</span>,
+    voice=<span class="string">"Vivian"</span>,
+    input=<span class="string">"Hello! This is Qwen3-TTS."</span>
+)
+
+<span class="comment"># Save to file</span>
+response.<span class="function">stream_to_file</span>(<span class="string">"output.mp3"</span>)
+                    </code>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>Powered by <a href="https://github.com/QwenLM/Qwen3-TTS">Qwen3-TTS</a> | 
+               OpenAI API Compatible</p>
+        </footer>
+    </div>
+
+    <script>
+        // Speed slider
+        const speedSlider = document.getElementById('speed');
+        const speedValue = document.getElementById('speedValue');
+        
+        speedSlider.addEventListener('input', () => {
+            speedValue.textContent = speedSlider.value + 'x';
+        });
+
+        // Form submission
+        const form = document.getElementById('ttsForm');
+        const generateBtn = document.getElementById('generateBtn');
+        const status = document.getElementById('status');
+        const audioContainer = document.getElementById('audioContainer');
+        const audioPlayer = document.getElementById('audioPlayer');
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const text = document.getElementById('text').value.trim();
+            if (!text) {
+                showStatus('Please enter some text', 'error');
+                return;
+            }
+
+            generateBtn.disabled = true;
+            generateBtn.classList.add('loading');
+            hideStatus();
+            audioContainer.classList.remove('visible');
+
+            try {
+                const response = await fetch('/v1/audio/speech', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        model: 'qwen3-tts',
+                        input: text,
+                        voice: document.getElementById('voice').value,
+                        response_format: document.getElementById('format').value,
+                        speed: parseFloat(speedSlider.value),
+                    }),
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail?.message || 'Failed to generate speech');
+                }
+
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                
+                audioPlayer.src = url;
+                audioContainer.classList.add('visible');
+                showStatus('Speech generated successfully!', 'success');
+
+            } catch (error) {
+                showStatus(error.message, 'error');
+            } finally {
+                generateBtn.disabled = false;
+                generateBtn.classList.remove('loading');
+            }
+        });
+
+        function showStatus(message, type) {
+            status.textContent = message;
+            status.className = 'status visible ' + type;
+        }
+
+        function hideStatus() {
+            status.classList.remove('visible');
+        }
+
+        // Load voices from API
+        async function loadVoices() {
+            try {
+                const response = await fetch('/v1/voices');
+                if (response.ok) {
+                    const data = await response.json();
+                    const voiceSelect = document.getElementById('voice');
+                    voiceSelect.innerHTML = '';
+                    
+                    data.voices.forEach(voice => {
+                        const option = document.createElement('option');
+                        option.value = voice.id;
+                        option.textContent = voice.name + (voice.description ? ` - ${voice.description}` : '');
+                        voiceSelect.appendChild(option);
+                    });
+                }
+            } catch (error) {
+                console.log('Could not load voices from API:', error);
+            }
+        }
+
+        // Load backend status
+        async function loadBackendStatus() {
+            const statusContainer = document.getElementById('backendStatus');
+            try {
+                const response = await fetch('/health');
+                if (response.ok) {
+                    const data = await response.json();
+                    
+                    // Determine status badge class
+                    let statusClass = 'error';
+                    if (data.status === 'healthy') statusClass = 'healthy';
+                    else if (data.status === 'initializing') statusClass = 'initializing';
+                    
+                    // Build status HTML
+                    let html = `
+                        <div class="status-grid">
+                            <div class="status-item">
+                                <div class="label">Status</div>
+                                <div class="value">
+                                    <span class="status-badge ${statusClass}">${data.status}</span>
+                                </div>
+                            </div>
+                            <div class="status-item">
+                                <div class="label">Backend</div>
+                                <div class="value">${data.backend?.name || 'unknown'}</div>
+                            </div>
+                            <div class="status-item">
+                                <div class="label">Model</div>
+                                <div class="value" style="font-size: 12px;">${data.backend?.model_id || 'N/A'}</div>
+                            </div>
+                            <div class="status-item">
+                                <div class="label">Device</div>
+                                <div class="value">${data.device?.type || 'unknown'}</div>
+                            </div>`;
+                    
+                    if (data.device?.gpu_available) {
+                        html += `
+                            <div class="status-item">
+                                <div class="label">GPU</div>
+                                <div class="value" style="font-size: 12px;">${data.device.gpu_name || 'N/A'}</div>
+                            </div>
+                            <div class="status-item">
+                                <div class="label">VRAM</div>
+                                <div class="value">${data.device.vram_total || 'N/A'}</div>
+                            </div>`;
+                    }
+                    
+                    html += `</div>`;
+                    statusContainer.innerHTML = html;
+                } else {
+                    statusContainer.innerHTML = '<p style="color: #ff3232;">Failed to load backend status</p>';
+                }
+            } catch (error) {
+                console.error('Error loading backend status:', error);
+                statusContainer.innerHTML = '<p style="color: #ff3232;">Error: ' + error.message + '</p>';
+            }
+        }
+
+        // Load voices and backend status on page load
+        loadVoices();
+        loadBackendStatus();
+
+        // Voice Cloning functionality
+        const voiceCloneCard = document.getElementById('voiceCloneCard');
+        const cloneModeSelect = document.getElementById('cloneMode');
+        const refTextGroup = document.getElementById('refTextGroup');
+        const refAudioInput = document.getElementById('refAudio');
+        const refAudioPreview = document.getElementById('refAudioPreview');
+        const refAudioPlayer = document.getElementById('refAudioPlayer');
+        const cloneSpeedSlider = document.getElementById('cloneSpeed');
+        const cloneSpeedValue = document.getElementById('cloneSpeedValue');
+        const voiceCloneForm = document.getElementById('voiceCloneForm');
+        const cloneBtn = document.getElementById('cloneBtn');
+        const cloneStatus = document.getElementById('cloneStatus');
+        const cloneAudioContainer = document.getElementById('cloneAudioContainer');
+        const cloneAudioPlayer = document.getElementById('cloneAudioPlayer');
+
+        // Clone speed slider
+        cloneSpeedSlider.addEventListener('input', () => {
+            cloneSpeedValue.textContent = cloneSpeedSlider.value + 'x';
+        });
+
+        // Clone mode toggle - show/hide ref_text field
+        cloneModeSelect.addEventListener('change', () => {
+            if (cloneModeSelect.value === 'xvector') {
+                refTextGroup.style.display = 'none';
+            } else {
+                refTextGroup.style.display = 'grid';
+            }
+        });
+
+        // Reference audio file preview
+        refAudioInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                refAudioPlayer.src = url;
+                refAudioPreview.classList.add('visible');
+            } else {
+                refAudioPreview.classList.remove('visible');
+            }
+        });
+
+        // Convert file to base64
+        function fileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    // Remove data URL prefix (e.g., "data:audio/wav;base64,")
+                    const base64 = reader.result.split(',')[1];
+                    resolve(base64);
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // Voice clone form submission
+        voiceCloneForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const refFile = refAudioInput.files[0];
+            if (!refFile) {
+                showCloneStatus('Please select a reference audio file', 'error');
+                return;
+            }
+
+            const cloneText = document.getElementById('cloneText').value.trim();
+            if (!cloneText) {
+                showCloneStatus('Please enter text to synthesize', 'error');
+                return;
+            }
+
+            const isXVectorMode = cloneModeSelect.value === 'xvector';
+            const refText = document.getElementById('refText').value.trim();
+
+            if (!isXVectorMode && !refText) {
+                showCloneStatus('ICL mode requires a transcript of the reference audio', 'error');
+                return;
+            }
+
+            cloneBtn.disabled = true;
+            cloneBtn.classList.add('loading');
+            hideCloneStatus();
+            cloneAudioContainer.classList.remove('visible');
+
+            try {
+                const refAudioBase64 = await fileToBase64(refFile);
+
+                const response = await fetch('/v1/audio/voice-clone', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        input: cloneText,
+                        ref_audio: refAudioBase64,
+                        ref_text: isXVectorMode ? null : refText,
+                        x_vector_only_mode: isXVectorMode,
+                        language: document.getElementById('cloneLanguage').value,
+                        response_format: document.getElementById('cloneFormat').value,
+                        speed: parseFloat(cloneSpeedSlider.value),
+                    }),
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail?.message || 'Voice cloning failed');
+                }
+
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+
+                cloneAudioPlayer.src = url;
+                cloneAudioContainer.classList.add('visible');
+                showCloneStatus('Voice cloned successfully!', 'success');
+
+            } catch (error) {
+                showCloneStatus(error.message, 'error');
+            } finally {
+                cloneBtn.disabled = false;
+                cloneBtn.classList.remove('loading');
+            }
+        });
+
+        function showCloneStatus(message, type) {
+            cloneStatus.textContent = message;
+            cloneStatus.className = 'status visible ' + type;
+        }
+
+        function hideCloneStatus() {
+            cloneStatus.classList.remove('visible');
+        }
+
+        // Check voice clone capabilities and show/hide the card
+        async function checkVoiceCloneCapabilities() {
+            try {
+                const response = await fetch('/v1/audio/voice-clone/capabilities');
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.supported) {
+                        voiceCloneCard.style.display = 'block';
+                    }
+                }
+            } catch (error) {
+                console.log('Voice cloning not available:', error);
+            }
+        }
+
+        // Check voice clone capabilities on page load
+        checkVoiceCloneCapabilities();
+    </script>
+</body>
+</html>

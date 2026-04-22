@@ -10,11 +10,16 @@
 
 # Don't run on bun.lock / uv.lock — they're auto-generated and pre-commit
 # would just fight the package managers.
+# Don't run on infra/qwen3-tts-wrapper/ — vendored third-party source (pinned
+# Apache-2.0 fork of dingausmwald/Qwen3-TTS-Openai-Fastapi). Keeping it
+# byte-for-byte identical to the upstream commit SHA preserves the ability
+# to re-diff against upstream and apply local patches surgically.
 exclude: |
   (?x)^(
     apps/web/bun\.lock|
     apps/api/uv\.lock|
-    services/agent/uv\.lock
+    services/agent/uv\.lock|
+    infra/qwen3-tts-wrapper/.*
   )$
 
 repos:
