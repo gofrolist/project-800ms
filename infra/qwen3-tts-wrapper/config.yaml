@@ -1,0 +1,46 @@
+default_model: 0.6B-Base
+models:
+  0.6B-Base:
+    hf_id: /home/pawel/qwen3-tts/models/0.6B-Base
+    type: base
+  0.6B-CustomVoice:
+    hf_id: /home/pawel/qwen3-tts/models/0.6B-CustomVoice
+    type: customvoice
+  1.7B-Base:
+    hf_id: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+    type: base
+  1.7B-CustomVoice:
+    hf_id: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+    type: customvoice
+optimization:
+  attention: flash_attention_2
+  compile_mode: max-autotune
+  use_compile: true
+  use_cuda_graphs: true
+  use_fast_codebook: true
+  streaming:
+    decode_window_frames: 72
+    emit_every_frames: 6
+  compile_codebook_predictor: true
+server:
+  host: 0.0.0.0
+  port: 8880
+voices:
+- language: Chinese
+  name: Vivian
+- language: Chinese
+  name: Serena
+- language: Chinese
+  name: Uncle_Fu
+- language: Chinese
+  name: Dylan
+- language: Chinese
+  name: Eric
+- language: English
+  name: Ryan
+- language: Japanese
+  name: Aiden
+- language: Korean
+  name: Ono_Anna
+- language: English
+  name: Sohee
