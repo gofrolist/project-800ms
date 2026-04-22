@@ -248,6 +248,7 @@ class OfficialQwen3TTSBackend(TTSBackend):
         ref_text: Optional[str] = None,
         language: str = "Auto",
         x_vector_only_mode: bool = False,
+        cache_key: Optional[str] = None,  # noqa: ARG002 — router passes for optimized-backend caching; ignored here
     ):
         """Stream voice-clone PCM chunks as the model generates them.
 
