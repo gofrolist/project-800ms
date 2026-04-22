@@ -30,7 +30,13 @@ dependencies = [
     # our existing pin (via gigaam[torch]). Weights are CPML-licensed
     # (non-commercial) — fine for the demo, flag for any commercial
     # deploy. See services/agent/xtts_tts.py module docstring.
-    "coqui-tts>=0.27.5",
+    #
+    # The [codec] extra pulls torchcodec, which coqui-tts 0.27.5 requires
+    # for audio IO under PyTorch 2.9+. Without it, ``from TTS.api import
+    # TTS`` raises ImportError at module load time (caught in prod
+    # 2026-04-22 after transformers<5 pin). Our lockfile resolves torch
+    # 2.11 via gigaam[torch], so the extra is mandatory — not optional.
+    "coqui-tts[codec]>=0.27.5",
 ]
 
 [dependency-groups]
