@@ -50,6 +50,11 @@ DEFAULT_GREETINGS_BY_LANGUAGE: dict[str, str] = {
 
 DEFAULT_LANGUAGE = "ru"
 
+# Mirrors pipeline._VALID_TTS_ENGINES; duplicated here so parsing the
+# dispatch body doesn't require importing pipeline (which pulls in
+# pipecat + CUDA on the import path).
+_VALID_TTS_ENGINES: frozenset[str] = frozenset({"piper", "silero", "qwen3"})
+
 
 @dataclass(frozen=True)
 class PerSessionOverrides:
@@ -62,6 +67,12 @@ class PerSessionOverrides:
     user_id: str | None = None
     npc_id: str | None = None
     context: dict[str, Any] | None = None
+    # When set, selects the TTS engine for this session. Validated against
+    # the same whitelist used by pipeline.AgentConfig; unknown or empty
+    # values are dropped (fall back to cfg.tts_engine). This is how the
+    # /demo site's three-button selector routes each session to a
+    # different backend without restarting the agent.
+    tts_engine: str | None = None
 
     @classmethod
     def from_dispatch(cls, body: dict[str, Any]) -> PerSessionOverrides:
@@ -73,6 +84,16 @@ class PerSessionOverrides:
         def _as_dict(value: Any) -> dict[str, Any] | None:
             return value if isinstance(value, dict) and value else None
 
+        def _as_tts_engine(value: Any) -> str | None:
+            # Drop unknown values silently rather than raising — the factory
+            # still raises ValueError on unknown engine names, but the API
+            # validates first so anything reaching here should already be in
+            # the whitelist. Defense-in-depth: a misbehaving client can't
+            # crash the agent by sending a bogus engine string.
+            if isinstance(value, str) and value in _VALID_TTS_ENGINES:
+                return value
+            return None
+
         return cls(
             persona=_as_dict(body.get("persona")),
             voice=_as_str(body.get("voice")),
@@ -81,6 +102,7 @@ class PerSessionOverrides:
             user_id=_as_str(body.get("user_id")),
             npc_id=_as_str(body.get("npc_id")),
             context=_as_dict(body.get("context")),
+            tts_engine=_as_tts_engine(body.get("tts_engine")),
         )
 
     @property

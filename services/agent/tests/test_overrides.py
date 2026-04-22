@@ -61,6 +61,26 @@ class TestFromDispatch:
         assert o.persona is None
         assert o.context is None
 
+    def test_tts_engine_accepts_whitelist(self) -> None:
+        for engine in ("piper", "silero", "qwen3"):
+            o = PerSessionOverrides.from_dispatch({"tts_engine": engine})
+            assert o.tts_engine == engine
+
+    def test_tts_engine_rejects_unknown_value(self) -> None:
+        """Defense-in-depth: the factory still raises ValueError on unknown
+        engines, but dropping here prevents an unsanitized client string
+        from reaching the pipeline construction at all."""
+        o = PerSessionOverrides.from_dispatch({"tts_engine": "bogus"})
+        assert o.tts_engine is None
+
+    def test_tts_engine_rejects_non_string(self) -> None:
+        o = PerSessionOverrides.from_dispatch({"tts_engine": 42})
+        assert o.tts_engine is None
+
+    def test_tts_engine_missing_yields_none(self) -> None:
+        o = PerSessionOverrides.from_dispatch({})
+        assert o.tts_engine is None
+
 
 class TestBuildSystemPrompt:
     def test_no_persona_returns_rules(self) -> None:

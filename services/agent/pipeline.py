@@ -94,6 +94,12 @@ def build_task(
     language = overrides.effective_language
     voice = overrides.voice or cfg.tts_voice
     llm_model = overrides.llm_model or cfg.vllm_model
+    # Per-session engine override (from the demo site's three-button
+    # selector). Falls back to cfg.tts_engine (from TTS_ENGINE env) when
+    # unset. overrides.tts_engine is already whitelist-validated in
+    # PerSessionOverrides.from_dispatch, so the factory branch below never
+    # sees a bogus engine value from a client.
+    tts_engine = overrides.tts_engine or cfg.tts_engine
     system_instruction = build_system_prompt(overrides.persona, language)
 
     transport = LiveKitTransport(
@@ -136,7 +142,7 @@ def build_task(
         ),
     )
 
-    tts = build_tts_service(cfg.tts_engine, cfg=cfg, voice=voice)
+    tts = build_tts_service(tts_engine, cfg=cfg, voice=voice)
 
     context = LLMContext()
     user_agg, assistant_agg = LLMContextAggregatorPair(
