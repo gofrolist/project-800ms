@@ -1,8 +1,17 @@
 # Pre-commit hook configuration.
-# Install:
-#   pre-commit install
+# Install (run once per clone — both stages):
+#   pre-commit install                        # pre-commit stage (every commit)
+#   pre-commit install --hook-type pre-push   # pre-push stage (every push)
 # Run on the whole repo:
 #   pre-commit run --all-files
+#   pre-commit run --all-files --hook-stage pre-push
+#
+# Stage policy:
+#   - pre-commit stage: fast, stateless (format, lint, secret-scan, schema).
+#     Runs on every `git commit`. Budget: <5s.
+#   - pre-push stage: slower, catches logic regressions before CI.
+#     Runs on every `git push`. Budget: ~30-60s per changed service.
+#     Skip with:  SKIP=pytest-agent,pytest-api git push
 #
 # Versions are pinned. Bump with:
 #   pre-commit autoupdate
@@ -78,3 +87,35 @@ repos:
         files: ^\.github/dependabot\.yml$
       - id: check-github-workflows
         files: ^\.github/workflows/.*\.ya?ml$
+
+  # ─── Pre-push: run service test suites ───────────────────────────────────
+  # Catches logic regressions (like the Silero .to(device) bug merged on
+  # 2026-04-22 where a mocked test encoded the wrong contract and let
+  # silent-None-model ship to prod) BEFORE the push reaches CI. Scoped by
+  # `files:` so only the service whose source changed pays the test cost.
+  #
+  # These require local dev deps installed:
+  #   (cd services/agent && uv sync)
+  #   (cd apps/api && uv sync)
+  # and, for the API slow tests, a running Docker for the Postgres
+  # testcontainer. Developers without Docker can skip with:
+  #   SKIP=pytest-api git push
+  - repo: local
+    hooks:
+      - id: pytest-agent
+        name: pytest services/agent
+        entry: bash -c 'cd services/agent && uv run pytest -q'
+        language: system
+        # Run when any .py changes under services/agent (src OR tests).
+        # Excludes uv.lock / pyproject bumps — ruff-check catches
+        # syntax, but actual test runs only matter on code changes.
+        files: ^services/agent/.*\.py$
+        pass_filenames: false
+        stages: [pre-push]
+      - id: pytest-api
+        name: pytest apps/api
+        entry: bash -c 'cd apps/api && uv run pytest -q'
+        language: system
+        files: ^apps/api/.*\.py$
+        pass_filenames: false
+        stages: [pre-push]

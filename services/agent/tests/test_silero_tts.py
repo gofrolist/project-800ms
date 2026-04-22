@@ -171,19 +171,44 @@ class TestLoadSilero:
         assert kwargs["trust_repo"] is True
 
     def test_load_moves_to_cuda_when_available(self, mock_torch_hub):
-        """GPU-bound model is the prod configuration on the L4 host."""
+        """GPU-bound model is the prod configuration on the L4 host.
+
+        Regression guard for the silent-model-None bug
+        (fix commit 49a4d4f): Silero v5 ships as a torch.package scripted
+        module whose ``.to(device)`` returns ``None`` instead of ``self``.
+        An earlier version of models.load_silero() did
+        ``model = model.to(device)``, which silently replaced the model
+        with ``None`` in prod — every Silero synth attempt then emitted
+        ``ErrorFrame("TTS unavailable")``. The test that lived here
+        *encoded* the bug by having ``fake_model.to.return_value`` stand
+        in as a ``moved_model`` the caller could reassign — that made the
+        buggy code green.
+
+        The correct contract is: ``.to(device)`` is called for its
+        side-effects only, and the cached singleton is the same
+        ``fake_model`` instance torch.hub.load returned. This test now
+        mirrors that: ``.to(device)`` is asserted-called with the cuda
+        device, but its return value is ignored.
+        """
+        import torch  # noqa: PLC0415
+
         fake_model = MagicMock(name="silero_model")
-        # Simulate .to(cuda) returning a possibly-different object — the
-        # cached singleton should be the post-move instance.
-        moved_model = MagicMock(name="silero_model_on_cuda")
-        fake_model.to.return_value = moved_model
+        # Explicitly return ``None`` from ``.to(device)`` — matches real
+        # Silero v5 behaviour. If the implementation reassigns the model
+        # from the ``.to()`` return value, the cached singleton would be
+        # ``None`` and this test would fail on the `is fake_model` check.
+        fake_model.to.return_value = None
         mock_torch_hub.hub_load.return_value = (fake_model, {})
         mock_torch_hub.cuda_available.return_value = True
 
         result = load_silero()
 
-        assert result is moved_model
+        assert result is fake_model
+        # ``.to()`` was called for its side effect with a cuda device.
         fake_model.to.assert_called_once()
+        ((device_arg,), _kwargs) = fake_model.to.call_args
+        assert isinstance(device_arg, torch.device)
+        assert device_arg.type == "cuda"
 
     def test_load_stays_on_cpu_when_no_cuda(self, mock_torch_hub):
         fake_model = MagicMock(name="silero_model")
