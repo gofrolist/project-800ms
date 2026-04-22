@@ -153,6 +153,13 @@ def main() -> None:
             # "qwen3" (Unit 4). The factory in tts_factory.py raises
             # ValueError on unknown values when a pipeline is built.
             "tts_engine": require_env("TTS_ENGINE", "piper"),
+            # Qwen3-TTS sidecar wiring. Optional at agent startup — the
+            # factory validates non-empty at dispatch time only when
+            # TTS_ENGINE=qwen3, so Piper/Silero deploys don't need to set
+            # them. Use os.environ.get() instead of require_env() which
+            # rejects empty-string defaults.
+            "qwen3_base_url": os.environ.get("QWEN3_TTS_BASE_URL", ""),
+            "qwen3_api_key": os.environ.get("QWEN3_TTS_API_KEY", ""),
             # Optional transcript persistence. Both must be set (or both
             # left empty — require_env with "" default accepts unset as
             # empty rather than raising).

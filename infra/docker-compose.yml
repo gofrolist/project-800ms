@@ -143,6 +143,70 @@ services:
       start_period: 300s  # model download + load can take minutes on first run
 
   # ─────────────────────────────────────────────────────────────────────────
+  # GPU inference: Qwen3-TTS via vendored OpenAI-compat wrapper
+  #
+  # Sidecar that exposes Qwen3-TTS-0.6B-Base (Apache 2.0) through an
+  # OpenAI /v1/audio/speech contract, so Pipecat's upstream
+  # OpenAITTSService talks to it without custom agent-side code. The
+  # wrapper source lives at ./qwen3-tts-wrapper/ — pinned to commit
+  # eb14f6e, license-checked, structurally read through. See
+  # infra/qwen3-tts-wrapper/README.md for the request contract and the
+  # vendoring / patching playbook.
+  #
+  # Only starts when the `tts-qwen3` profile is active. Default stack
+  # skips this sidecar (Piper / Silero don't need it). Opt in with:
+  #   docker compose --profile tts-qwen3 up -d
+  # OR set COMPOSE_PROFILES=tts-qwen3 in infra/.env.
+  # ─────────────────────────────────────────────────────────────────────────
+  qwen3-tts:
+    build:
+      context: ./qwen3-tts-wrapper
+    restart: unless-stopped
+    profiles: [tts-qwen3]
+    <<: *gpu
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN:-}
+      - HF_HOME=/root/.cache/huggingface
+      # TTS_BACKEND=official uses the wrapper's plain PyTorch path. The
+      # "optimized" default enables flash_attention_2 + compile +
+      # cuda_graphs which speeds up steady-state throughput but adds
+      # flakiness on driver/toolkit skew. We start with the simpler
+      # backend for Unit 4 and flip to optimized in Unit 5 if bench
+      # numbers justify it. See wrapper README "Failure modes".
+      - TTS_BACKEND=official
+      - HOST=0.0.0.0
+      # Agent-internal docker-network port. The host-side mapping below
+      # (127.0.0.1:8002:8000) exists only for debugging curl from host.
+      - PORT=8000
+    volumes:
+      # Dedicated HF cache for Qwen3-TTS. Don't share with hf_cache_agent
+      # (GigaAM) or hf_cache_vllm — different UIDs inside each image would
+      # leave cache files unwritable for the other service. The agent +
+      # qwen3-tts sidecar even happen to both run as root here (different
+      # images; matches the vllm service's rationale), but keeping caches
+      # split makes the UID-sensitivity invariant robust against future
+      # image changes.
+      - hf_cache_qwen3:/root/.cache/huggingface
+    ports:
+      # Loopback only — the sidecar has no built-in rate limiting. The
+      # agent reaches it via the internal docker network on
+      # qwen3-tts:8000 (set QWEN3_TTS_BASE_URL=http://qwen3-tts:8000/v1).
+      - "127.0.0.1:8002:8000"
+    # Private /dev/shm — 4 GB is plenty for the 0.6B variant (vLLM uses
+    # 16 GB for a 7B model). Bump if we flip QWEN3_VARIANT to 1.7B and
+    # OOMs surface.
+    shm_size: "4gb"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()\" || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      # First boot pulls ~2 GB of Qwen3 weights from HF into hf_cache_qwen3
+      # plus flash-attn wheel + optional warmup. 300s mirrors the vllm
+      # service's first-boot tolerance; subsequent boots hit the cache.
+      start_period: 300s
+
+  # ─────────────────────────────────────────────────────────────────────────
   # Alembic migration init container.
   #
   # Runs `alembic upgrade head` against postgres and exits. The api service
@@ -282,5 +346,6 @@ volumes:
   pg_data:
   hf_cache_vllm:
   hf_cache_agent:
+  hf_cache_qwen3:
   piper_voices:
   torch_cache_agent:

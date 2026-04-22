@@ -1,10 +1,17 @@
 default_model: 0.6B-Base
 models:
   0.6B-Base:
-    hf_id: /home/pawel/qwen3-tts/models/0.6B-Base
+    # Upstream shipped a hardcoded local path here (/home/pawel/...). We
+    # point it at the HF hub id so the wrapper pulls weights on first boot
+    # into the hf_cache_qwen3 volume. Mirrors the 1.7B-Base entry below.
+    hf_id: Qwen/Qwen3-TTS-12Hz-0.6B-Base
     type: base
   0.6B-CustomVoice:
-    hf_id: /home/pawel/qwen3-tts/models/0.6B-CustomVoice
+    # Same override rationale as 0.6B-Base; we don't use CustomVoice in our
+    # deploy (voice cloning is out of scope per the TTS plan) but keeping
+    # the entry pointed at an HF id avoids silent filesystem lookups if
+    # anyone flips default_model.
+    hf_id: Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
     type: customvoice
   1.7B-Base:
     hf_id: Qwen/Qwen3-TTS-12Hz-1.7B-Base

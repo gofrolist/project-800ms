@@ -53,6 +53,11 @@ class AgentConfig:
     # and "qwen3" (Unit 4) are added by the tts_factory in later units.
     # Unknown values raise at build_task time via build_tts_service.
     tts_engine: str = "piper"
+    # Qwen3-TTS sidecar endpoint + API key. Empty on Piper/Silero deploys —
+    # the factory's qwen3 branch validates non-empty at dispatch time, so
+    # non-qwen3 deploys don't need to set these. See infra/.env.example.
+    qwen3_base_url: str = ""
+    qwen3_api_key: str = ""
     # When both values are set, final STT and LLM utterances are also
     # POSTed to the API's /internal/transcripts endpoint. Empty = in-UI
     # transcripts only (no DB persistence).

@@ -24,7 +24,12 @@ from pipeline import AgentConfig  # noqa: E402 — imported at module scope; no 
 from tts_factory import build_tts_service  # noqa: E402
 
 
-def _make_cfg(*, tts_engine: str = "piper") -> AgentConfig:
+def _make_cfg(
+    *,
+    tts_engine: str = "piper",
+    qwen3_base_url: str = "",
+    qwen3_api_key: str = "",
+) -> AgentConfig:
     """Build a minimal AgentConfig for factory-dispatch tests."""
     return AgentConfig(
         livekit_url="ws://test",
@@ -36,6 +41,8 @@ def _make_cfg(*, tts_engine: str = "piper") -> AgentConfig:
         vllm_api_key="test-key",
         piper_voices_dir=Path("/tmp/piper-voices-test"),  # noqa: S108 — test-only sentinel
         tts_engine=tts_engine,
+        qwen3_base_url=qwen3_base_url,
+        qwen3_api_key=qwen3_api_key,
     )
 
 
@@ -154,6 +161,144 @@ class TestSileroBranch:
         assert result._silero_settings.speaker == "v5_ru_custom"
 
 
-@pytest.mark.skip(reason="added in Unit 4 — qwen3 sidecar + factory branch")
-def test_qwen3_branch_returns_openai_tts_service():
-    """Unit 4 un-skips this and asserts OpenAITTSService dispatch."""
+class TestQwen3Branch:
+    """Factory dispatch for engine=qwen3 (Unit 4).
+
+    Qwen3 routes through Pipecat's upstream OpenAITTSService pointed at the
+    vendored community wrapper (see infra/qwen3-tts-wrapper/). No custom
+    agent-side adapter. We patch OpenAITTSService at its import location
+    inside the factory to capture the dispatch kwargs without touching
+    openai-sdk construction or the network. Same mocking pattern as the
+    piper branch tests above.
+    """
+
+    _VALID_QWEN3_KWARGS: dict[str, str] = {
+        "qwen3_base_url": "http://qwen3-tts:8000/v1",
+        "qwen3_api_key": "test-qwen3-secret",
+    }
+
+    def test_qwen3_dispatches_to_openai_tts_service(self, monkeypatch):
+        """Factory returns an OpenAITTSService with the expected base_url,
+        api_key, model (tts-1-ru — wrapper LANGUAGE_CODE_MAPPING suffix for
+        Russian), and a whitelisted voice."""
+        fake_instance = MagicMock(name="OpenAITTSService_instance")
+        fake_cls = MagicMock(name="OpenAITTSService_cls", return_value=fake_instance)
+
+        import pipecat.services.openai.tts as openai_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(openai_mod, "OpenAITTSService", fake_cls)
+
+        cfg = _make_cfg(tts_engine="qwen3", **self._VALID_QWEN3_KWARGS)
+        result = build_tts_service("qwen3", cfg=cfg, voice="alloy")
+
+        assert result is fake_instance
+        fake_cls.assert_called_once()
+        kwargs = fake_cls.call_args.kwargs
+        assert kwargs["base_url"] == self._VALID_QWEN3_KWARGS["qwen3_base_url"]
+        assert kwargs["api_key"] == self._VALID_QWEN3_KWARGS["qwen3_api_key"]
+        # Russian routing is encoded in the model alias — the wrapper's
+        # LANGUAGE_CODE_MAPPING strips the "-ru" suffix and selects Russian.
+        assert kwargs["model"] == "tts-1-ru"
+        # "alloy" is in Pipecat's VALID_VOICES whitelist, so it passes
+        # through without substitution.
+        assert kwargs["voice"] == "alloy"
+
+    def test_qwen3_missing_base_url_raises(self, monkeypatch):
+        """Empty QWEN3_TTS_BASE_URL → ValueError before dispatch.
+
+        The OpenAITTSService mock should NOT be invoked in this case —
+        assert that too so a future refactor that swaps the validation
+        order can't silently construct a service with a bad URL.
+        """
+        fake_cls = MagicMock(name="OpenAITTSService_cls")
+        import pipecat.services.openai.tts as openai_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(openai_mod, "OpenAITTSService", fake_cls)
+
+        cfg = _make_cfg(
+            tts_engine="qwen3",
+            qwen3_base_url="",
+            qwen3_api_key="test-qwen3-secret",
+        )
+        with pytest.raises(ValueError, match="QWEN3_TTS_BASE_URL"):
+            build_tts_service("qwen3", cfg=cfg, voice="alloy")
+
+        fake_cls.assert_not_called()
+
+    def test_qwen3_missing_api_key_raises(self, monkeypatch):
+        """Empty QWEN3_TTS_API_KEY → ValueError before dispatch."""
+        fake_cls = MagicMock(name="OpenAITTSService_cls")
+        import pipecat.services.openai.tts as openai_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(openai_mod, "OpenAITTSService", fake_cls)
+
+        cfg = _make_cfg(
+            tts_engine="qwen3",
+            qwen3_base_url="http://qwen3-tts:8000/v1",
+            qwen3_api_key="",
+        )
+        with pytest.raises(ValueError, match="QWEN3_TTS_API_KEY"):
+            build_tts_service("qwen3", cfg=cfg, voice="alloy")
+
+        fake_cls.assert_not_called()
+
+    def test_qwen3_substitutes_non_whitelisted_voice(self, monkeypatch):
+        """A Piper/Silero voice (e.g. "ru_RU-denis-medium") is not in
+        Pipecat's OpenAITTSService whitelist — the factory substitutes
+        "echo" (maps to Qwen3's Ryan voice in the wrapper) and logs a
+        warning so the operator sees the mismatch.
+
+        Loguru doesn't propagate to stdlib logging by default, so we
+        attach a list-sink handler and assert on captured message text
+        directly (instead of bridging into pytest's caplog, which would
+        require wiring InterceptHandler at conftest scope).
+        """
+        fake_instance = MagicMock(name="OpenAITTSService_instance")
+        fake_cls = MagicMock(name="OpenAITTSService_cls", return_value=fake_instance)
+
+        import pipecat.services.openai.tts as openai_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(openai_mod, "OpenAITTSService", fake_cls)
+
+        from loguru import logger  # noqa: PLC0415
+
+        captured: list[str] = []
+        handler_id = logger.add(
+            lambda message: captured.append(message.record["message"]),
+            level="WARNING",
+            format="{message}",
+        )
+        try:
+            cfg = _make_cfg(tts_engine="qwen3", **self._VALID_QWEN3_KWARGS)
+            build_tts_service(
+                "qwen3",
+                cfg=cfg,
+                voice="ru_RU-denis-medium",
+            )
+        finally:
+            logger.remove(handler_id)
+
+        kwargs = fake_cls.call_args.kwargs
+        assert kwargs["voice"] == "echo"
+        # The warning message names the offending voice + the substitution.
+        assert any("ru_RU-denis-medium" in message and "echo" in message for message in captured), (
+            f"expected a substitution warning in loguru output, got {captured!r}"
+        )
+
+    def test_qwen3_whitelisted_voice_passes_through(self, monkeypatch):
+        """Every whitelisted OpenAI voice name flows through unchanged.
+
+        Spot-checks a few voices to cover the happy path beyond "alloy"
+        (which is the Pipecat default) — "echo" and "fable" are both
+        mapped by the wrapper's voice table (echo→Ryan, fable→Serena).
+        """
+        fake_cls = MagicMock(name="OpenAITTSService_cls")
+        import pipecat.services.openai.tts as openai_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(openai_mod, "OpenAITTSService", fake_cls)
+
+        cfg = _make_cfg(tts_engine="qwen3", **self._VALID_QWEN3_KWARGS)
+        for voice in ("echo", "fable", "shimmer"):
+            fake_cls.reset_mock()
+            build_tts_service("qwen3", cfg=cfg, voice=voice)
+            assert fake_cls.call_args.kwargs["voice"] == voice
