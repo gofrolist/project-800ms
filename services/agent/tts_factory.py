@@ -147,13 +147,40 @@ def build_tts_service(
         if not cfg.qwen3_api_key:
             raise ValueError("qwen3 TTS engine requires QWEN3_TTS_API_KEY to be set")
 
+        # QWEN3_TTS_VOICE overrides the generic ``voice`` param when set.
+        # Lets the operator ship a Base-variant deploy with
+        # ``voice="clone:<profile>"`` without conflicting with the
+        # Piper/Silero voice names that still flow through ``TTS_VOICE``
+        # (e.g. "ru_RU-denis-medium"). Empty → fall back to ``voice``.
+        qwen3_voice = cfg.qwen3_tts_voice or voice
+
+        # ``clone:<profile>`` selects a voice-library profile (a
+        # reference audio + metadata pair baked into the wrapper image;
+        # see infra/qwen3-tts-wrapper/api/routers/openai_compatible.py
+        # _load_voice_profile). The wrapper intercepts this prefix
+        # before VOICE_MAPPING, so the OpenAI whitelist does not apply.
+        # Skip substitution entirely for these names.
+        if qwen3_voice.startswith("clone:"):
+            effective_voice = qwen3_voice
+            logger.info(
+                "Qwen3 dispatch using voice-library profile {voice_repr}",
+                voice_repr=repr(qwen3_voice),
+            )
+            return Qwen3TTSService(
+                base_url=cfg.qwen3_base_url,
+                api_key=cfg.qwen3_api_key,
+                sample_rate=24000,
+                model="tts-1-ru",
+                voice=effective_voice,
+            )
+
         # Substitute out-of-whitelist voices to avoid KeyError at dispatch
         # time. The wrapper maps OpenAI voice names onto Qwen3's internal
         # catalog (see infra/qwen3-tts-wrapper/README.md); the default
         # "echo" corresponds to Qwen3's "Ryan" voice which the README
         # recommends as the Russian-synthesis starting default.
-        effective_voice = voice
-        if voice not in _QWEN3_VALID_VOICES:
+        effective_voice = qwen3_voice
+        if qwen3_voice not in _QWEN3_VALID_VOICES:
             # Loguru does not honor the ``!r`` conversion flag in its
             # format-spec parser the way stdlib str.format does, so
             # precompute reprs and pass them as plain string kwargs.
@@ -162,9 +189,9 @@ def build_tts_service(
             logger.warning(
                 "TTS_VOICE={voice_repr} is not a Pipecat OpenAITTSService "
                 "whitelist voice; substituting {default_repr} for the Qwen3 "
-                "sidecar dispatch. Set TTS_VOICE to one of {valid} to "
-                "silence this warning.",
-                voice_repr=repr(voice),
+                "sidecar dispatch. Set TTS_VOICE to one of {valid} or "
+                "QWEN3_TTS_VOICE='clone:<profile>' to silence this warning.",
+                voice_repr=repr(qwen3_voice),
                 default_repr=repr(_QWEN3_DEFAULT_VOICE),
                 valid=sorted(_QWEN3_VALID_VOICES),
             )

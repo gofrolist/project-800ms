@@ -236,3 +236,9 @@ yarn-error.log*
 
 # Compound-engineering run artifacts (ce-code-review, ce-ideate, etc.)
 .context/
+
+# Qwen3-TTS voice-clone profiles — audio samples + transcripts are
+# per-deployment data (often personal recordings), not source code.
+# Track only the directory scaffold + README, not the profile contents.
+voice_library/profiles/*
+!voice_library/profiles/.gitkeep

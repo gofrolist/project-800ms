@@ -29,6 +29,7 @@ def _make_cfg(
     tts_engine: str = "piper",
     qwen3_base_url: str = "",
     qwen3_api_key: str = "",
+    qwen3_tts_voice: str = "",
 ) -> AgentConfig:
     """Build a minimal AgentConfig for factory-dispatch tests."""
     return AgentConfig(
@@ -43,6 +44,7 @@ def _make_cfg(
         tts_engine=tts_engine,
         qwen3_base_url=qwen3_base_url,
         qwen3_api_key=qwen3_api_key,
+        qwen3_tts_voice=qwen3_tts_voice,
     )
 
 
@@ -348,6 +350,60 @@ class TestQwen3Branch:
             fake_cls.reset_mock()
             build_tts_service("qwen3", cfg=cfg, voice=voice)
             assert fake_cls.call_args.kwargs["voice"] == voice
+
+    def test_qwen3_clone_prefix_bypasses_whitelist(self, monkeypatch):
+        """Voice names starting with ``clone:`` are voice-library
+        profile identifiers — the wrapper intercepts them before the
+        OpenAI whitelist. Factory must NOT substitute "echo".
+        """
+        fake_cls = MagicMock(name="Qwen3TTSService_cls")
+        import qwen3_tts as qwen3_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(qwen3_mod, "Qwen3TTSService", fake_cls)
+
+        cfg = _make_cfg(tts_engine="qwen3", **self._VALID_QWEN3_KWARGS)
+        build_tts_service("qwen3", cfg=cfg, voice="clone:demo-ru")
+
+        assert fake_cls.call_args.kwargs["voice"] == "clone:demo-ru"
+
+    def test_qwen3_tts_voice_overrides_generic_voice(self, monkeypatch):
+        """cfg.qwen3_tts_voice takes precedence over the generic voice
+        param. Lets ops ship a Base-variant deploy with
+        QWEN3_TTS_VOICE=clone:<profile> without touching TTS_VOICE that
+        still carries the Piper/Silero identifier.
+        """
+        fake_cls = MagicMock(name="Qwen3TTSService_cls")
+        import qwen3_tts as qwen3_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(qwen3_mod, "Qwen3TTSService", fake_cls)
+
+        cfg = _make_cfg(
+            tts_engine="qwen3",
+            qwen3_tts_voice="clone:demo-ru",
+            **self._VALID_QWEN3_KWARGS,
+        )
+        # voice= is the Piper/Silero value — must be ignored for qwen3
+        # when qwen3_tts_voice is set.
+        build_tts_service("qwen3", cfg=cfg, voice="ru_RU-denis-medium")
+
+        assert fake_cls.call_args.kwargs["voice"] == "clone:demo-ru"
+
+    def test_qwen3_tts_voice_falls_back_to_voice_when_empty(self, monkeypatch):
+        """Empty qwen3_tts_voice → still use the generic voice param
+        (existing behaviour preserved for CustomVoice deploys)."""
+        fake_cls = MagicMock(name="Qwen3TTSService_cls")
+        import qwen3_tts as qwen3_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(qwen3_mod, "Qwen3TTSService", fake_cls)
+
+        cfg = _make_cfg(
+            tts_engine="qwen3",
+            qwen3_tts_voice="",
+            **self._VALID_QWEN3_KWARGS,
+        )
+        build_tts_service("qwen3", cfg=cfg, voice="alloy")
+
+        assert fake_cls.call_args.kwargs["voice"] == "alloy"
 
 
 # ─── AgentConfig.tts_engine validation ─────────────────────────────────

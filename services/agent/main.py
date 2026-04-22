@@ -160,6 +160,11 @@ def main() -> None:
             # rejects empty-string defaults.
             "qwen3_base_url": os.environ.get("QWEN3_TTS_BASE_URL", ""),
             "qwen3_api_key": os.environ.get("QWEN3_TTS_API_KEY", ""),
+            # Qwen3-specific voice name (e.g. "clone:<profile>" to use a
+            # voice-library profile baked into the wrapper image). Takes
+            # precedence over TTS_VOICE when the Qwen3 engine dispatches.
+            # See tts_factory.py's qwen3 branch for resolution order.
+            "qwen3_tts_voice": os.environ.get("QWEN3_TTS_VOICE", ""),
             # Optional transcript persistence. Both must be set (or both
             # left empty — require_env with "" default accepts unset as
             # empty rather than raising).

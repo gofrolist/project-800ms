@@ -64,6 +64,13 @@ class AgentConfig:
     # non-qwen3 deploys don't need to set these. See infra/.env.example.
     qwen3_base_url: str = ""
     qwen3_api_key: str = ""
+    # Qwen3-specific voice name. Takes precedence over ``tts_voice`` /
+    # per-session ``overrides.voice`` when the Qwen3 engine dispatches.
+    # Empty falls back to those generic values. The typical usage is a
+    # ``clone:<profile>`` identifier pointing at a voice-library profile
+    # baked into the wrapper image (see ``QWEN3_VARIANT=0.6B-Base`` or
+    # ``1.7B-Base`` deploys). Piper/Silero sessions ignore this field.
+    qwen3_tts_voice: str = ""
     # When both values are set, final STT and LLM utterances are also
     # POSTed to the API's /internal/transcripts endpoint. Empty = in-UI
     # transcripts only (no DB persistence).

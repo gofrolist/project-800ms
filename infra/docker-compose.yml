@@ -193,6 +193,11 @@ services:
       # value as QWEN3_TTS_API_KEY on the agent so Pipecat's OpenAI client
       # sends it via the Authorization header.
       - TTS_API_KEY=${QWEN3_TTS_API_KEY:-}
+      # Voice library location inside the container. Matches the bind
+      # mount below. Base-variant deploys put per-profile reference
+      # audio + meta.json under .../profiles/<name>/. CustomVoice
+      # variants ignore this path.
+      - VOICE_LIBRARY_DIR=/opt/qwen3-tts/voice_library
     volumes:
       # Dedicated HF cache for Qwen3-TTS. Don't share with hf_cache_agent
       # (GigaAM) or hf_cache_vllm — different UIDs inside each image would
@@ -202,6 +207,12 @@ services:
       # split makes the UID-sensitivity invariant robust against future
       # image changes.
       - hf_cache_qwen3:/root/.cache/huggingface
+      # Voice-clone profile library. Bind-mounted read-only from the host
+      # so operators can drop new .wav + meta.json pairs into
+      # ../voice_library/profiles/<name>/ without rebuilding the image.
+      # Only used by Base-variant deploys (voice cloning); CustomVoice
+      # variants never touch this path. Path is relative to infra/.
+      - ../voice_library:/opt/qwen3-tts/voice_library:ro
     ports:
       # Loopback only — the sidecar has no built-in rate limiting. The
       # agent reaches it via the internal docker network on
@@ -338,6 +349,12 @@ services:
       # deploys.
       - QWEN3_TTS_BASE_URL=${QWEN3_TTS_BASE_URL:-}
       - QWEN3_TTS_API_KEY=${QWEN3_TTS_API_KEY:-}
+      # Optional Qwen3-only voice override. When set, takes precedence
+      # over TTS_VOICE for the qwen3 engine. Use "clone:<profile>" for a
+      # voice-library profile baked into the wrapper image (Base
+      # variants); "alloy"/"echo"/etc. for CustomVoice variants' OpenAI
+      # voice names. Empty → fall back to TTS_VOICE.
+      - QWEN3_TTS_VOICE=${QWEN3_TTS_VOICE:-}
       - HF_HOME=/home/appuser/.cache/huggingface
       - HF_HUB_DISABLE_XET=1
       - PIPER_VOICES_DIR=/home/appuser/.cache/piper

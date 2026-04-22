@@ -240,6 +240,60 @@ class OfficialQwen3TTSBackend(TTSBackend):
             chunk, sr = chunk_sr
             yield chunk, sr
 
+    async def generate_voice_clone_streaming(
+        self,
+        text: str,
+        ref_audio: np.ndarray,
+        ref_audio_sr: int,
+        ref_text: Optional[str] = None,
+        language: str = "Auto",
+        x_vector_only_mode: bool = False,
+    ):
+        """Stream voice-clone PCM chunks as the model generates them.
+
+        Local patch (infra/qwen3-tts-wrapper/README.md "Local patches" §7,
+        companion to ``generate_speech_streaming``): upstream's `official`
+        backend only implements non-streaming ``generate_voice_clone``.
+        The router's ``stream=True`` path for ``voice="clone:..."``
+        requests calls ``backend.generate_voice_clone_streaming(...)``
+        which would otherwise crash with AttributeError. The underlying
+        ``Qwen3TTSModel`` supports streaming via ``stream_generate_voice_clone``
+        (see qwen_tts/inference/qwen3_tts_model.py:525); this method
+        wraps it and pulls chunks on the default executor so the
+        asyncio loop stays responsive (same pattern as
+        ``generate_speech_streaming``).
+
+        Yields:
+            Tuple[np.ndarray, int]: (pcm_chunk as float32 array, sample_rate).
+        """
+        if not self._ready:
+            await self.initialize()
+
+        if not self.supports_voice_cloning():
+            raise RuntimeError(
+                "Voice cloning requires the Base model (Qwen3-TTS-12Hz-*-Base). "
+                "The current model does not support voice cloning."
+            )
+
+        loop = asyncio.get_event_loop()
+
+        def _iter():
+            return self.model.stream_generate_voice_clone(
+                text=text,
+                ref_audio=(ref_audio, ref_audio_sr),
+                ref_text=ref_text,
+                language=language,
+                x_vector_only_mode=x_vector_only_mode,
+            )
+
+        gen = await loop.run_in_executor(None, _iter)
+        while True:
+            chunk_sr = await loop.run_in_executor(None, next, gen, None)
+            if chunk_sr is None:
+                return
+            chunk, sr = chunk_sr
+            yield chunk, sr
+
     def get_backend_name(self) -> str:
         """Return the name of this backend."""
         return "official"
