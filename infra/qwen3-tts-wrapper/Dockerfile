@@ -16,8 +16,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install flash attention (NVIDIA CUDA)
-RUN pip install --no-cache-dir flash-attn --no-build-isolation
+# Install flash attention (NVIDIA CUDA).
+#
+# Local patch (README "Local patches" §6): flash-attn's metadata build
+# fails on some CUDA/toolkit combos — our L4 + CUDA 12.6 base image hit
+# metadata-generation-failed during pip's setup.py egg_info step. The
+# `official` backend (our default, see compose TTS_BACKEND) already
+# iterates flash_attention_2 → sdpa → eager and falls back cleanly when
+# flash_attn is absent at import time, so a failed install here is not
+# runtime-fatal. We keep the install attempt (fast path when it works)
+# but `|| true` suppresses a build-time failure; the warning lands in
+# the build log for inspection.
+RUN pip install --no-cache-dir flash-attn --no-build-isolation \
+    || echo "WARNING: flash-attn install failed — backend will fall back to sdpa/eager."
 
 # Copy application code (includes qwen_tts/ with streaming patches applied)
 COPY . .
