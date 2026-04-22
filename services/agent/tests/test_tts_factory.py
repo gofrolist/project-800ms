@@ -211,6 +211,16 @@ class TestQwen3Branch:
         # "alloy" is in Pipecat's VALID_VOICES whitelist, so it passes
         # through without substitution.
         assert kwargs["voice"] == "alloy"
+        # Regression guard: the factory must pass a non-zero sample_rate.
+        # Without it, Pipecat's TTSService.chunk_size property
+        # (``sample_rate * 0.5 * 2``) evaluates to 0, httpx.iter_bytes(0)
+        # yields no chunks, and the live pipeline plays silence with no
+        # error frame. Observed on 2026-04-22 on the coastalai.ai deploy
+        # — the sidecar logged successful generations while the browser
+        # heard nothing. Must match the wrapper's native PCM output
+        # rate (24 kHz; see DEFAULT_SAMPLE_RATE in
+        # infra/qwen3-tts-wrapper/api/services/audio_encoding.py).
+        assert kwargs["sample_rate"] == 24000
 
     def test_qwen3_missing_base_url_raises(self, monkeypatch):
         """Empty QWEN3_TTS_BASE_URL → ValueError that names only the

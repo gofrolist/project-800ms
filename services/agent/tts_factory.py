@@ -178,9 +178,24 @@ def build_tts_service(
         # alias list. `language=` is intentionally not a kwarg here — the
         # OpenAI-compat schema doesn't expose it; the model alias is the
         # only clean way to route language without patching Pipecat.
+        #
+        # sample_rate=24000 is the Qwen3 wrapper's native PCM output rate
+        # (see infra/qwen3-tts-wrapper/api/services/audio_encoding.py
+        # DEFAULT_SAMPLE_RATE). Passing it explicitly avoids a subtle bug:
+        # Pipecat's TTSService.chunk_size property is derived as
+        # ``sample_rate * 0.5 * 2``. When the service instance is used
+        # before a StartFrame has propagated (or the pipeline does not
+        # inject a StartFrame sample_rate at all), ``sample_rate`` is 0
+        # and ``chunk_size`` becomes 0. ``r.iter_bytes(0)`` in httpx is
+        # a no-op; run_tts yields no TTSAudioRawFrames and the LiveKit
+        # output plays silence. Observed live: the sidecar logs showed
+        # Gen=9.25s Audio=2.54s but the browser heard nothing. Setting
+        # the rate at construction means the chunk_size property is
+        # valid from frame zero, no matter the pipeline lifecycle.
         return Qwen3TTSService(
             base_url=cfg.qwen3_base_url,
             api_key=cfg.qwen3_api_key,
+            sample_rate=24000,
             model="tts-1-ru",
             voice=effective_voice,
         )
