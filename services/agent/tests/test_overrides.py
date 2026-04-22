@@ -62,7 +62,7 @@ class TestFromDispatch:
         assert o.context is None
 
     def test_tts_engine_accepts_whitelist(self) -> None:
-        for engine in ("piper", "silero", "qwen3"):
+        for engine in ("piper", "silero", "qwen3", "xtts"):
             o = PerSessionOverrides.from_dispatch({"tts_engine": engine})
             assert o.tts_engine == engine
 

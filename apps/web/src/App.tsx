@@ -11,7 +11,7 @@ import {
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const API_KEY = import.meta.env.VITE_API_KEY ?? "";
 
-type TtsEngine = "piper" | "silero" | "qwen3";
+type TtsEngine = "piper" | "silero" | "qwen3" | "xtts";
 
 interface VoiceOption {
   id: string;
@@ -30,6 +30,10 @@ interface EngineDescriptor {
 // - Silero: speaker id within the v5_cis_base model (see
 //   services/agent/silero_tts.py SileroSettings.speaker)
 // - Qwen3: clone:<profile> identifier resolved via voice_library/profiles/
+//   (baked into the sidecar image)
+// - XTTS: clone:<profile> identifier resolved against the agent's local
+//   voice_library mount (same directory shape as Qwen3; see
+//   services/agent/xtts_tts.py _resolve_voice_profile)
 //
 // Curated to a few options per engine so the dropdown stays scannable.
 // Add more here as you commission new voices on the backend.
@@ -63,6 +67,12 @@ const TTS_ENGINES: readonly EngineDescriptor[] = [
   {
     id: "qwen3",
     label: "Qwen3",
+    sub: "GPU · cloned",
+    voices: [{ id: "clone:demo-ru", label: "Cloned voice" }],
+  },
+  {
+    id: "xtts",
+    label: "XTTS v2",
     sub: "GPU · cloned",
     voices: [{ id: "clone:demo-ru", label: "Cloned voice" }],
   },

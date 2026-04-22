@@ -30,6 +30,8 @@ def _make_cfg(
     qwen3_base_url: str = "",
     qwen3_api_key: str = "",
     qwen3_tts_voice: str = "",
+    xtts_tts_voice: str = "",
+    xtts_voice_library_dir: Path | None = None,
 ) -> AgentConfig:
     """Build a minimal AgentConfig for factory-dispatch tests."""
     return AgentConfig(
@@ -45,6 +47,8 @@ def _make_cfg(
         qwen3_base_url=qwen3_base_url,
         qwen3_api_key=qwen3_api_key,
         qwen3_tts_voice=qwen3_tts_voice,
+        xtts_tts_voice=xtts_tts_voice,
+        xtts_voice_library_dir=xtts_voice_library_dir or Path("/tmp/xtts-voice-library-test"),  # noqa: S108 — test-only sentinel
     )
 
 
@@ -406,6 +410,107 @@ class TestQwen3Branch:
         assert fake_cls.call_args.kwargs["voice"] == "alloy"
 
 
+class TestXttsBranch:
+    """Factory dispatch for engine=xtts (in-process Coqui XTTS v2).
+
+    XTTS is a zero-shot voice cloner — the factory constructs an
+    ``XTTSTTSService`` from the preloaded coqui-tts ``TTS`` singleton
+    (via ``models.get_xtts``), passing a voice id in ``clone:<profile>``
+    form plus the voice_library root. The service's ``__init__``
+    eagerly resolves the profile against disk, so tests must either
+    stub the service class or materialize a real voice_library
+    directory on a tmp_path. We stub the class here (cheaper, and the
+    profile resolution is exercised in test_xtts_tts.py).
+    """
+
+    def test_xtts_dispatches_to_xtts_service(self, monkeypatch):
+        """Factory returns an XTTSTTSService and resolves ``get_xtts``
+        for the preloaded singleton."""
+        fake_instance = MagicMock(name="XTTSTTSService_instance")
+        fake_cls = MagicMock(name="XTTSTTSService_cls", return_value=fake_instance)
+        fake_settings_cls = MagicMock(name="XTTSSettings_cls")
+
+        import xtts_tts as xtts_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(xtts_mod, "XTTSTTSService", fake_cls)
+        monkeypatch.setattr(xtts_mod, "XTTSSettings", fake_settings_cls)
+
+        import models  # noqa: PLC0415
+
+        fake_model = MagicMock(name="xtts_model")
+        monkeypatch.setattr(models, "get_xtts", lambda: fake_model)
+
+        cfg = _make_cfg(
+            tts_engine="xtts",
+            xtts_voice_library_dir=Path("/tmp/xtts-voice-library-test"),  # noqa: S108
+        )
+        result = build_tts_service("xtts", cfg=cfg, voice="clone:demo-ru")
+
+        assert result is fake_instance
+        fake_cls.assert_called_once()
+        call_kwargs = fake_cls.call_args.kwargs
+        # The preloaded singleton flows through verbatim.
+        assert call_kwargs["xtts_model"] is fake_model
+        # XTTSSettings was invoked with the voice + voice_library_dir.
+        fake_settings_cls.assert_called_once_with(
+            voice="clone:demo-ru",
+            voice_library_dir=cfg.xtts_voice_library_dir,
+        )
+        assert call_kwargs["settings"] is fake_settings_cls.return_value
+
+    def test_xtts_tts_voice_overrides_generic_voice(self, monkeypatch):
+        """cfg.xtts_tts_voice takes precedence over the generic voice
+        param — lets ops ship a mixed deploy where TTS_VOICE stays on
+        a Piper/Silero id while XTTS reads clone:<profile>."""
+        fake_cls = MagicMock(name="XTTSTTSService_cls")
+        fake_settings_cls = MagicMock(name="XTTSSettings_cls")
+
+        import xtts_tts as xtts_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(xtts_mod, "XTTSTTSService", fake_cls)
+        monkeypatch.setattr(xtts_mod, "XTTSSettings", fake_settings_cls)
+
+        import models  # noqa: PLC0415
+
+        monkeypatch.setattr(models, "get_xtts", lambda: MagicMock())
+
+        cfg = _make_cfg(
+            tts_engine="xtts",
+            xtts_tts_voice="clone:demo-ru",
+        )
+        # generic voice is a Piper-style value and must be IGNORED
+        # when xtts_tts_voice is set.
+        build_tts_service("xtts", cfg=cfg, voice="ru_RU-denis-medium")
+
+        fake_settings_cls.assert_called_once()
+        assert fake_settings_cls.call_args.kwargs["voice"] == "clone:demo-ru"
+
+    def test_xtts_tts_voice_falls_back_to_voice_when_empty(self, monkeypatch):
+        """Empty xtts_tts_voice → the generic voice param is used.
+        Lets operators omit the XTTS-specific env and let TTS_VOICE
+        carry a clone:<profile> when the deploy is XTTS-only."""
+        fake_cls = MagicMock(name="XTTSTTSService_cls")
+        fake_settings_cls = MagicMock(name="XTTSSettings_cls")
+
+        import xtts_tts as xtts_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(xtts_mod, "XTTSTTSService", fake_cls)
+        monkeypatch.setattr(xtts_mod, "XTTSSettings", fake_settings_cls)
+
+        import models  # noqa: PLC0415
+
+        monkeypatch.setattr(models, "get_xtts", lambda: MagicMock())
+
+        cfg = _make_cfg(
+            tts_engine="xtts",
+            xtts_tts_voice="",
+        )
+        build_tts_service("xtts", cfg=cfg, voice="clone:other-profile")
+
+        fake_settings_cls.assert_called_once()
+        assert fake_settings_cls.call_args.kwargs["voice"] == "clone:other-profile"
+
+
 # ─── AgentConfig.tts_engine validation ─────────────────────────────────
 
 
@@ -436,6 +541,7 @@ class TestAgentConfigTtsEngine:
         assert "piper" in message
         assert "silero" in message
         assert "qwen3" in message
+        assert "xtts" in message
 
     def test_empty_engine_name_raises_at_construction(self):
         with pytest.raises(ValueError, match="tts_engine must be one of"):
@@ -443,6 +549,6 @@ class TestAgentConfigTtsEngine:
 
     def test_valid_engines_construct_cleanly(self):
         """Each supported engine name passes validation."""
-        for engine in ("piper", "silero", "qwen3"):
+        for engine in ("piper", "silero", "qwen3", "xtts"):
             cfg = _make_cfg(tts_engine=engine)
             assert cfg.tts_engine == engine

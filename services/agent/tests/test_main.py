@@ -59,6 +59,7 @@ def _patch_runtime_bits():
     return {
         "load_gigaam": patch.object(main, "load_gigaam", MagicMock()),
         "load_silero": patch.object(main, "load_silero", MagicMock()),
+        "load_xtts": patch.object(main, "load_xtts", MagicMock()),
         "web_run_app": patch.object(main.web, "run_app", MagicMock()),
     }
 
@@ -78,12 +79,16 @@ class TestSileroPreload:
         with (
             patches["load_gigaam"] as fake_gigaam,
             patches["load_silero"] as fake_silero,
+            patches["load_xtts"] as fake_xtts,
             patches["web_run_app"],
         ):
             main.main()
 
         fake_gigaam.assert_called_once()
         fake_silero.assert_called_once()
+        # XTTS must stay out of a silero-only deploy — its 1.8 GB
+        # checkpoint download would dwarf the silero preload time.
+        fake_xtts.assert_not_called()
 
     def test_skips_silero_preload_when_tts_engine_piper(self, monkeypatch):
         """With TTS_ENGINE=piper, load_silero must NOT be called.
@@ -97,12 +102,14 @@ class TestSileroPreload:
         with (
             patches["load_gigaam"] as fake_gigaam,
             patches["load_silero"] as fake_silero,
+            patches["load_xtts"] as fake_xtts,
             patches["web_run_app"],
         ):
             main.main()
 
         fake_gigaam.assert_called_once()
         fake_silero.assert_not_called()
+        fake_xtts.assert_not_called()
 
     def test_exits_3_when_silero_preload_fails(self, monkeypatch):
         """A Silero load failure at startup must exit with code 3.
@@ -113,7 +120,12 @@ class TestSileroPreload:
         """
         monkeypatch.setenv("TTS_ENGINE", "silero")
         patches = _patch_runtime_bits()
-        with patches["load_gigaam"], patches["load_silero"] as fake_silero, patches["web_run_app"]:
+        with (
+            patches["load_gigaam"],
+            patches["load_silero"] as fake_silero,
+            patches["load_xtts"],
+            patches["web_run_app"],
+        ):
             fake_silero.side_effect = RuntimeError("torch.hub download failed")
 
             with pytest.raises(SystemExit) as exc_info:
@@ -128,8 +140,93 @@ class TestSileroPreload:
         """
         monkeypatch.setenv("TTS_ENGINE", "piper")
         patches = _patch_runtime_bits()
-        with patches["load_gigaam"] as fake_gigaam, patches["load_silero"], patches["web_run_app"]:
+        with (
+            patches["load_gigaam"] as fake_gigaam,
+            patches["load_silero"],
+            patches["load_xtts"],
+            patches["web_run_app"],
+        ):
             fake_gigaam.side_effect = RuntimeError("gigaam weights corrupt")
+
+            with pytest.raises(SystemExit) as exc_info:
+                main.main()
+
+            assert exc_info.value.code == 3
+
+
+class TestXttsPreload:
+    """XTTS preload is gated on TTS_PRELOAD_ENGINES including ``xtts`` —
+    same shape as the Silero case above, but XTTS downloads a ~1.8 GB
+    checkpoint on cold cache so the distinction (preload vs lazy) matters
+    even more than for Silero.
+    """
+
+    def test_preloads_xtts_when_tts_engine_xtts(self, monkeypatch):
+        """With TTS_ENGINE=xtts, main() must call load_xtts() exactly
+        once before handing off to the HTTP server."""
+        monkeypatch.setenv("TTS_ENGINE", "xtts")
+        patches = _patch_runtime_bits()
+        with (
+            patches["load_gigaam"] as fake_gigaam,
+            patches["load_silero"] as fake_silero,
+            patches["load_xtts"] as fake_xtts,
+            patches["web_run_app"],
+        ):
+            main.main()
+
+        fake_gigaam.assert_called_once()
+        fake_xtts.assert_called_once()
+        # An xtts-only deploy must not pay Silero's download cost.
+        fake_silero.assert_not_called()
+
+    def test_preloads_both_silero_and_xtts_when_listed(self, monkeypatch):
+        """Demo-site config: TTS_PRELOAD_ENGINES=piper,silero,qwen3,xtts
+        must preload both Silero and XTTS so the first session on either
+        engine doesn't cold-start."""
+        monkeypatch.setenv("TTS_ENGINE", "piper")
+        monkeypatch.setenv("TTS_PRELOAD_ENGINES", "piper,silero,qwen3,xtts")
+        patches = _patch_runtime_bits()
+        with (
+            patches["load_gigaam"],
+            patches["load_silero"] as fake_silero,
+            patches["load_xtts"] as fake_xtts,
+            patches["web_run_app"],
+        ):
+            main.main()
+
+        fake_silero.assert_called_once()
+        fake_xtts.assert_called_once()
+
+    def test_skips_xtts_preload_when_tts_engine_piper(self, monkeypatch):
+        """With TTS_ENGINE=piper and no XTTS in the preload list,
+        load_xtts must NOT be called — XTTS's checkpoint is ~1.8 GB and
+        must not be downloaded on a piper deploy."""
+        monkeypatch.setenv("TTS_ENGINE", "piper")
+        patches = _patch_runtime_bits()
+        with (
+            patches["load_gigaam"],
+            patches["load_silero"],
+            patches["load_xtts"] as fake_xtts,
+            patches["web_run_app"],
+        ):
+            main.main()
+
+        fake_xtts.assert_not_called()
+
+    def test_exits_3_when_xtts_preload_fails(self, monkeypatch):
+        """An XTTS load failure at startup must exit with code 3 — same
+        hard-fail semantics as the Silero case. Boot-but-can't-synth is
+        strictly worse than a container restart loop.
+        """
+        monkeypatch.setenv("TTS_ENGINE", "xtts")
+        patches = _patch_runtime_bits()
+        with (
+            patches["load_gigaam"],
+            patches["load_silero"],
+            patches["load_xtts"] as fake_xtts,
+            patches["web_run_app"],
+        ):
+            fake_xtts.side_effect = RuntimeError("CPML EULA not accepted")
 
             with pytest.raises(SystemExit) as exc_info:
                 main.main()

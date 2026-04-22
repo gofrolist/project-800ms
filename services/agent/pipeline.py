@@ -37,7 +37,7 @@ from transcript_sink import TranscriptSink
 from tts_factory import build_tts_service
 
 
-_VALID_TTS_ENGINES: frozenset[str] = frozenset({"piper", "silero", "qwen3"})
+_VALID_TTS_ENGINES: frozenset[str] = frozenset({"piper", "silero", "qwen3", "xtts"})
 
 
 @dataclass(frozen=True)
@@ -71,6 +71,22 @@ class AgentConfig:
     # baked into the wrapper image (see ``QWEN3_VARIANT=0.6B-Base`` or
     # ``1.7B-Base`` deploys). Piper/Silero sessions ignore this field.
     qwen3_tts_voice: str = ""
+    # XTTS-specific voice name. Same precedence rationale as
+    # ``qwen3_tts_voice``: lets ops ship a mixed deploy where Piper/Silero
+    # continue to use ``TTS_VOICE=ru_RU-denis-medium`` while XTTS reads
+    # ``XTTS_TTS_VOICE=clone:<profile>``. Empty falls back to the generic
+    # ``tts_voice`` / per-session ``overrides.voice``. XTTS is always a
+    # voice-cloning engine — non-``clone:`` values will be rejected at
+    # service construction with a clear ValueError.
+    xtts_tts_voice: str = ""
+    # Root of the shared voice-library mount. Both the XTTS adapter and
+    # the Qwen3 sidecar (via its own bind mount) look under
+    # ``<dir>/profiles/<profile>/`` for ``meta.json`` + ``ref.wav``.
+    # Default matches the agent container's bind-mount target in
+    # infra/docker-compose.yml; operators with a different layout should
+    # override via ``XTTS_VOICE_LIBRARY_DIR``. Piper/Silero sessions
+    # ignore this field.
+    xtts_voice_library_dir: Path = Path("/opt/voice_library")
     # When both values are set, final STT and LLM utterances are also
     # POSTed to the API's /internal/transcripts endpoint. Empty = in-UI
     # transcripts only (no DB persistence).

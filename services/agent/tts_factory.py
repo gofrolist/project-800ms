@@ -15,6 +15,13 @@ Supported engines:
   returns Pipecat's upstream ``OpenAITTSService`` pointed at the sidecar
   URL; the wrapper translates OpenAI-compat requests into Qwen3-TTS
   calls. No agent-side custom adapter.
+* ``xtts`` — Coqui XTTS v2 (17 languages incl. Russian) with zero-shot
+  voice cloning, run in-process. Requires the agent to have preloaded
+  the model via ``load_xtts()`` at startup. The voice string must be in
+  ``clone:<profile>`` form — the adapter resolves that against the
+  voice_library mount at construction time to obtain reference audio +
+  a language code. CPML-licensed weights (non-commercial); see
+  ``services/agent/xtts_tts.py`` module docstring.
 
 Unknown engine names raise ``ValueError`` at pipeline build time — the
 failure surfaces on the first dispatch, not at import time, which
@@ -225,6 +232,28 @@ def build_tts_service(
             sample_rate=24000,
             model="tts-1-ru",
             voice=effective_voice,
+        )
+
+    if engine == "xtts":
+        # Lazy imports — coqui-tts is a ~500 MB dependency tree and we
+        # only want to pay the import cost when XTTS is the active
+        # engine. Matches the Silero/qwen3 lazy-import precedent.
+        from models import get_xtts  # noqa: PLC0415
+        from xtts_tts import XTTSSettings, XTTSTTSService  # noqa: PLC0415
+
+        # XTTS_TTS_VOICE overrides the generic ``voice`` param when set.
+        # Same precedence rationale as qwen3_tts_voice above — lets an
+        # operator ship a mixed deploy where Piper/Silero use an abstract
+        # speaker id and XTTS uses ``clone:<profile>`` without the two
+        # identifiers colliding on ``TTS_VOICE``. Empty → fall back to
+        # the generic ``voice``.
+        xtts_voice = cfg.xtts_tts_voice or voice
+        return XTTSTTSService(
+            xtts_model=get_xtts(),
+            settings=XTTSSettings(
+                voice=xtts_voice,
+                voice_library_dir=cfg.xtts_voice_library_dir,
+            ),
         )
 
     raise ValueError(f"unknown TTS_ENGINE: {engine!r}")

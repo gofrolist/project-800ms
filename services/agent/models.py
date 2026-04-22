@@ -21,6 +21,10 @@ _gigaam_model: object | None = None
 # instead of returning the wrong model. ``None`` means uncached;
 # ``(name, model)`` means the given model is loaded.
 _silero_cached: tuple[str, object] | None = None
+# Same keyed-cache shape as Silero for consistency. ``None`` means
+# uncached. XTTS weights are ~1.8 GB of VRAM on load so this singleton
+# is genuinely heavy.
+_xtts_cached: tuple[str, object] | None = None
 
 
 def load_gigaam(model_name: str = "v3_e2e_rnnt") -> object:
@@ -142,8 +146,75 @@ def get_silero() -> object:
     return _silero_cached[1]
 
 
+def load_xtts(
+    model_name: str = "tts_models/multilingual/multi-dataset/xtts_v2",
+) -> object:
+    """Load the Coqui XTTS v2 model once. Cached by model_name.
+
+    XTTS v2 is distributed via the maintained ``coqui-tts`` PyPI package
+    (a fork of the deprecated Coqui TTS). The weights download on first
+    use into ``~/.local/share/tts`` by default; in the agent container
+    this maps through the same ``hf_cache_agent`` volume as GigaAM when
+    ``TTS_HOME`` is pointed at it. ~1.8 GB of VRAM on the L4 GPU.
+
+    When CUDA is available the model is moved to GPU after load — the
+    coqui ``TTS`` wrapper exposes a standard ``.to(device)`` method.
+    Unlike Silero's torch.package scripted module, ``.to()`` here
+    returns ``self`` so reassignment would be safe — but for parity we
+    call it for side-effect only (same defensive pattern in case a
+    future coqui-tts refactor changes this).
+
+    The cache is keyed on ``model_name``: repeat calls with the same
+    name return the cached singleton; calls with a different name raise
+    ``RuntimeError`` rather than silently returning the wrong model.
+
+    Returns the ``TTS.api.TTS`` instance; typed as ``object`` because
+    ``coqui-tts`` does not publish stable types at a stable import path.
+    """
+    global _xtts_cached
+    if _xtts_cached is not None:
+        cached_name, cached_model = _xtts_cached
+        if cached_name == model_name:
+            return cached_model
+        raise RuntimeError(
+            f"load_xtts already loaded {cached_name!r}; "
+            f"cannot switch to {model_name!r} without agent restart"
+        )
+
+    # Local imports — torch + TTS are heavy deps; this module is imported
+    # by the test suite on CPU-only CI where coqui-tts is not present.
+    # Deferring the import matches gigaam/silero patterns above.
+    import torch  # noqa: PLC0415 — heavy import by design
+    from TTS.api import TTS  # noqa: PLC0415 — heavy import by design
+
+    logger.info("Loading XTTS model={model}", model=model_name)
+    t0 = time.monotonic()
+    tts = TTS(model_name)
+    # Call .to() for its side-effects only — match the Silero defensive
+    # pattern even though coqui-tts's .to() does return self (see
+    # TTS/api.py: ``def to(self, device): self.synthesizer.tts_model.to(
+    # device); return self``). If a future coqui-tts refactor changes
+    # that return contract, the live cache won't silently become None.
+    if torch.cuda.is_available():
+        tts.to(torch.device("cuda"))
+        logger.info("XTTS model moved to CUDA")
+    else:
+        logger.info("XTTS running on CPU (no CUDA device available)")
+    _xtts_cached = (model_name, tts)
+    logger.info("XTTS model loaded in {elapsed:.1f}s", elapsed=time.monotonic() - t0)
+    return tts
+
+
+def get_xtts() -> object:
+    """Return the pre-loaded XTTS model. Raises if not loaded."""
+    if _xtts_cached is None:
+        raise RuntimeError("XTTS model not loaded — call load_xtts() first")
+    return _xtts_cached[1]
+
+
 def _reset_models_for_tests() -> None:
     """Reset cached singletons. Tests only — do not call from runtime."""
-    global _gigaam_model, _silero_cached
+    global _gigaam_model, _silero_cached, _xtts_cached
     _gigaam_model = None
     _silero_cached = None
+    _xtts_cached = None

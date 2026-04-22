@@ -53,7 +53,7 @@ DEFAULT_LANGUAGE = "ru"
 # Mirrors pipeline._VALID_TTS_ENGINES; duplicated here so parsing the
 # dispatch body doesn't require importing pipeline (which pulls in
 # pipecat + CUDA on the import path).
-_VALID_TTS_ENGINES: frozenset[str] = frozenset({"piper", "silero", "qwen3"})
+_VALID_TTS_ENGINES: frozenset[str] = frozenset({"piper", "silero", "qwen3", "xtts"})
 
 
 @dataclass(frozen=True)

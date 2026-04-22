@@ -21,6 +21,16 @@ dependencies = [
     # because GigaAM's public transcribe() only accepts file paths (shells
     # out to ffmpeg).
     "soundfile>=0.12,<0.14",
+    # Coqui XTTS v2 — 17-language zero-shot voice-cloning TTS. Run
+    # in-process like Silero; lazy-imported in models.load_xtts() so
+    # agents that don't enable XTTS don't pay the import cost.
+    # ``coqui-tts`` (not ``TTS``) is the maintained fork on PyPI since
+    # the original Coqui TTS repo was archived; 0.27.5 (Jan 2026) drops
+    # the embedded torch requirement so torch version is controlled by
+    # our existing pin (via gigaam[torch]). Weights are CPML-licensed
+    # (non-commercial) — fine for the demo, flag for any commercial
+    # deploy. See services/agent/xtts_tts.py module docstring.
+    "coqui-tts>=0.27.5",
 ]
 
 [dependency-groups]

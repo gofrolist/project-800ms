@@ -329,19 +329,19 @@ services:
       - VLLM_MODEL=${LLM_MODEL:-qwen-7b}
       - VLLM_API_KEY=${LLM_API_KEY:?LLM_API_KEY is required}
       - TTS_VOICE=${TTS_VOICE:-ru_RU-denis-medium}
-      # TTS engine selector — one of "piper" (default), "silero", "qwen3".
-      # Session-level overrides from POST /v1/sessions.tts_engine take
-      # precedence (see services/agent/overrides.py); this env is the
+      # TTS engine selector — one of "piper" (default), "silero", "qwen3",
+      # "xtts". Session-level overrides from POST /v1/sessions.tts_engine
+      # take precedence (see services/agent/overrides.py); this env is the
       # fallback when a session omits the field. The agent's AgentConfig
       # validates the value at construction time.
       - TTS_ENGINE=${TTS_ENGINE:-piper}
       # Comma-separated list of engines to pre-load at agent startup.
-      # Silero is the only engine with an agent-side preload (torch.hub
-      # model fetch); listing "silero" here makes Silero-backed sessions
-      # ready without a cold-load on first dispatch. Defaults to
-      # TTS_ENGINE so single-engine operators keep their old behavior.
-      # Demo deployments with the three-button selector set
-      # TTS_PRELOAD_ENGINES=piper,silero,qwen3.
+      # Silero and XTTS each have an agent-side preload (torch.hub model
+      # fetch + ~1.8 GB XTTS checkpoint respectively); listing them here
+      # makes those-backed sessions ready without a cold-load on first
+      # dispatch. Defaults to TTS_ENGINE so single-engine operators keep
+      # their old behavior. Demo deployments with the engine selector set
+      # TTS_PRELOAD_ENGINES=piper,silero,qwen3,xtts.
       - TTS_PRELOAD_ENGINES=${TTS_PRELOAD_ENGINES:-${TTS_ENGINE:-piper}}
       # Qwen3-TTS sidecar endpoint + API key. Required when any session
       # may select TTS_ENGINE=qwen3 — the factory raises ValueError at
@@ -355,6 +355,23 @@ services:
       # variants); "alloy"/"echo"/etc. for CustomVoice variants' OpenAI
       # voice names. Empty → fall back to TTS_VOICE.
       - QWEN3_TTS_VOICE=${QWEN3_TTS_VOICE:-}
+      # XTTS-only voice override. XTTS is always a voice-cloning engine,
+      # so the value must be ``clone:<profile>``; the profile resolves
+      # against the voice_library mount below. Empty → fall back to
+      # TTS_VOICE (which itself must be a ``clone:<profile>`` for XTTS).
+      - XTTS_TTS_VOICE=${XTTS_TTS_VOICE:-}
+      # Root of the voice-library mount inside the agent container.
+      # Default matches the bind-mount target below. The directory shape
+      # is ``<dir>/profiles/<profile>/{meta.json,ref.wav}`` — same layout
+      # the Qwen3 wrapper reads from, so a single profile can serve both
+      # engines without duplicating reference audio.
+      - XTTS_VOICE_LIBRARY_DIR=/opt/voice_library
+      # Let coqui-tts auto-accept the XTTS v2 CPML (non-commercial) EULA
+      # the first time the model is loaded. Without this, the load call
+      # blocks on stdin waiting for a "y" keystroke which will never
+      # arrive in a container. Operators deploying to paying customers
+      # MUST verify their licensing posture before enabling this.
+      - COQUI_TOS_AGREED=1
       - HF_HOME=/home/appuser/.cache/huggingface
       - HF_HUB_DISABLE_XET=1
       - PIPER_VOICES_DIR=/home/appuser/.cache/piper
@@ -379,6 +396,12 @@ services:
       # conditional preload); safe to leave mounted for Piper deployments
       # too, since the directory will just stay empty.
       - torch_cache_agent:/home/appuser/.cache/torch
+      # Voice-library mount for XTTS (and any future engine that reads
+      # the same directory shape). Read-only: voice profiles are managed
+      # out-of-band (rsync/scp, or a dedicated artifact pipeline) — the
+      # agent only consumes them. Same directory the Qwen3 wrapper reads
+      # (see qwen3-tts service above) so one profile serves both engines.
+      - ../voice_library:/opt/voice_library:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health').read()"]
       interval: 10s

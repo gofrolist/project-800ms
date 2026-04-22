@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # services/agent/overrides.py::_VALID_TTS_ENGINES and pipeline.py's
 # _VALID_TTS_ENGINES — kept in sync by hand because the API and agent
 # live in separate Python environments (3.14 vs 3.12).
-TtsEngine = Literal["piper", "silero", "qwen3"]
+TtsEngine = Literal["piper", "silero", "qwen3", "xtts"]
 
 
 class CreateSessionRequest(BaseModel):
@@ -48,8 +48,9 @@ class CreateSessionRequest(BaseModel):
         description=(
             "Provider-specific voice id. piper: e.g. 'ru_RU-denis-medium'. "
             "silero: e.g. 'v5_cis_base'. qwen3: one of the OpenAI voice names "
-            "(alloy, echo, fable, nova, onyx, shimmer). Defaults to the "
-            "TTS_VOICE env var."
+            "(alloy, echo, fable, nova, onyx, shimmer) or 'clone:<profile>'. "
+            "xtts: 'clone:<profile>' (zero-shot voice cloning only). Defaults "
+            "to the TTS_VOICE env var."
         ),
     )
     language: str | None = Field(
@@ -69,9 +70,9 @@ class CreateSessionRequest(BaseModel):
     tts_engine: TtsEngine | None = Field(
         default=None,
         description=(
-            "TTS engine for this session — one of 'piper', 'silero', 'qwen3'. "
-            "Falls back to the agent's TTS_ENGINE env default when omitted. "
-            "Used by the demo site's three-button selector to route each "
+            "TTS engine for this session — one of 'piper', 'silero', 'qwen3', "
+            "'xtts'. Falls back to the agent's TTS_ENGINE env default when "
+            "omitted. Used by the demo site's engine selector to route each "
             "session to a different backend without restarting the agent."
         ),
     )

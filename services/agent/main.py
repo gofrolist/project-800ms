@@ -22,7 +22,7 @@ from pipecat.frames.frames import InterruptionTaskFrame, TTSSpeakFrame
 from pipecat.pipeline.runner import PipelineRunner
 
 from env import MissingEnvError, require_env
-from models import get_gigaam, load_gigaam, load_silero
+from models import get_gigaam, load_gigaam, load_silero, load_xtts
 from overrides import PerSessionOverrides, resolve_greeting
 from pipeline import AgentConfig, build_task
 
@@ -165,6 +165,20 @@ def main() -> None:
             # precedence over TTS_VOICE when the Qwen3 engine dispatches.
             # See tts_factory.py's qwen3 branch for resolution order.
             "qwen3_tts_voice": os.environ.get("QWEN3_TTS_VOICE", ""),
+            # XTTS-specific voice name. Same "clone:<profile>" shape as
+            # the Qwen3 voice but resolved against the local voice_library
+            # mount (see XTTS_VOICE_LIBRARY_DIR below). Takes precedence
+            # over TTS_VOICE when the XTTS engine dispatches; empty →
+            # fall back to the generic TTS_VOICE (which must itself be
+            # a ``clone:<profile>`` value for XTTS to work).
+            "xtts_tts_voice": os.environ.get("XTTS_TTS_VOICE", ""),
+            # Shared voice-library root. Same directory the Qwen3 wrapper
+            # reads from — XTTS and Qwen3 can pick up the same profile
+            # without duplicating reference audio. Default matches the
+            # agent container's bind-mount target in docker-compose.yml.
+            "xtts_voice_library_dir": Path(
+                os.environ.get("XTTS_VOICE_LIBRARY_DIR", "/opt/voice_library")
+            ),
             # Optional transcript persistence. Both must be set (or both
             # left empty — require_env with "" default accepts unset as
             # empty rather than raising).
@@ -207,6 +221,20 @@ def main() -> None:
             load_silero()
         except Exception:  # noqa: BLE001 — intentional hard-fail at startup
             logger.exception("Silero pre-load failed — refusing to start agent")
+            sys.exit(3)
+
+    # XTTS pre-load. ~1.8 GB VRAM and ~15-30 s on L4; the only engine in
+    # the set that ships both a weight download AND a torch.load step,
+    # so "lazy on first dispatch" would make the first XTTS session wait
+    # 30+ seconds for the greeting. Gated behind the same TTS_PRELOAD_ENGINES
+    # env list as Silero — set ``TTS_PRELOAD_ENGINES=piper,silero,xtts``
+    # (or include ``xtts`` in whatever comma list the demo deploy uses)
+    # to have the agent ready to serve XTTS on first dispatch.
+    if "xtts" in preload_engines:
+        try:
+            load_xtts()
+        except Exception:  # noqa: BLE001 — intentional hard-fail at startup
+            logger.exception("XTTS pre-load failed — refusing to start agent")
             sys.exit(3)
 
     app = web.Application()

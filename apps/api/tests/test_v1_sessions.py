@@ -147,7 +147,7 @@ async def test_create_session_forwards_tts_engine_to_agent(client, seed_tenant, 
     through the dispatch payload so the agent can pick the right TTS
     backend per-session."""
     _tenant, raw_key = seed_tenant
-    for engine in ("piper", "silero", "qwen3"):
+    for engine in ("piper", "silero", "qwen3", "xtts"):
         agent_stub.post.reset_mock()
         r = await client.post(
             "/v1/sessions",
