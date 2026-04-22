@@ -55,8 +55,19 @@ required-environments = [
 #     onnx — it imports onnxruntime. The `onnx` entry in gigaam's
 #     pyproject is a stale declaration (verified by grepping gigaam's
 #     source for `import onnx` / `from onnx` — only onnxruntime shows up).
+#
+#   - transformers: coqui-tts 0.27.5 (added for XTTS v2) imports
+#     ``isin_mps_friendly`` from ``transformers.pytorch_utils`` via its
+#     Tortoise autoregressive layer. That symbol was removed in
+#     transformers 5.x; leaving the lock on 5.5.0 makes ``from TTS.api
+#     import TTS`` raise ImportError at agent boot, crashlooping the
+#     container. Pinning ``<5.0`` keeps the lock on the 4.x line
+#     (currently resolves to 4.57.x), which still carries the symbol
+#     and the coqui import path works. Pipecat 0.0.108 + gigaam are
+#     both compatible with transformers 4.x (neither pins a 5.0 floor).
 override-dependencies = [
     "onnx>=1.21.0",
+    "transformers>=4.46,<5.0",
 ]
 
 [tool.ruff]
