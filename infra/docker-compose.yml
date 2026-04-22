@@ -256,6 +256,13 @@ services:
       # above for why this is split from the vllm cache.
       - hf_cache_agent:/home/appuser/.cache/huggingface
       - piper_voices:/home/appuser/.cache/piper
+      # torch.hub cache for Silero v5 — the snakers4/silero-models repo
+      # clone + ~200 MB of Russian v5 weights. Persisted across restarts
+      # so agents with TTS_ENGINE=silero don't re-download on every boot.
+      # Only read when Silero is the active engine (see main.py's
+      # conditional preload); safe to leave mounted for Piper deployments
+      # too, since the directory will just stay empty.
+      - torch_cache_agent:/home/appuser/.cache/torch
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health').read()"]
       interval: 10s
@@ -276,3 +283,4 @@ volumes:
   hf_cache_vllm:
   hf_cache_agent:
   piper_voices:
+  torch_cache_agent:

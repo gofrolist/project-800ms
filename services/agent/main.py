@@ -22,7 +22,7 @@ from pipecat.frames.frames import InterruptionTaskFrame, TTSSpeakFrame
 from pipecat.pipeline.runner import PipelineRunner
 
 from env import MissingEnvError, require_env
-from models import get_gigaam, load_gigaam
+from models import get_gigaam, load_gigaam, load_silero
 from overrides import PerSessionOverrides, resolve_greeting
 from pipeline import AgentConfig, build_task
 
@@ -171,6 +171,17 @@ def main() -> None:
     except Exception:  # noqa: BLE001 — intentional hard-fail at startup
         logger.exception("GigaAM pre-load failed — refusing to start agent")
         sys.exit(3)
+
+    # Conditional Silero pre-load. Only pay the torch.hub download +
+    # GPU-bind cost when Silero is the active engine — otherwise Piper
+    # and Qwen3 deployments would eat an unnecessary ~200 MB download
+    # and warm-start delay. Same hard-fail semantics as GigaAM above.
+    if _base_config["tts_engine"] == "silero":
+        try:
+            load_silero()
+        except Exception:  # noqa: BLE001 — intentional hard-fail at startup
+            logger.exception("Silero pre-load failed — refusing to start agent")
+            sys.exit(3)
 
     app = web.Application()
     app.router.add_post("/dispatch", handle_dispatch)

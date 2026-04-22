@@ -114,9 +114,44 @@ class TestUnknownEngine:
 # ─── Placeholders for future units ─────────────────────────────────────
 
 
-@pytest.mark.skip(reason="added in Unit 3 — silero adapter + factory branch")
-def test_silero_branch_returns_silero_service():
-    """Unit 3 un-skips this and asserts SileroTTSService dispatch."""
+class TestSileroBranch:
+    """Factory dispatch for engine=silero (Unit 3).
+
+    SileroTTSService eagerly binds the preloaded torch.hub model. Since
+    torch + silero aren't installed on the CPU-only CI runner, we stub
+    ``get_silero`` at its import location inside the factory to hand back
+    a MagicMock — matching the "stub heavy deps" pattern used by the
+    piper branch tests above and the gigaam_stt tests.
+    """
+
+    def test_silero_dispatches_to_silero_service(self, monkeypatch):
+        import models  # noqa: PLC0415
+
+        fake_model = MagicMock(name="silero_model")
+        monkeypatch.setattr(models, "get_silero", lambda: fake_model)
+
+        cfg = _make_cfg(tts_engine="silero")
+        result = build_tts_service("silero", cfg=cfg, voice="v5_cis_base")
+
+        # Import the class after the factory has run, so the same module
+        # object is shared (factory's lazy import caches it in sys.modules).
+        from silero_tts import SileroTTSService  # noqa: PLC0415
+
+        assert isinstance(result, SileroTTSService)
+        # The preloaded singleton is injected into the service as-is.
+        assert result._loaded_model is fake_model
+
+    def test_silero_voice_flows_into_settings(self, monkeypatch):
+        """voice string is passed through to SileroSettings.speaker."""
+        import models  # noqa: PLC0415
+
+        fake_model = MagicMock(name="silero_model")
+        monkeypatch.setattr(models, "get_silero", lambda: fake_model)
+
+        cfg = _make_cfg(tts_engine="silero")
+        result = build_tts_service("silero", cfg=cfg, voice="v5_ru_custom")
+
+        assert result._silero_settings.speaker == "v5_ru_custom"
 
 
 @pytest.mark.skip(reason="added in Unit 4 — qwen3 sidecar + factory branch")

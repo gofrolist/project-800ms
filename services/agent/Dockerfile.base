@@ -61,7 +61,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:$PATH" \
     HF_HOME=/home/appuser/.cache/huggingface \
-    PIPER_VOICES_DIR=/home/appuser/.cache/piper
+    PIPER_VOICES_DIR=/home/appuser/.cache/piper \
+    TORCH_HOME=/home/appuser/.cache/torch
 
 # Runtime apt deps:
 #   - python3.12: the venv's shebangs point at /usr/bin/python3.12
@@ -76,14 +77,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Run as a non-root user. The NVIDIA container runtime exposes GPU device
 # files with permissions accessible to non-root processes, so dropping root
-# does not break CUDA. The HF_HOME / PIPER_VOICES_DIR cache dirs live under
-# the user's home and are pre-created here so the volume mounts in
-# docker-compose.yml have a writable target with the right ownership.
+# does not break CUDA. The HF_HOME / PIPER_VOICES_DIR / TORCH_HOME cache
+# dirs live under the user's home and are pre-created here so the volume
+# mounts in docker-compose.yml have a writable target with the right
+# ownership. TORCH_HOME backs Silero v5's torch.hub download cache
+# (snakers4/silero-models repo + ~200 MB of Russian model weights).
 RUN groupadd --system --gid 1001 appuser && \
     useradd --system --uid 1001 --gid 1001 \
             --home-dir /home/appuser --create-home \
             --shell /usr/sbin/nologin appuser && \
-    mkdir -p /home/appuser/.cache/huggingface /home/appuser/.cache/piper && \
+    mkdir -p /home/appuser/.cache/huggingface \
+             /home/appuser/.cache/piper \
+             /home/appuser/.cache/torch && \
     chown -R appuser:appuser /home/appuser
 
 COPY --from=builder --chown=appuser:appuser /opt/venv /opt/venv
