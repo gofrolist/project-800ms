@@ -81,18 +81,31 @@ class Qwen3TTSService(OpenAITTSService):
         """
         logger.debug(f"{self}: Generating TTS [{text}]")
         try:
-            # Upstream's VALID_VOICES whitelist is what the factory
-            # sanitizes against (see tts_factory.build_tts_service's
-            # Qwen3 branch). self._settings.voice is already a
-            # whitelisted OpenAI voice name; keep upstream's lookup so
-            # settings updates at runtime (via TTSUpdateSettingsFrame)
-            # flow through the same translation.
+            # Two legal shapes for ``self._settings.voice``:
+            #   1. An OpenAI whitelist name (``alloy``, ``echo``, ...).
+            #      Map through ``VALID_VOICES`` — preserves the upstream
+            #      translation path so runtime TTSUpdateSettingsFrame
+            #      updates still route consistently.
+            #   2. A ``clone:<profile>`` identifier pointing at a
+            #      voice-library profile baked into the Qwen3-TTS
+            #      wrapper image (Base variants). The wrapper intercepts
+            #      this prefix before its own voice mapping, so the
+            #      OpenAI whitelist does not apply — passing it verbatim
+            #      is what the wrapper expects. Without this bypass,
+            #      VALID_VOICES[...] raises KeyError at request time and
+            #      the pipeline plays silence.
             from pipecat.services.openai.tts import VALID_VOICES  # noqa: PLC0415
 
+            voice_id = self._settings.voice
+            request_voice = (
+                voice_id
+                if isinstance(voice_id, str) and voice_id.startswith("clone:")
+                else VALID_VOICES[voice_id]
+            )
             create_params = {
                 "input": text,
                 "model": self._settings.model,
-                "voice": VALID_VOICES[self._settings.voice],
+                "voice": request_voice,
                 "response_format": "pcm",
             }
             if self._settings.instructions:

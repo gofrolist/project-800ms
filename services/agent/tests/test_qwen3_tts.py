@@ -103,6 +103,32 @@ class TestQwen3StreamingBody:
         kwargs = create.call_args.kwargs
         assert kwargs.get("extra_body") == {"stream": True}
 
+    def test_clone_prefix_voice_passes_through_unchanged(self):
+        """Voice values starting with ``clone:`` are voice-library
+        profile identifiers — the wrapper intercepts them before its
+        own voice mapping, so the OpenAI VALID_VOICES whitelist does
+        not apply. Passing ``clone:demo-ru`` must reach the wrapper
+        verbatim.
+
+        Regression guard: an earlier implementation always did
+        ``VALID_VOICES[self._settings.voice]`` which raised KeyError
+        for clone: identifiers and the pipeline played silence
+        (observed live on 2026-04-22 after enabling the 0.6B-Base
+        variant).
+        """
+        svc = _make_service()
+        svc._settings.voice = "clone:demo-ru"
+        _response, cm = _mock_streaming_response(body_chunks=(b"\x00" * 48,))
+        create = _attach_client(svc, cm)
+
+        frames = asyncio.run(_drain(svc.run_tts("текст", "ctx")))
+
+        # No error frame — voice passed through cleanly.
+        from pipecat.frames.frames import TTSAudioRawFrame  # noqa: PLC0415
+
+        assert all(isinstance(f, TTSAudioRawFrame) for f in frames)
+        assert create.call_args.kwargs["voice"] == "clone:demo-ru"
+
     def test_openai_request_params_flow_through(self):
         """Beyond stream=True, the standard OpenAI speech params
         (input, model, voice, response_format) must also arrive in the
