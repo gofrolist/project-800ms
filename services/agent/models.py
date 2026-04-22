@@ -116,8 +116,17 @@ def load_silero(model_name: str = "v5_cis_base") -> object:
     # Silero returns a CPU-bound model by default. Move to CUDA when a
     # device is present; fall back to CPU otherwise (CI, local dev on
     # macOS). apply_tts runs on whichever device the model is bound to.
+    #
+    # Call .to() for its side-effects only — DO NOT reassign. Silero v5
+    # is shipped as a torch.package scripted module (not a plain
+    # ``nn.Module``); its ``.to()`` implementation returns ``None``
+    # instead of ``self``, so ``model = model.to(device)`` would
+    # silently nuke our handle. Observed live: _silero_cached[1] ended
+    # up as None, get_silero() returned None, SileroTTSService's
+    # eager bind saw silero_model=None, and every synth emitted
+    # ErrorFrame("TTS unavailable").
     if torch.cuda.is_available():
-        model = model.to(torch.device("cuda"))
+        model.to(torch.device("cuda"))
         logger.info("Silero model moved to CUDA")
     else:
         logger.info("Silero running on CPU (no CUDA device available)")
