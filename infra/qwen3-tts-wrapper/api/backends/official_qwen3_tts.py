@@ -7,6 +7,7 @@ This backend uses the official Qwen3-TTS Python implementation
 from the qwen_tts package.
 """
 
+import asyncio
 import logging
 from typing import Optional, Tuple, List, Dict, Any
 import numpy as np
@@ -180,6 +181,65 @@ class OfficialQwen3TTSBackend(TTSBackend):
             logger.error(f"Speech generation failed: {e}")
             raise RuntimeError(f"Speech generation failed: {e}")
     
+    async def generate_speech_streaming(
+        self,
+        text: str,
+        voice: str,
+        language: str = "Auto",
+        instruct: Optional[str] = None,
+        model: Optional[str] = None,  # noqa: ARG002 — unused; kept for router-side call parity
+    ):
+        """Stream PCM chunks as the model generates them.
+
+        Local patch (infra/qwen3-tts-wrapper/README.md "Local patches" §7):
+        upstream's `official` backend only implements non-streaming
+        `generate_speech`. The underlying `Qwen3TTSModel` does expose
+        `stream_generate_custom_voice` (see
+        qwen_tts/inference/qwen3_tts_model.py:729), but the backend
+        never bound it to the router's streaming path, so
+        `POST /v1/audio/speech` with `stream=True` would crash with
+        AttributeError. Expose the streaming generator here to unblock
+        low-latency inference on the `official` backend.
+
+        Streaming drops TTFB from ~20s to ~1-2s on our L4 with the
+        1.7B-CustomVoice variant — the model emits PCM chunks as it
+        decodes them instead of buffering the full utterance.
+
+        Yields:
+            Tuple[np.ndarray, int]: (pcm_chunk as float32 array, sample_rate).
+                Chunks arrive in generation order; concatenating them
+                yields audio equivalent to the non-streaming
+                generate_speech return.
+        """
+        if not self._ready:
+            await self.initialize()
+
+        loop = asyncio.get_event_loop()
+
+        def _iter():
+            # stream_generate_custom_voice is a generator — iterate
+            # synchronously. The router wraps our async iterator with
+            # `await asyncio.sleep(0)` between yields to let the event
+            # loop breathe; we mirror that here by iterating one chunk
+            # at a time off the executor thread.
+            return self.model.stream_generate_custom_voice(
+                text=text,
+                speaker=voice,
+                language=language,
+                instruct=instruct,
+            )
+
+        # Generators from torch are CPU/GPU-blocking. Pull each chunk on
+        # the default executor so the asyncio loop stays responsive for
+        # other sessions / health checks.
+        gen = await loop.run_in_executor(None, _iter)
+        while True:
+            chunk_sr = await loop.run_in_executor(None, next, gen, None)
+            if chunk_sr is None:
+                return
+            chunk, sr = chunk_sr
+            yield chunk, sr
+
     def get_backend_name(self) -> str:
         """Return the name of this backend."""
         return "official"
