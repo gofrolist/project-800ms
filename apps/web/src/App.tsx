@@ -201,6 +201,27 @@ async function createSession(ttsEngine: TtsEngine, voice: string): Promise<Sessi
   return { ...data, tts_engine: ttsEngine, voice };
 }
 
+// Explicit hang-up: tears down the LiveKit room server-side + marks the
+// session ``ended`` in the API. Agent auto-teardown (on_participant_left)
+// is the catch-all for tab-close / network-drop / other involuntary
+// disconnects, so this helper is only called from the user-initiated
+// End-call button. encodeURIComponent on the room defends against any
+// future room-naming scheme that includes slashes or reserved URL chars.
+async function deleteSession(room: string): Promise<void> {
+  if (!API_KEY) {
+    throw new Error("VITE_API_KEY is not configured.");
+  }
+  const res = await fetch(`${API_URL}/v1/sessions/${encodeURIComponent(room)}`, {
+    method: "DELETE",
+    headers: {
+      "X-API-Key": API_KEY,
+    },
+  });
+  if (!res.ok) {
+    throw new Error(await parseError(res));
+  }
+}
+
 export function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [status, setStatus] = useState<Status>("idle");
@@ -265,6 +286,7 @@ export function App() {
         <StartAudio label="Click to enable audio" />
         <CallView
           onEnd={endCall}
+          room={session.room}
           identity={session.identity}
           ttsEngine={session.tts_engine}
           voice={session.voice}
@@ -321,15 +343,22 @@ export function App() {
 
 interface CallViewProps {
   onEnd: () => void;
+  room: string;
   identity: string;
   ttsEngine: TtsEngine;
   voice: string;
 }
 
-function CallView({ onEnd, identity, ttsEngine, voice }: CallViewProps) {
+function CallView({ onEnd, room, identity, ttsEngine, voice }: CallViewProps) {
   const { state, audioTrack } = useVoiceAssistant();
   const [messages, setMessages] = useState<Message[]>([]);
   const [sessionError, setSessionError] = useState<ErrorMessage | null>(null);
+  // Separate from sessionError (backend-emitted frames) — this one is
+  // specifically the hang-up request failing. Shown as a soft banner so
+  // the user knows their click didn't land cleanly server-side, even
+  // though we still tear down the local LiveKit connection.
+  const [endError, setEndError] = useState<string | null>(null);
+  const [ending, setEnding] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useDataChannel((msg) => {
@@ -358,6 +387,28 @@ function CallView({ onEnd, identity, ttsEngine, voice }: CallViewProps) {
   useEffect(() => {
     scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight);
   }, [messages]);
+
+  const handleEnd = useCallback(async () => {
+    // Guard against double-click or a click landing while the first
+    // DELETE is still in-flight. The parent's LiveKitRoom will unmount
+    // this component as soon as onEnd() resets the App-level session
+    // state, so we don't need to reset `ending` on the happy path.
+    if (ending) return;
+    setEnding(true);
+    setEndError(null);
+    try {
+      await deleteSession(room);
+    } catch (e) {
+      // Surface the error but still tear down locally — agent
+      // on_participant_left auto-teardown will close the room
+      // server-side when LiveKit disconnects this client, so nothing
+      // is actually leaked, just potentially not as tidy as an
+      // explicit DELETE would be. The user should not be stuck in
+      // the call UI because the hang-up API call failed.
+      setEndError(e instanceof Error ? e.message : String(e));
+    }
+    onEnd();
+  }, [ending, onEnd, room]);
 
   return (
     <div className="app call-layout">
@@ -396,12 +447,27 @@ function CallView({ onEnd, identity, ttsEngine, voice }: CallViewProps) {
         you: <code>{identity}</code> · tts: <code>{ttsEngine}</code> · voice:{" "}
         <code>{voice}</code> · assistant: <code>{state}</code>
       </div>
+      {endError && (
+        <div className="session-error session-error-soft" role="alert">
+          <span className="session-error-label">Ошибка завершения</span>
+          <span className="session-error-text">{endError}</span>
+          <button
+            type="button"
+            className="session-error-dismiss"
+            aria-label="Скрыть ошибку"
+            onClick={() => setEndError(null)}
+          >
+            ×
+          </button>
+        </div>
+      )}
       <button
         className="start-btn"
         style={{ marginTop: "1rem", background: "#dc2626" }}
-        onClick={onEnd}
+        onClick={handleEnd}
+        disabled={ending}
       >
-        End call
+        {ending ? "Ending…" : "End call"}
       </button>
     </div>
   );
