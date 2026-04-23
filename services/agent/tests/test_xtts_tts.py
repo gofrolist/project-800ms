@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -33,6 +34,7 @@ from models import (  # noqa: E402 — must import after stub injection
 )
 from xtts_tts import (  # noqa: E402
     _DEFAULT_XTTS_LANGUAGE,
+    _xtts_synth_idle,
     XTTSSettings,
     XTTSTTSService,
     _resolve_voice_profile,
@@ -42,8 +44,14 @@ from xtts_tts import (  # noqa: E402
 @pytest.fixture(autouse=True)
 def _reset():
     _reset_models_for_tests()
+    # Reset the synth-thread idle gate to "idle" — a prior test that
+    # simulated cancellation without running the thread's finally clause
+    # could leave this clear, which would hang the next synth forever
+    # on `await asyncio.to_thread(_xtts_synth_idle.wait)`.
+    _xtts_synth_idle.set()
     yield
     _reset_models_for_tests()
+    _xtts_synth_idle.set()
 
 
 # ─── _resolve_voice_profile ──────────────────────────────────────────
@@ -440,6 +448,17 @@ def _drain(async_gen):
     return asyncio.run(_go())
 
 
+async def _drain_async(async_gen):
+    """Async form of ``_drain`` for use inside an existing event loop.
+
+    The sync ``_drain`` wraps in ``asyncio.run``, which fails if called
+    from inside a running loop. Tests that already create tasks with
+    ``asyncio.create_task`` (e.g. the cancellation race test) need
+    the plain async collector instead.
+    """
+    return [frame async for frame in async_gen]
+
+
 def _make_profile(base: Path, *, profile_id: str = "demo-ru") -> Path:
     """Build a minimal voice-library profile on disk."""
     profile_dir = base / "profiles" / profile_id
@@ -689,6 +708,88 @@ class TestRunTts:
             assert audio_frames, (
                 f"ctx-{ctx} produced no audio frames — lock test is not actually exercising synth"
             )
+
+    def test_next_synth_waits_for_previous_thread_exit(self, tmp_path):
+        """Regression guard for the CancelledError race (issue #26).
+
+        Scenario: the FIRST synth's coroutine is cancelled mid-
+        ``to_thread(tts)``. The asyncio lock releases via ``__aexit__``,
+        but the background threadpool worker keeps running until it
+        naturally completes — at which point ``_run_xtts_synth_with_gate``'s
+        try/finally sets ``_xtts_synth_idle``.
+
+        The SECOND synth must NOT execute ``tts()`` concurrently with
+        the first thread. It must wait on ``_xtts_synth_idle.wait()``
+        until the first thread's finally runs. Without the backstop,
+        the second synth would start immediately after the asyncio
+        lock release and corrupt the shared ``nn.Module`` hidden state.
+
+        We simulate cancellation by having the first tts() call sleep
+        long enough that the coroutine gets cancelled while the thread
+        is still running. The second synth's start time is compared
+        against the first thread's actual exit time.
+        """
+        import threading  # noqa: PLC0415
+
+        _make_profile(tmp_path)
+
+        first_tts_exited = threading.Event()
+        second_tts_entered = threading.Event()
+        second_tts_entry_time = [0.0]
+        first_exit_time = [0.0]
+
+        def first_tts(**_kwargs):
+            time.sleep(0.15)  # long enough that the coroutine gets cancelled
+            first_exit_time[0] = time.monotonic()
+            first_tts_exited.set()
+            return [0.1] * 12000
+
+        def second_tts(**_kwargs):
+            second_tts_entry_time[0] = time.monotonic()
+            second_tts_entered.set()
+            return [0.2] * 12000
+
+        svc_first, fake_first = _build_service(
+            voice_library_dir=tmp_path,
+            tts_return=None,
+        )
+        fake_first.tts = first_tts
+        svc_second, fake_second = _build_service(
+            voice_library_dir=tmp_path,
+            tts_return=None,
+        )
+        fake_second.tts = second_tts
+
+        async def _race():
+            # Start the first synth and cancel it after ~30 ms (while
+            # the thread is still sleeping).
+            first_task = asyncio.create_task(
+                _drain_async(svc_first.run_tts("first", context_id="ctx-1"))
+            )
+            await asyncio.sleep(0.03)
+            first_task.cancel()
+            try:
+                await first_task
+            except asyncio.CancelledError:
+                pass
+
+            # Now kick off the second synth. It must wait inside the
+            # lock for _xtts_synth_idle before calling tts().
+            await _drain_async(svc_second.run_tts("second", context_id="ctx-2"))
+
+        asyncio.run(_race())
+
+        # The second synth must have entered tts() AFTER the first
+        # thread's finally set the idle event. If the backstop were
+        # absent, the second synth would have started while the first
+        # thread was still sleeping — entry_time < exit_time.
+        assert second_tts_entered.is_set(), "second synth never ran"
+        assert first_tts_exited.is_set(), "first synth thread never completed"
+        assert second_tts_entry_time[0] >= first_exit_time[0], (
+            f"second synth started at {second_tts_entry_time[0]:.4f} BEFORE first "
+            f"thread exited at {first_exit_time[0]:.4f} — backstop didn't fire, "
+            f"concurrent tts() calls on shared nn.Module"
+        )
 
 
 class TestInitValidation:

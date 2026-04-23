@@ -214,6 +214,37 @@ async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({"status": "ok", "active_rooms": len(_active_rooms)})
 
 
+async def handle_engines(request: web.Request) -> web.Response:
+    """GET /engines — report which TTS engines this agent can serve.
+
+    Returns ``{"available": [engine_ids], "default": engine_id}``.
+
+    The ``available`` set is the intersection of ``TTS_PRELOAD_ENGINES``
+    at boot and any engines that actually finished loading cleanly
+    (e.g., XTTS is dropped from the set when load_xtts hit ENOSPC or
+    the disk-space pre-check fired — see ``_xtts_has_disk_space``).
+
+    The ``default`` is whatever ``TTS_ENGINE`` env resolved to — the
+    engine dispatched when a session omits ``tts_engine`` in its
+    POST /v1/sessions body. This is the only per-engine-distinction the
+    agent can answer on its own; the API proxies these values and
+    layers the static ``voice_format`` hints on top (see apps/api
+    /v1/engines).
+
+    Intentionally unauthenticated — same contract as ``/health``. The
+    endpoint leaks only the preloaded engine names, which are already
+    visible via the API's authenticated GET /v1/engines (which just
+    proxies here). If operators lock down the agent network surface
+    separately, this is where the check would live.
+    """
+    return web.json_response(
+        {
+            "available": sorted(_preload_engines),
+            "default": str(_base_config.get("tts_engine", "")),
+        }
+    )
+
+
 def main() -> None:
     global _livekit_url, _api_key, _api_secret, _base_config, _preload_engines
 
@@ -380,6 +411,7 @@ def main() -> None:
     app = web.Application()
     app.router.add_post("/dispatch", handle_dispatch)
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/engines", handle_engines)
 
     logger.info("Agent dispatcher starting on :8001")
     web.run_app(app, host="0.0.0.0", port=8001)

@@ -539,3 +539,78 @@ class TestHandleDispatchEngineGuard:
         resp = asyncio.run(main.handle_dispatch(req))
 
         assert resp.status == 200
+
+
+class TestHandleEngines:
+    """GET /engines reports the agent's live preload state + default.
+
+    The API's /v1/engines proxies this endpoint, so the shape and
+    availability rules here are the contract the API depends on.
+    """
+
+    def _make_request(self):
+        """Stub aiohttp.web.Request — handle_engines doesn't read
+        anything off it beyond what Request provides by default."""
+        return MagicMock()
+
+    def test_reports_preload_set_sorted(self):
+        """Returns _preload_engines as a sorted list so callers see a
+        stable ordering regardless of frozenset iteration order."""
+        import asyncio  # noqa: PLC0415
+        import json as _json  # noqa: PLC0415
+
+        main._preload_engines = frozenset({"qwen3", "piper", "silero"})
+        main._base_config = {"tts_engine": "piper"}
+
+        resp = asyncio.run(main.handle_engines(self._make_request()))
+
+        body = _json.loads(resp.body)
+        assert body["available"] == ["piper", "qwen3", "silero"]
+        assert body["default"] == "piper"
+
+    def test_reports_default_from_base_config(self):
+        import asyncio  # noqa: PLC0415
+        import json as _json  # noqa: PLC0415
+
+        main._preload_engines = frozenset({"xtts"})
+        main._base_config = {"tts_engine": "xtts"}
+
+        resp = asyncio.run(main.handle_engines(self._make_request()))
+
+        body = _json.loads(resp.body)
+        assert body["default"] == "xtts"
+        assert body["available"] == ["xtts"]
+
+    def test_reports_empty_when_preload_set_empty(self):
+        """Defensive — empty preload set returns an empty list rather
+        than raising. Callers can surface 'no engines available' to
+        users."""
+        import asyncio  # noqa: PLC0415
+        import json as _json  # noqa: PLC0415
+
+        main._preload_engines = frozenset()
+        main._base_config = {"tts_engine": ""}
+
+        resp = asyncio.run(main.handle_engines(self._make_request()))
+
+        body = _json.loads(resp.body)
+        assert body["available"] == []
+        assert body["default"] == ""
+
+    def test_reports_partial_preload_after_xtts_degrade(self):
+        """Regression guard for the disk-space degrade path
+        (commit f9b4c20): when XTTS preload is skipped due to low disk,
+        _preload_engines drops xtts and /engines reflects that —
+        clients can show "XTTS unavailable" and pick another engine.
+        """
+        import asyncio  # noqa: PLC0415
+        import json as _json  # noqa: PLC0415
+
+        main._preload_engines = frozenset({"piper", "silero", "qwen3"})
+        main._base_config = {"tts_engine": "piper"}
+
+        resp = asyncio.run(main.handle_engines(self._make_request()))
+
+        body = _json.loads(resp.body)
+        assert "xtts" not in body["available"]
+        assert "piper" in body["available"]

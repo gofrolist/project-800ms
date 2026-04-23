@@ -25,6 +25,7 @@ from observability import configure_json_logging, install_metrics
 from rate_limit import limiter
 from request_id import RequestIdMiddleware
 from routes.admin import router as admin_router
+from routes.engines import router as engines_router
 from routes.sessions import router as sessions_router
 from routes.transcripts import internal_router as transcripts_internal_router
 from routes.transcripts import v1_router as transcripts_v1_router
@@ -211,6 +212,7 @@ app.add_middleware(
 
 # ─── Routes ───────────────────────────────────────────────────────────────
 app.include_router(sessions_router)
+app.include_router(engines_router)
 app.include_router(webhooks_router)
 app.include_router(transcripts_v1_router)
 app.include_router(transcripts_internal_router)

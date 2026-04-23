@@ -43,10 +43,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from models import CoquiXTTSModel
 
 import numpy as np
 from loguru import logger
@@ -140,6 +144,56 @@ _DEFAULT_XTTS_LANGUAGE = "ru"
 # load; if we scale concurrency, the options are (a) per-worker model
 # clones (~1.8 GB VRAM each) or (b) multi-GPU deploys.
 _xtts_apply_lock = asyncio.Lock()
+
+# Companion threading.Event set by the synth thread on exit. Fixes the
+# ``asyncio.CancelledError`` race described in issue #26: when ``run_tts``
+# is cancelled mid-``await asyncio.to_thread(tts, ...)``, the async lock
+# releases via ``__aexit__`` but the background threadpool worker keeps
+# running for 1.5-3 s. Without this gate the next queued synth would
+# acquire the asyncio lock immediately and start a second ``tts()`` call
+# on the shared ``nn.Module`` — the exact race the lock was meant to
+# prevent. The event is clear() while a synth thread is in flight and
+# set() in a try/finally inside the worker, so the next call always
+# waits for the previous thread to ACTUALLY exit before starting. The
+# initial state is "set" (idle) so the first synth doesn't block.
+#
+# This does NOT fix the CUDA-driver-hang case (ADV-003): if a thread
+# hangs inside a driver call, the event never sets and the next synth
+# blocks forever. Same end state as the asyncio.Lock without this gate
+# — strictly no worse. The structural fix for that is migrating to
+# ``Xtts.inference_stream()`` with short-lived per-chunk threads; see
+# issue #26's "Option 2" for the follow-up.
+_xtts_synth_idle: threading.Event = threading.Event()
+_xtts_synth_idle.set()
+
+
+def _run_xtts_synth_with_gate(
+    model: "CoquiXTTSModel",
+    *,
+    text: str,
+    speaker_wav: str,
+    language: str,
+) -> list[float] | np.ndarray:
+    """Call ``model.tts(...)`` and always signal ``_xtts_synth_idle``.
+
+    Target for ``asyncio.to_thread`` — runs on the threadpool, not the
+    event loop. Wrapping the synth in try/finally means the idle event
+    is set regardless of how the thread exits (clean return, exception
+    from inside ``tts()``, or the calling coroutine being cancelled —
+    cancellation doesn't kill the thread, it only releases the
+    ``to_thread`` future's awaiter).
+
+    Returns the model's raw output so the caller's np.asarray / tensor
+    conversion chain is unchanged.
+    """
+    try:
+        return model.tts(
+            text=text,
+            speaker_wav=speaker_wav,
+            language=language,
+        )
+    finally:
+        _xtts_synth_idle.set()
 
 
 @dataclass(frozen=True)
@@ -366,13 +420,24 @@ class XTTSTTSService(TTSService):
             await self.start_tts_usage_metrics(text)
 
             # Blocking synth off-thread. On L4 GPU a ~5 s utterance
-            # takes ~1.5-2 s (RTF ~0.3-0.4). The module-level lock
-            # serializes ``tts()`` across concurrent instances so
-            # interleaved threadpool workers can't corrupt the shared
-            # nn.Module's hidden state. See ``_xtts_apply_lock`` comment.
+            # takes ~1.5-2 s (RTF ~0.3-0.4). The asyncio lock + idle
+            # event pair serialize ``tts()`` across concurrent instances
+            # and across CancelledError-induced race cases. See the
+            # ``_xtts_apply_lock`` and ``_xtts_synth_idle`` comments.
             async with _xtts_apply_lock:
+                # Wait for any previous synth thread to ACTUALLY exit
+                # before starting a new one. If the previous coroutine
+                # was cancelled mid-synth, its ``to_thread`` worker
+                # kept running; the asyncio lock doesn't know about
+                # that thread. The idle event is set() by
+                # ``_run_xtts_synth_with_gate``'s finally in the
+                # thread itself, so this wait is released only when
+                # the model is actually safe to call again.
+                await asyncio.to_thread(_xtts_synth_idle.wait)
+                _xtts_synth_idle.clear()
                 wav_out = await asyncio.to_thread(
-                    self._loaded_model.tts,
+                    _run_xtts_synth_with_gate,
+                    self._loaded_model,
                     text=text,
                     speaker_wav=str(self._ref_audio_path),
                     language=self._language,
