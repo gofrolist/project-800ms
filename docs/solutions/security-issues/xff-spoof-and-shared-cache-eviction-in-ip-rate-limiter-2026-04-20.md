@@ -1,6 +1,7 @@
 ---
 title: "XFF-spoof bypass and shared-cache eviction in FastAPI IP rate limiter"
 date: 2026-04-20
+last_updated: 2026-04-23
 module: apps/api/rate_limit
 component: authentication
 category: security-issues
@@ -45,7 +46,7 @@ What the reviewer / an attacker / an operator could observe on the pre-`101dbfa`
 
 **Partial coverage (P1–P2):**
 
-- **P1-3 Webhook 429 wedges session state.** If `/v1/livekit-webhook` drops a `room_started` event due to a 429, the later `room_finished` path silently stamps `audio_seconds=0` — indistinguishable from a legitimate zero-second session in billing/analytics.
+- **P1-3 Webhook 429 wedges session state.** If `/v1/livekit-webhook` drops a `room_started` event due to a 429, the later `room_finished` path silently stamps `audio_seconds=0` — indistinguishable from a legitimate zero-second session in billing/analytics. (2026-04-23 update) Commit `07ca8ef` closed a separate DELETE-bypass path to the same symptom; after that commit, webhook 429-drop is the *only* remaining input to `audio_seconds=0`. See [docs/solutions/logic-errors/delete-sessions-missing-audio-seconds-2026-04-23.md](../logic-errors/delete-sessions-missing-audio-seconds-2026-04-23.md).
 - **P2-4 Timing side-channel on webhook 401.** The unified 401 body closed the lexical channel but not the latency channel: the missing-header branch skipped `_receiver.receive()` entirely, so its response was measurably faster than the bad-signature branch. Response-body parity alone is not side-channel closure.
 
 **Configuration + observability (P2–P3):**
@@ -276,6 +277,8 @@ async def test_admin_ip_rate_limit_fires_before_admin_key_check(client, enable_a
 Test count: 115 → 123.
 
 ### 8. Webhook-drop observability (P1-3 partial)
+
+> **2026-04-23 update.** At the time this doc was written, two paths fed `audio_seconds=0` / NULL: (a) webhook 429-drop of `room_started`, and (b) the `DELETE /v1/sessions/{room}` handler writing `ended_at` without `audio_seconds` and short-circuiting the webhook's compute path. Commit `07ca8ef` closed path (b) authoritatively by computing `audio_seconds` inside DELETE (see [logic-errors/delete-sessions-missing-audio-seconds-2026-04-23.md](../logic-errors/delete-sessions-missing-audio-seconds-2026-04-23.md)). If the warning log below fires in prod after 2026-04-23, it's a strictly narrower signal — only webhook-drop, not operator-teardown.
 
 Rather than add a reconciler before we know the 429 rate in prod, the `room_finished` fallback now logs a pointer to the `http_requests_total{status="429",path="/v1/livekit-webhook"}` metric:
 
