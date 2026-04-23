@@ -18,7 +18,7 @@ import logging
 import uuid
 
 import httpx
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from livekit import api as lkapi
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -163,6 +163,20 @@ async def create_session(
     identity: TenantIdentity = Depends(enforce_tenant_rate_limit),
     db: AsyncSession = Depends(get_db),
 ) -> CreateSessionResponse:
+    # Cross-field validation done imperatively in the route rather than as
+    # a Pydantic field_validator. See CreateSessionRequest.
+    # validate_engine_voice_combo for the rationale — the Pydantic →
+    # RequestValidationError path was surfacing as 500 under this
+    # project's BaseHTTPMiddleware stack; HTTPException(422) routes
+    # cleanly through the registered http_exception_handler.
+    try:
+        body.validate_engine_voice_combo()
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e),
+        ) from e
+
     room = f"room-{uuid.uuid4().hex[:8]}"
     room_var.set(room)
     caller_identity = body.user_id or f"user-{uuid.uuid4().hex[:8]}"

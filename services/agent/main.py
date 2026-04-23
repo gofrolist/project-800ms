@@ -38,6 +38,13 @@ _base_config: dict[str, object] = {}
 # Track active rooms to prevent double-dispatch.
 _active_rooms: set[str] = set()
 
+# Engines this process is ready to dispatch. Populated at startup from
+# TTS_PRELOAD_ENGINES (see main()). Used by handle_dispatch to reject
+# sessions targeting an engine the process isn't configured for — without
+# this guard, such a dispatch returns 200 + LiveKit token, and the
+# pipeline failure only surfaces as "user hears silence" much later.
+_preload_engines: frozenset[str] = frozenset()
+
 
 def _mint_agent_token(room: str) -> str:
     """Mint a LiveKit JWT for the agent with full publish/subscribe in the room."""
@@ -118,11 +125,35 @@ async def handle_dispatch(request: web.Request) -> web.Response:
     if room in _active_rooms:
         return web.json_response({"error": "room already active"}, status=409)
 
+    # Early-validate the engine against this agent's preloaded set. Without
+    # this guard, a dispatch with ``tts_engine=xtts`` on a deploy where
+    # ``xtts`` isn't in ``TTS_PRELOAD_ENGINES`` would return 200 here, reach
+    # ``build_tts_service`` inside ``_run_pipeline``, hit ``get_xtts()``'s
+    # ``RuntimeError("XTTS model not loaded")``, get swallowed by the bare
+    # ``except Exception``, and leave the caller in a live LiveKit room with
+    # no agent. Failing fast at 409 surfaces the misconfiguration in the
+    # caller's HTTP response instead.
+    overrides = PerSessionOverrides.from_dispatch(body)
+    requested_engine = overrides.tts_engine or str(_base_config.get("tts_engine", ""))
+    if requested_engine and _preload_engines and requested_engine not in _preload_engines:
+        logger.warning(
+            "Dispatch refused: tts_engine={engine} not in preload set {preload}",
+            engine=requested_engine,
+            preload=sorted(_preload_engines),
+        )
+        return web.json_response(
+            {
+                "error": "engine not available on this agent",
+                "requested_engine": requested_engine,
+                "available_engines": sorted(_preload_engines),
+            },
+            status=409,
+        )
+
     # Claim the slot synchronously — before any await or create_task yields
     # to the event loop. Otherwise a burst of identical dispatches could
     # all pass the guard above before any pipeline adds itself to the set.
     _active_rooms.add(room)
-    overrides = PerSessionOverrides.from_dispatch(body)
     asyncio.create_task(_run_pipeline(room, overrides))
     return web.json_response({"status": "dispatched", "room": room})
 
@@ -133,7 +164,7 @@ async def handle_health(request: web.Request) -> web.Response:
 
 
 def main() -> None:
-    global _livekit_url, _api_key, _api_secret, _base_config
+    global _livekit_url, _api_key, _api_secret, _base_config, _preload_engines
 
     logger.remove()
     logger.add(sys.stderr, level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -216,6 +247,10 @@ def main() -> None:
         ).split(",")
         if e.strip()
     }
+    # Expose the preload set to handle_dispatch so sessions targeting an
+    # engine this process isn't configured for fail fast with 409 instead
+    # of producing a silent dead session after dispatch.
+    _preload_engines = frozenset(preload_engines)
     if "silero" in preload_engines:
         try:
             load_silero()
@@ -231,6 +266,22 @@ def main() -> None:
     # (or include ``xtts`` in whatever comma list the demo deploy uses)
     # to have the agent ready to serve XTTS on first dispatch.
     if "xtts" in preload_engines:
+        # Startup invariant check: XTTS is a zero-shot voice cloner and
+        # every session needs a voice_library profile. Docker compose
+        # will silently create an empty bind-mount target if the host
+        # path is missing, so the first dispatch would raise inside
+        # ``_resolve_voice_profile`` → get swallowed → silent dead session.
+        # Fail at boot with a clear message instead.
+        voice_library_dir = _base_config.get("xtts_voice_library_dir")
+        if isinstance(voice_library_dir, Path):
+            profiles_dir = voice_library_dir / "profiles"
+            if not profiles_dir.is_dir() or not any(profiles_dir.iterdir()):
+                logger.error(
+                    "XTTS preload requested but no profiles found at {path}. "
+                    "Check the voice_library bind mount in docker-compose.yml.",
+                    path=profiles_dir,
+                )
+                sys.exit(3)
         try:
             load_xtts()
         except Exception:  # noqa: BLE001 — intentional hard-fail at startup

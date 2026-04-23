@@ -193,6 +193,20 @@ def _resolve_voice_profile(
         raise ValueError("XTTS voice profile id is empty after 'clone:' prefix")
 
     profile_dir = voice_library_dir / "profiles" / profile_id
+    # Traversal containment: the API layer validates voice with max_length=64
+    # but does not constrain characters, so ``clone:../../etc/passwd`` reaches
+    # here with profile_id='../../etc/passwd'. Python's ``Path /`` operator
+    # does NOT strip ``..`` — ``voice_library_dir / "profiles" / "../../etc"``
+    # resolves to two parents above ``voice_library_dir``. Use resolve() +
+    # relative_to() to assert the resolved path stays under the configured
+    # voice library root; relative_to() raises ValueError if not.
+    try:
+        profile_dir.resolve().relative_to(voice_library_dir.resolve())
+    except ValueError as e:
+        raise ValueError(
+            f"XTTS voice profile id {profile_id!r} escapes voice library root; "
+            f"profile_id must not contain path separators or '..' segments."
+        ) from e
     meta_path = profile_dir / "meta.json"
     if not meta_path.is_file():
         raise ValueError(f"XTTS voice profile meta.json not found: {meta_path}")
@@ -212,6 +226,19 @@ def _resolve_voice_profile(
             f"XTTS voice profile meta {meta_path} ref_audio_filename is missing or empty"
         )
     ref_audio_path = profile_dir / ref_filename
+    # Second-stage traversal guard: ref_audio_filename is operator-controlled
+    # (via meta.json), but an attacker who can plant a meta.json anywhere the
+    # traversal-guarded profile_dir points could supply a ref_filename like
+    # '../../etc/passwd'. The :ro bind-mount prevents writes, but hardening
+    # the join here closes the theoretical second-stage escape regardless.
+    try:
+        ref_audio_path.resolve().relative_to(profile_dir.resolve())
+    except ValueError as e:
+        raise ValueError(
+            f"XTTS ref_audio_filename {ref_filename!r} in {meta_path} "
+            f"escapes profile directory; must not contain path separators "
+            f"or '..' segments."
+        ) from e
     if not ref_audio_path.is_file():
         # Include the meta.json path so operators who forgot to set
         # ``ref_audio_filename`` (implicit default "ref.wav") can see
@@ -306,6 +333,13 @@ class XTTSTTSService(TTSService):
         """
         if self._loaded_model is None:
             logger.error("XTTS model not bound — preload/injection missing")
+            # Pipecat starts the TTFB timer upstream in _push_tts_frames
+            # before calling run_tts. Every exit path must stop the timer
+            # exactly once, otherwise the TTFB metric stays stuck at "still
+            # running" and pollutes subsequent readings. The happy-path
+            # stop fires inside the try block below; early returns must
+            # stop it here explicitly.
+            await self.stop_ttfb_metrics()
             yield ErrorFrame("TTS unavailable")
             return
 
@@ -315,6 +349,7 @@ class XTTSTTSService(TTSService):
         # paths — early-return silently, matching Silero's precedent.
         if not text or not text.strip():
             logger.debug("XTTS dropped empty text")
+            await self.stop_ttfb_metrics()  # see TTFB note on the guard above
             return
 
         logger.debug(

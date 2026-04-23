@@ -183,6 +183,86 @@ async def test_create_session_rejects_unknown_tts_engine(client, seed_tenant, ag
     assert agent_stub.post.await_count == 0
 
 
+async def test_create_session_rejects_xtts_without_clone_voice(client, seed_tenant, agent_stub):
+    """XTTS v2 is voice-cloning only — a non-clone: voice with
+    tts_engine=xtts must be rejected as a 422 at the API rather than
+    producing a silent dead session.
+
+    Without this check: API returns 201 + LiveKit token, the caller
+    joins the room, the agent's _resolve_voice_profile raises
+    ValueError inside _run_pipeline, that exception is swallowed by
+    the bare except, and the user hears silence with no HTTP error.
+    """
+    _tenant, raw_key = seed_tenant
+
+    # "alloy" is a legitimate Qwen3 voice name — ensure the cross-engine
+    # collision is caught. A Silero speaker id like "ru_dmitriy" should
+    # also fail.
+    for bad_voice in ("alloy", "ru_dmitriy", "ru_RU-denis-medium"):
+        agent_stub.post.reset_mock()
+        r = await client.post(
+            "/v1/sessions",
+            headers={"X-API-Key": raw_key},
+            json={"tts_engine": "xtts", "voice": bad_voice},
+        )
+        assert r.status_code == 422, (
+            f"expected 422 for voice={bad_voice!r}, got {r.status_code}; body={r.text[:400]!r}"
+        )
+        assert r.json()["error"]["code"] == "validation_error"
+        # Must not reach the agent.
+        assert agent_stub.post.await_count == 0
+
+
+async def test_create_session_accepts_xtts_with_clone_voice(client, seed_tenant, agent_stub):
+    """Baseline: tts_engine=xtts + voice=clone:<profile> must pass
+    validation and reach the agent. Pins that the validator doesn't
+    over-reject.
+    """
+    _tenant, raw_key = seed_tenant
+    r = await client.post(
+        "/v1/sessions",
+        headers={"X-API-Key": raw_key},
+        json={"tts_engine": "xtts", "voice": "clone:demo-ru"},
+    )
+    assert r.status_code == 201, r.text
+    dispatched = agent_stub.post.await_args.kwargs["json"]
+    assert dispatched["tts_engine"] == "xtts"
+    assert dispatched["voice"] == "clone:demo-ru"
+
+
+async def test_create_session_xtts_without_voice_reaches_agent(client, seed_tenant, agent_stub):
+    """Omitting voice entirely is legal at the API — the agent falls
+    back to XTTS_TTS_VOICE / TTS_VOICE env defaults. The validator
+    only rejects EXPLICIT non-clone values with xtts."""
+    _tenant, raw_key = seed_tenant
+    r = await client.post(
+        "/v1/sessions",
+        headers={"X-API-Key": raw_key},
+        json={"tts_engine": "xtts"},
+    )
+    assert r.status_code == 201, r.text
+    dispatched = agent_stub.post.await_args.kwargs["json"]
+    assert dispatched["tts_engine"] == "xtts"
+    assert "voice" not in dispatched
+
+
+async def test_create_session_allows_alloy_with_qwen3(client, seed_tenant, agent_stub):
+    """Regression guard: the xtts+clone-only constraint must not leak
+    into the qwen3 engine path. ``voice="alloy"`` + ``tts_engine="qwen3"``
+    is the canonical Qwen3 CustomVoice request and must keep working.
+    """
+    _tenant, raw_key = seed_tenant
+    r = await client.post(
+        "/v1/sessions",
+        headers={"X-API-Key": raw_key},
+        json={"tts_engine": "qwen3", "voice": "alloy"},
+    )
+    assert r.status_code == 201, r.text
+    dispatched = agent_stub.post.await_args.kwargs["json"]
+    assert dispatched["tts_engine"] == "qwen3"
+    assert dispatched["voice"] == "alloy"
+
+
 async def test_create_session_rejects_unknown_fields(client, seed_tenant, agent_stub):
     _tenant, raw_key = seed_tenant
     r = await client.post(

@@ -184,6 +184,45 @@ class TestResolveVoiceProfile:
         with pytest.raises(ValueError, match="ref audio not found"):
             _resolve_voice_profile("clone:demo-ru", voice_library_dir=tmp_path)
 
+    def test_profile_id_traversal_rejected(self, tmp_path):
+        """A profile_id containing ``..`` must not escape the voice library
+        root. Python's ``Path /`` operator does NOT sanitize ``..``; without
+        the resolve() + relative_to() guard, ``clone:../../etc/passwd``
+        would resolve outside ``voice_library_dir`` and stat arbitrary
+        filesystem paths.
+        """
+        # A traversal that clearly escapes tmp_path. relative_to raises
+        # as soon as the resolved path isn't under voice_library_dir,
+        # independent of whether the target actually exists on disk —
+        # the guard fires before any filesystem stat.
+        with pytest.raises(ValueError, match="escapes voice library root"):
+            _resolve_voice_profile(
+                "clone:../../../etc/passwd",
+                voice_library_dir=tmp_path,
+            )
+
+    def test_ref_audio_filename_traversal_rejected(self, tmp_path):
+        """Second-stage guard: an operator-controlled meta.json with
+        ``ref_audio_filename`` containing ``..`` must not let the ref audio
+        path escape the profile directory.
+        """
+        # Set up a profile dir AND a sibling file that the traversal would
+        # reach. On the happy path the resolve chain would find the sibling
+        # file (is_file=True) and hand it to ``tts()`` as speaker_wav, which
+        # is information disclosure (the file content flows into XTTS's
+        # audio decoder). The guard must reject before is_file() is reached.
+        self._build_profile(
+            tmp_path,
+            meta={
+                "ref_audio_filename": "../external-leak.wav",
+                "language": "ru",
+            },
+        )
+        (tmp_path / "profiles" / "external-leak.wav").write_bytes(b"RIFF\x00\x00\x00\x00WAVE")
+
+        with pytest.raises(ValueError, match="escapes profile directory"):
+            _resolve_voice_profile("clone:demo-ru", voice_library_dir=tmp_path)
+
 
 # ─── models.load_xtts / get_xtts ─────────────────────────────────────
 
@@ -384,6 +423,10 @@ class TestRunTts:
 
         assert frames == []
         fake_model.tts.assert_not_called()
+        # Early-return path must still stop the TTFB timer exactly once
+        # — Pipecat starts it in _push_tts_frames before calling run_tts,
+        # so a missed stop leaves the metric stuck.
+        assert svc.stop_ttfb_metrics.call_count == 1
 
     def test_whitespace_only_text_drops_without_synth(self, tmp_path):
         _make_profile(tmp_path)
@@ -464,6 +507,9 @@ class TestRunTts:
         assert len(frames) == 1
         assert isinstance(frames[0], ErrorFrame)
         assert "TTS unavailable" in frames[0].error
+        # TTFB timer must be stopped on the defensive early-return
+        # path too — Pipecat starts it upstream before calling run_tts.
+        assert svc.stop_ttfb_metrics.call_count == 1
 
     def test_concurrent_tts_calls_are_serialized(self, tmp_path):
         """Two concurrent ``run_tts`` calls against the shared coqui TTS

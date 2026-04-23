@@ -460,6 +460,12 @@ jobs:
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
           context: services/agent
+          # Load the built image back into the local daemon so the next
+          # step can `docker run` it for a coqui-tts import smoke test.
+          # On main we also push to GHCR in the same step via the `tags`
+          # list — buildx supports both load and push when tags include
+          # remote refs and `push` is true.
+          load: true
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           build-args: |
             BASE_IMAGE=localhost:5000/project-800ms-agent-base:ci
@@ -467,3 +473,22 @@ jobs:
           labels: ${{ steps.meta-agent.outputs.labels }}
           cache-from: type=gha,scope=agent
           cache-to: type=gha,scope=agent,mode=max
+
+      # Smoke-test the coqui-tts import chain before declaring the image
+      # healthy. All three prod crashes during the XTTS rollout
+      # (transformers 5.x API removal, torchcodec [codec] extra, and
+      # libpython3.12 dlopen) were import-time failures — ``from TTS.api
+      # import TTS`` inside Python would have caught each one. This adds
+      # ~2 s to the agent build job and requires no GPU, since we're
+      # exercising the import graph, not actually loading weights.
+      #
+      # We pick the sha tag from meta-agent (always present regardless
+      # of branch) so the step runs on PRs too, not just main pushes.
+      - name: Smoke-test coqui-tts import chain
+        run: |
+          # Extract the sha-short tag to use for `docker run`. On PRs
+          # this is the only tag produced; on main it coexists with
+          # latest/main. Use `head -n 1` in case the list grows.
+          IMAGE_TAG=$(echo "${{ steps.meta-agent.outputs.tags }}" | head -n 1)
+          echo "Smoke-testing ${IMAGE_TAG}"
+          docker run --rm --entrypoint python "${IMAGE_TAG}" -c "from TTS.api import TTS; print('coqui-tts import OK')"

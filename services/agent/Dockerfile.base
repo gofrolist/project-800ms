@@ -62,7 +62,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH="/opt/venv/bin:$PATH" \
     HF_HOME=/home/appuser/.cache/huggingface \
     PIPER_VOICES_DIR=/home/appuser/.cache/piper \
-    TORCH_HOME=/home/appuser/.cache/torch
+    TORCH_HOME=/home/appuser/.cache/torch \
+    HF_HUB_DOWNLOAD_TIMEOUT=600
 
 # Runtime apt deps:
 #   - python3.12: the venv's shebangs point at /usr/bin/python3.12

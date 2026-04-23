@@ -53,6 +53,7 @@ class CreateSessionRequest(BaseModel):
             "to the TTS_VOICE env var."
         ),
     )
+
     language: str | None = Field(
         default=None,
         max_length=16,
@@ -79,6 +80,36 @@ class CreateSessionRequest(BaseModel):
             "posture before enabling on paid deployments."
         ),
     )
+
+    def validate_engine_voice_combo(self) -> None:
+        """Reject ``tts_engine=xtts`` paired with a non-``clone:`` voice.
+
+        XTTS v2 is a pure voice-cloning engine — the agent's
+        ``_resolve_voice_profile`` raises ``ValueError`` if the voice doesn't
+        start with ``clone:``, but that error happens inside the asynchronous
+        ``_run_pipeline`` task AFTER the dispatch handler has already
+        returned 200 and the API has already returned 201 to the caller.
+        Result: caller receives a valid LiveKit token for a room where the
+        agent never arrives, and hears silence with no HTTP error.
+
+        Called from the route handler at request time so a mismatch
+        surfaces as 422 before any DB row is written or dispatch is
+        attempted. (We picked imperative validation over a Pydantic
+        ``field_validator`` because the project's middleware stack —
+        ``BaseHTTPMiddleware`` + slowapi + Prometheus — has an edge case
+        where a ValidationError raised from a custom validator was
+        surfacing as 500 instead of 422.)
+        """
+        if (
+            self.tts_engine == "xtts"
+            and self.voice is not None
+            and not self.voice.startswith("clone:")
+        ):
+            raise ValueError(
+                "tts_engine='xtts' requires voice to start with 'clone:<profile>' — "
+                "XTTS v2 is a voice-cloning engine and has no preset voice names. "
+                f"Got voice={self.voice!r}."
+            )
 
 
 class CreateSessionResponse(BaseModel):

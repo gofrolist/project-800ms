@@ -161,10 +161,20 @@ class TestXttsPreload:
     even more than for Silero.
     """
 
-    def test_preloads_xtts_when_tts_engine_xtts(self, monkeypatch):
+    @staticmethod
+    def _seed_voice_library(monkeypatch, tmp_path):
+        """Populate XTTS_VOICE_LIBRARY_DIR with a dummy profile so the
+        startup check doesn't short-circuit before load_xtts is called."""
+        monkeypatch.setenv("XTTS_VOICE_LIBRARY_DIR", str(tmp_path))
+        profile = tmp_path / "profiles" / "demo-ru"
+        profile.mkdir(parents=True)
+        (profile / "meta.json").write_text("{}", encoding="utf-8")
+
+    def test_preloads_xtts_when_tts_engine_xtts(self, monkeypatch, tmp_path):
         """With TTS_ENGINE=xtts, main() must call load_xtts() exactly
         once before handing off to the HTTP server."""
         monkeypatch.setenv("TTS_ENGINE", "xtts")
+        self._seed_voice_library(monkeypatch, tmp_path)
         patches = _patch_runtime_bits()
         with (
             patches["load_gigaam"] as fake_gigaam,
@@ -179,12 +189,13 @@ class TestXttsPreload:
         # An xtts-only deploy must not pay Silero's download cost.
         fake_silero.assert_not_called()
 
-    def test_preloads_both_silero_and_xtts_when_listed(self, monkeypatch):
+    def test_preloads_both_silero_and_xtts_when_listed(self, monkeypatch, tmp_path):
         """Demo-site config: TTS_PRELOAD_ENGINES=piper,silero,qwen3,xtts
         must preload both Silero and XTTS so the first session on either
         engine doesn't cold-start."""
         monkeypatch.setenv("TTS_ENGINE", "piper")
         monkeypatch.setenv("TTS_PRELOAD_ENGINES", "piper,silero,qwen3,xtts")
+        self._seed_voice_library(monkeypatch, tmp_path)
         patches = _patch_runtime_bits()
         with (
             patches["load_gigaam"],
@@ -232,3 +243,156 @@ class TestXttsPreload:
                 main.main()
 
             assert exc_info.value.code == 3
+
+    def test_exits_3_when_voice_library_missing(self, monkeypatch, tmp_path):
+        """XTTS preload with a missing voice_library mount must hard-fail
+        at boot rather than limping along and silently ErrorFrame-ing on
+        every dispatch. Docker compose silently auto-creates the mount
+        target if the host path is absent, so the first dispatch would
+        otherwise produce ``_resolve_voice_profile`` ValueError → swallowed
+        → dead session.
+        """
+        monkeypatch.setenv("TTS_ENGINE", "xtts")
+        # Point at a valid tmp dir that's missing the profiles/ subdir
+        # (or has an empty one) — the startup check should refuse both.
+        monkeypatch.setenv("XTTS_VOICE_LIBRARY_DIR", str(tmp_path))
+        patches = _patch_runtime_bits()
+        with (
+            patches["load_gigaam"],
+            patches["load_silero"],
+            patches["load_xtts"] as fake_xtts,
+            patches["web_run_app"],
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main.main()
+
+            assert exc_info.value.code == 3
+            # load_xtts must NOT be invoked — the startup check fires
+            # first and short-circuits.
+            fake_xtts.assert_not_called()
+
+    def test_boots_when_voice_library_has_profile(self, monkeypatch, tmp_path):
+        """Positive case: a voice_library_dir containing at least one
+        profile lets XTTS preload proceed to load_xtts."""
+        monkeypatch.setenv("TTS_ENGINE", "xtts")
+        monkeypatch.setenv("XTTS_VOICE_LIBRARY_DIR", str(tmp_path))
+        profile = tmp_path / "profiles" / "demo-ru"
+        profile.mkdir(parents=True)
+        (profile / "meta.json").write_text("{}", encoding="utf-8")
+
+        patches = _patch_runtime_bits()
+        with (
+            patches["load_gigaam"],
+            patches["load_silero"],
+            patches["load_xtts"] as fake_xtts,
+            patches["web_run_app"],
+        ):
+            main.main()
+
+            fake_xtts.assert_called_once()
+
+
+class TestHandleDispatchEngineGuard:
+    """handle_dispatch must refuse sessions requesting an engine that
+    isn't in TTS_PRELOAD_ENGINES. Without this guard, dispatch returns
+    200 + LiveKit token, pipeline failure inside _run_pipeline is
+    swallowed, and the caller hears silence.
+    """
+
+    def _make_request(self, body):
+        """Build a minimal aiohttp.web.Request stub that handle_dispatch can use.
+
+        handle_dispatch reads only ``request.json()`` so the stub just
+        needs that coroutine — the rest of the Request interface isn't
+        exercised.
+        """
+        from unittest.mock import AsyncMock, MagicMock  # noqa: PLC0415
+
+        req = MagicMock()
+        req.json = AsyncMock(return_value=body)
+        return req
+
+    def test_rejects_engine_not_in_preload_set(self, monkeypatch):
+        # Simulate a Piper-only deploy.
+        main._preload_engines = frozenset({"piper"})
+        main._base_config = {"tts_engine": "piper"}
+        main._active_rooms.clear()
+        req = self._make_request({"room": "r1", "tts_engine": "xtts"})
+
+        import asyncio  # noqa: PLC0415
+
+        resp = asyncio.run(main.handle_dispatch(req))
+
+        assert resp.status == 409
+        # No room slot claimed.
+        assert "r1" not in main._active_rooms
+
+    def test_accepts_engine_in_preload_set(self, monkeypatch):
+        """A dispatch for an engine listed in TTS_PRELOAD_ENGINES returns
+        202-style 200 with "dispatched" status.
+        """
+        main._preload_engines = frozenset({"piper", "xtts"})
+        main._base_config = {"tts_engine": "piper"}
+        main._active_rooms.clear()
+
+        # Patch _run_pipeline so the test doesn't actually spawn a
+        # pipeline coroutine — we only care about the synchronous
+        # dispatch decision path.
+        async def _noop(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(main, "_run_pipeline", _noop)
+
+        req = self._make_request({"room": "r2", "tts_engine": "xtts"})
+
+        import asyncio  # noqa: PLC0415
+
+        resp = asyncio.run(main.handle_dispatch(req))
+
+        assert resp.status == 200
+        assert "r2" in main._active_rooms
+
+    def test_falls_back_to_base_engine_when_override_missing(self, monkeypatch):
+        """No tts_engine in the body → fall back to TTS_ENGINE. If that
+        engine is in the preload set, accept. Preserves legacy single-engine
+        deploy behaviour.
+        """
+        main._preload_engines = frozenset({"silero"})
+        main._base_config = {"tts_engine": "silero"}
+        main._active_rooms.clear()
+
+        async def _noop(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(main, "_run_pipeline", _noop)
+
+        req = self._make_request({"room": "r3"})
+
+        import asyncio  # noqa: PLC0415
+
+        resp = asyncio.run(main.handle_dispatch(req))
+
+        assert resp.status == 200
+
+    def test_skips_engine_check_when_preload_set_empty(self, monkeypatch):
+        """If the preload set is empty (shouldn't happen in practice —
+        TTS_PRELOAD_ENGINES defaults to TTS_ENGINE), do not block. Avoids
+        a regression where test setups that forget to seed _preload_engines
+        would spuriously 409.
+        """
+        main._preload_engines = frozenset()
+        main._base_config = {"tts_engine": ""}
+        main._active_rooms.clear()
+
+        async def _noop(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(main, "_run_pipeline", _noop)
+
+        req = self._make_request({"room": "r4", "tts_engine": "xtts"})
+
+        import asyncio  # noqa: PLC0415
+
+        resp = asyncio.run(main.handle_dispatch(req))
+
+        assert resp.status == 200

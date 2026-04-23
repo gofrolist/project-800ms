@@ -181,6 +181,10 @@ class SileroTTSService(TTSService):
             # Same defensive path as gigaam_stt.py:134-140 — log the
             # internal cause, emit a redacted message to the pipeline.
             logger.error("Silero model not bound — preload/injection missing")
+            # Stop the TTFB timer Pipecat started in _push_tts_frames;
+            # every run_tts exit path must stop it exactly once or the
+            # timer stays stuck.
+            await self.stop_ttfb_metrics()
             yield ErrorFrame("TTS unavailable")
             return
 
@@ -192,6 +196,7 @@ class SileroTTSService(TTSService):
         # segments quietly (gigaam_stt.py:151-157).
         if not text or not text.strip():
             logger.debug("Silero dropped empty text")
+            await self.stop_ttfb_metrics()  # see TTFB note on the guard above
             return
 
         logger.debug("Silero TTS: synthesizing [{text}]", text=text)

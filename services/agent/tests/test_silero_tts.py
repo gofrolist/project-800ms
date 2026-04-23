@@ -308,6 +308,8 @@ class TestRunTts:
 
         assert frames == []
         fake_model.apply_tts.assert_not_called()
+        # Early-return still stops the TTFB timer Pipecat started upstream.
+        assert svc.stop_ttfb_metrics.call_count == 1
 
     def test_whitespace_only_text_drops_without_synth(self):
         svc, fake_model = _build_service(apply_tts_return=_make_audio_tensor())
@@ -431,6 +433,8 @@ class TestRunTts:
         # precedent of logging internal cause server-side and emitting
         # a redacted message downstream.
         assert "TTS unavailable" in frames[0].error
+        # Defensive early-return stops TTFB exactly once.
+        assert svc.stop_ttfb_metrics.call_count == 1
 
     def test_custom_speaker_flows_into_tts_settings(self):
         """SileroSettings.speaker populates TTSSettings at init time.

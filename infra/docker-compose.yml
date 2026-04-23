@@ -369,9 +369,14 @@ services:
       # Let coqui-tts auto-accept the XTTS v2 CPML (non-commercial) EULA
       # the first time the model is loaded. Without this, the load call
       # blocks on stdin waiting for a "y" keystroke which will never
-      # arrive in a container. Operators deploying to paying customers
-      # MUST verify their licensing posture before enabling this.
-      - COQUI_TOS_AGREED=1
+      # arrive in a container.
+      #
+      # Sourced from .env rather than hardcoded so operators deploying to
+      # paying customers must explicitly opt in — silent auto-accept of a
+      # non-commercial license is a compliance risk. A fresh clone without
+      # COQUI_TOS_AGREED set will fail XTTS preload at boot, surfacing the
+      # licensing requirement loud and clear. See infra/.env.example.
+      - COQUI_TOS_AGREED=${COQUI_TOS_AGREED:-}
       - HF_HOME=/home/appuser/.cache/huggingface
       - HF_HUB_DISABLE_XET=1
       - PIPER_VOICES_DIR=/home/appuser/.cache/piper
@@ -407,12 +412,16 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
-      # With TTS_ENGINE=silero the main.py preload does a torch.hub
-      # clone (~200 MB) plus CUDA init before binding :8001 — we have
-      # seen 5-60s on cold cache depending on network. 300s tolerates
-      # that worst case; subsequent restarts hit torch_cache_agent and
-      # finish in seconds. Mirrors the vllm + qwen3-tts start_period.
-      start_period: 300s
+      # Preload cold-start budget for all four engines:
+      #   GigaAM: ~20 s (steady state)
+      #   Silero: ~1 s warm / ~60 s cold (torch.hub ~200 MB)
+      #   XTTS:   ~40 s warm / ~300-600 s cold (HuggingFace ~1.8 GB)
+      # 600s tolerates the XTTS cold-download worst case; warm restarts
+      # hit the hf_cache_agent volume and finish in <100 s total. Bumped
+      # from 300s (pre-XTTS budget) to cover the larger download —
+      # load_xtts() also sets HF_HUB_DOWNLOAD_TIMEOUT=600 so it fails
+      # loud instead of hanging past this window.
+      start_period: 600s
     depends_on:
       livekit:
         condition: service_healthy
