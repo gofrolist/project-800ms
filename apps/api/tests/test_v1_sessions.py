@@ -10,6 +10,7 @@ Requires the Postgres testcontainer — marked slow.
 
 from __future__ import annotations
 
+import datetime
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -356,3 +357,276 @@ async def test_legacy_sessions_endpoint_removed(client):
     """
     r = await client.post("/sessions", json={})
     assert r.status_code == 404
+
+
+# ─── DELETE /v1/sessions/{room} ─────────────────────────────────────────────
+# Stubs the LiveKit RoomService.delete_room call so tests don't reach a real
+# LiveKit server. The route's own _delete_livekit_room helper constructs a
+# ``lkapi.LiveKitAPI(...)`` inside ``async with``, so patching the class
+# itself (and not the individual method) is the cleanest interception point.
+
+
+@pytest.fixture
+def livekit_stub():
+    """Patch lkapi.LiveKitAPI so delete_room appears to succeed."""
+    with patch("routes.sessions.lkapi.LiveKitAPI") as mock_lk_class:
+        mock_lk = AsyncMock()
+        mock_lk.__aenter__.return_value = mock_lk
+        mock_lk.__aexit__.return_value = None
+        mock_lk.room = AsyncMock()
+        mock_lk.room.delete_room = AsyncMock(return_value=None)
+        mock_lk_class.return_value = mock_lk
+        yield mock_lk
+
+
+@pytest.fixture(
+    params=[
+        pytest.param("connect_error", id="aiohttp-connect-error"),
+        pytest.param("timeout", id="asyncio-timeout"),
+        pytest.param("os_error", id="os-error"),
+    ]
+)
+def livekit_down(request):
+    """Patch lkapi.LiveKitAPI to simulate a LiveKit outage on delete_room.
+
+    Parameterized over the specific exception families ``_delete_livekit_room``
+    narrowly catches — aiohttp client error, asyncio timeout, and raw
+    OSError — so a regression that drops one of these from the except
+    tuple (or lets an unrelated error class slip in that should
+    propagate) shows up as a concrete test failure rather than
+    'somehow DELETE still worked anyway'.
+    """
+    import aiohttp  # noqa: PLC0415
+    import asyncio  # noqa: PLC0415
+
+    exceptions = {
+        "connect_error": aiohttp.ClientConnectionError("cannot connect"),
+        "timeout": asyncio.TimeoutError(),
+        "os_error": OSError("network unreachable"),
+    }
+    with patch("routes.sessions.lkapi.LiveKitAPI") as mock_lk_class:
+        mock_lk = AsyncMock()
+        mock_lk.__aenter__.return_value = mock_lk
+        mock_lk.__aexit__.return_value = None
+        mock_lk.room = AsyncMock()
+        mock_lk.room.delete_room = AsyncMock(side_effect=exceptions[request.param])
+        mock_lk_class.return_value = mock_lk
+        yield mock_lk
+
+
+async def test_delete_session_requires_auth(client):
+    r = await client.delete("/v1/sessions/room-whatever")
+    assert r.status_code == 401
+    assert r.json()["error"]["code"] == "unauthenticated"
+
+
+async def test_delete_session_not_found(client, seed_tenant):
+    _tenant, raw_key = seed_tenant
+    r = await client.delete(
+        "/v1/sessions/room-doesnotexist",
+        headers={"X-API-Key": raw_key},
+    )
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "not_found"
+
+
+async def test_delete_session_cross_tenant_returns_404(
+    client, db_session, seed_tenant, agent_stub, livekit_stub
+):
+    """Tenant A cannot delete tenant B's session — 404 (same opacity
+    rule as GET). Tenant B's room must remain active in LiveKit, so the
+    LiveKit stub should never see a delete_room call."""
+    import hashlib
+    import uuid as _uuid
+
+    from models import ApiKey, Tenant
+
+    _tenant_a, key_a = seed_tenant
+
+    raw_b = "tk_b_" + _uuid.uuid4().hex
+    tenant_b = Tenant(name="B", slug=f"b-{_uuid.uuid4().hex[:8]}")
+    db_session.add(tenant_b)
+    await db_session.flush()
+    db_session.add(
+        ApiKey(
+            tenant_id=tenant_b.id,
+            key_hash=hashlib.sha256(raw_b.encode()).digest(),
+            key_prefix=raw_b[:8],
+        )
+    )
+    await db_session.flush()
+
+    r = await client.post("/v1/sessions", headers={"X-API-Key": key_a}, json={})
+    room = r.json()["room"]
+
+    # Tenant B tries to delete — forbidden, returns 404 to avoid leaking existence.
+    d = await client.delete(f"/v1/sessions/{room}", headers={"X-API-Key": raw_b})
+    assert d.status_code == 404
+    assert d.json()["error"]["code"] == "not_found"
+    # LiveKit must NOT have been touched for a cross-tenant attempt.
+    livekit_stub.room.delete_room.assert_not_called()
+
+
+async def test_delete_session_ends_active_session(
+    client, db_session, seed_tenant, agent_stub, livekit_stub
+):
+    """Happy path: DELETE on an active session → LiveKit delete_room is
+    called, DB row flips to status='ended' with ended_at AND audio_seconds
+    set, response body reflects the new state.
+
+    The audio_seconds assertion is load-bearing: before this field was
+    computed on DELETE, the room_finished webhook's
+    ``if session.ended_at is None`` short-circuit skipped the calculation
+    for every user-initiated hang-up, silently producing NULL
+    audio_seconds that usage.py coalesces to 0 — every UI close
+    under-billed. This test pins the fix.
+    """
+    _tenant, raw_key = seed_tenant
+    r = await client.post("/v1/sessions", headers={"X-API-Key": raw_key}, json={})
+    room = r.json()["room"]
+
+    d = await client.delete(f"/v1/sessions/{room}", headers={"X-API-Key": raw_key})
+    assert d.status_code == 200, d.text
+    body = d.json()
+    assert body["room"] == room
+    assert body["status"] == "ended"
+    assert body["ended_at"] is not None
+    # audio_seconds is computed from started_at → ended_at. The test
+    # post→delete path takes milliseconds, so the value is 0 or 1 —
+    # what we need to pin is that it's populated (not None), not the
+    # exact magnitude.
+    assert body["audio_seconds"] is not None
+    assert body["audio_seconds"] >= 0
+
+    # DB row is consistent with the response.
+    row = (await db_session.execute(select(SessionRow).where(SessionRow.room == room))).scalar_one()
+    assert row.status == "ended"
+    assert row.ended_at is not None
+    assert row.audio_seconds is not None
+    assert row.audio_seconds >= 0
+
+    # LiveKit was told to tear down the room.
+    livekit_stub.room.delete_room.assert_called_once()
+    delete_request = livekit_stub.room.delete_room.call_args.args[0]
+    assert delete_request.room == room
+
+
+async def test_delete_session_is_idempotent(
+    client, db_session, seed_tenant, agent_stub, livekit_stub
+):
+    """Second DELETE on the same room must return 200 with the existing
+    ended state, NOT re-call LiveKit (the room is gone) and NOT re-write
+    ended_at (preserves the original close timestamp for billing/audit)."""
+    _tenant, raw_key = seed_tenant
+    r = await client.post("/v1/sessions", headers={"X-API-Key": raw_key}, json={})
+    room = r.json()["room"]
+
+    d1 = await client.delete(f"/v1/sessions/{room}", headers={"X-API-Key": raw_key})
+    assert d1.status_code == 200
+    first_ended_at = d1.json()["ended_at"]
+    assert first_ended_at is not None
+    assert livekit_stub.room.delete_room.call_count == 1
+
+    # Second delete — should be a no-op.
+    d2 = await client.delete(f"/v1/sessions/{room}", headers={"X-API-Key": raw_key})
+    assert d2.status_code == 200
+    body = d2.json()
+    assert body["status"] == "ended"
+    # ended_at MUST be stable across retries — changing it would break
+    # any usage/billing report that joins on that timestamp.
+    assert body["ended_at"] == first_ended_at
+    # No second LiveKit tear-down call — the room is already gone.
+    assert livekit_stub.room.delete_room.call_count == 1
+
+
+async def test_delete_session_survives_livekit_outage(
+    client, db_session, seed_tenant, agent_stub, livekit_down
+):
+    """If the LiveKit API is unavailable, DELETE must still mark the
+    session ``ended`` in the DB rather than returning 503. Rationale
+    (see _delete_livekit_room docstring): the primary teardown path is
+    the agent's own on_participant_left handler, and we don't want a
+    transient LiveKit outage to block the caller's "hang up" — the room
+    will fall out on LiveKit's own empty_timeout once the browser
+    disconnects."""
+    _tenant, raw_key = seed_tenant
+    r = await client.post("/v1/sessions", headers={"X-API-Key": raw_key}, json={})
+    room = r.json()["room"]
+
+    d = await client.delete(f"/v1/sessions/{room}", headers={"X-API-Key": raw_key})
+    assert d.status_code == 200, d.text
+    assert d.json()["status"] == "ended"
+
+    # DB is still consistent even though LiveKit raised.
+    row = (await db_session.execute(select(SessionRow).where(SessionRow.room == room))).scalar_one()
+    assert row.status == "ended"
+    assert row.ended_at is not None
+
+
+async def test_delete_session_on_pending_returns_409(
+    client, db_session, seed_tenant, agent_stub, livekit_stub
+):
+    """DELETE must refuse to close a session still in ``pending``.
+
+    A pending row has ``started_at=NULL``; usage.py filters on
+    ``started_at >= start`` so marking it ended would make the call
+    invisible to usage reports. We return 409 and tell the client to
+    retry once POST commits. Under normal concurrency this window is
+    tiny (pending → active transitions synchronously inside
+    create_session before 201), but the route must defend the invariant
+    rather than assume the window never manifests.
+    """
+    _tenant, raw_key = seed_tenant
+    r = await client.post("/v1/sessions", headers={"X-API-Key": raw_key}, json={})
+    room = r.json()["room"]
+
+    # Flip the row back to 'pending' + clear started_at to simulate the
+    # narrow window before create_session's pending → active transition
+    # commits.
+    row = (await db_session.execute(select(SessionRow).where(SessionRow.room == room))).scalar_one()
+    row.status = "pending"
+    row.started_at = None
+    await db_session.commit()
+
+    d = await client.delete(f"/v1/sessions/{room}", headers={"X-API-Key": raw_key})
+    assert d.status_code == 409
+    assert d.json()["error"]["code"] == "conflict"
+    # LiveKit must NOT have been called — we refused the close outright.
+    livekit_stub.room.delete_room.assert_not_called()
+    # Row must still be pending — we didn't leak a partial write.
+    row = (await db_session.execute(select(SessionRow).where(SessionRow.room == room))).scalar_one()
+    assert row.status == "pending"
+    assert row.ended_at is None
+
+
+async def test_delete_session_preserves_failed_status(
+    client, db_session, seed_tenant, agent_stub, livekit_stub
+):
+    """DELETE on a session already in ``failed`` must NOT overwrite it
+    with ``ended`` — ``failed`` is a terminal diagnostic state for
+    incident triage (e.g., pipeline crashed, agent dispatch errored).
+    Letting DELETE stomp it would erase the signal on every retry.
+    """
+    _tenant, raw_key = seed_tenant
+    r = await client.post("/v1/sessions", headers={"X-API-Key": raw_key}, json={})
+    room = r.json()["room"]
+
+    # Flip the row to 'failed' directly — simulates the pipeline having
+    # crashed before the operator runs DELETE.
+    row = (await db_session.execute(select(SessionRow).where(SessionRow.room == room))).scalar_one()
+    row.status = "failed"
+    row.ended_at = datetime.datetime(2026, 4, 22, 12, 0, 0, tzinfo=datetime.UTC)
+    await db_session.commit()
+
+    d = await client.delete(f"/v1/sessions/{room}", headers={"X-API-Key": raw_key})
+    assert d.status_code == 200
+    body = d.json()
+    assert body["status"] == "failed"  # preserved, not flipped to 'ended'
+    assert body["ended_at"] is not None
+
+    # LiveKit NOT called — we short-circuited on the terminal status.
+    livekit_stub.room.delete_room.assert_not_called()
+
+    # DB row still shows 'failed'.
+    row = (await db_session.execute(select(SessionRow).where(SessionRow.room == room))).scalar_one()
+    assert row.status == "failed"

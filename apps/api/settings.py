@@ -14,6 +14,15 @@ class Settings(BaseSettings):
     # LiveKit public URL — what the browser connects to. Defaults to the
     # dev single-box setup; set to wss://livekit.yourdomain.com in prod.
     livekit_public_url: str = "ws://localhost:7880"
+    # LiveKit server-side URL the API uses for RoomService calls (today:
+    # delete_room on DELETE /v1/sessions/{room}). In a docker-compose
+    # single-box deploy this is the internal service hostname
+    # (ws://livekit:7880) because the API container can't reach the
+    # public `localhost:7880` mapping from inside the container network.
+    # Falls back to ``livekit_public_url`` when empty, which is correct
+    # for prod where both the browser and the API hit the same routable
+    # hostname.
+    livekit_url: str = ""
     # API key is a short identifier; the secret signs JWTs via HMAC-SHA256.
     # LiveKit recommends a 32+ char secret for HMAC strength. Empty values
     # would silently produce syntactically valid but functionally invalid JWTs.

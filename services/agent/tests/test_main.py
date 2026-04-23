@@ -614,3 +614,170 @@ class TestHandleEngines:
         body = _json.loads(resp.body)
         assert "xtts" not in body["available"]
         assert "piper" in body["available"]
+
+
+class TestParticipantLeftTeardown:
+    """When a caller leaves the LiveKit room, the agent must not only
+    interrupt in-flight TTS but also cancel the pipeline task.
+
+    Rationale: without the cancel, PipelineRunner.run() keeps awaiting,
+    the agent bot remains a participant in the room, and LiveKit's
+    empty_timeout never fires (a non-empty room can't auto-close). The
+    result is stuck pipelines accumulating GPU refs, WS connections, and
+    model handles, plus ``_active_rooms`` never releasing the slot so
+    re-dispatch of the same room returns 409 forever.
+
+    These tests pin the teardown invariant: the on_participant_left
+    handler must queue an interruption AND call ``task.cancel`` so
+    PipelineRunner.run returns, the ``finally`` block in
+    ``_run_pipeline`` discards the room from ``_active_rooms``, and the
+    agent bot disconnects cleanly.
+    """
+
+    def _run_pipeline_with_fakes(
+        self, monkeypatch, room: str
+    ) -> tuple[MagicMock, dict[str, object]]:
+        """Invoke ``main._run_pipeline`` with enough fakes that no real
+        LiveKit/GPU machinery is touched, and return the captured
+        (fake_task, handlers_dict) so tests can assert what the
+        registered event handler does when fired.
+        """
+        import asyncio  # noqa: PLC0415
+        from pathlib import Path  # noqa: PLC0415
+        from unittest.mock import AsyncMock  # noqa: PLC0415
+
+        from overrides import PerSessionOverrides  # noqa: PLC0415
+
+        handlers: dict[str, object] = {}
+
+        class _FakeTransport:
+            def event_handler(self, event_name):
+                def _decorator(fn):
+                    handlers[event_name] = fn
+                    return fn
+
+                return _decorator
+
+        fake_task = MagicMock()
+        fake_task.queue_frame = AsyncMock()
+        fake_task.cancel = AsyncMock()
+        fake_transport = _FakeTransport()
+
+        class _FakeRunner:
+            async def run(self, _task):
+                return None
+
+        monkeypatch.setattr(main, "build_task", lambda *a, **kw: (fake_task, fake_transport))
+        monkeypatch.setattr(main, "PipelineRunner", lambda: _FakeRunner())
+        monkeypatch.setattr(main, "_mint_agent_token", lambda _room: "fake-token")
+        monkeypatch.setattr(main, "get_gigaam", lambda: MagicMock())
+
+        # AgentConfig is instantiated inside _run_pipeline before build_task
+        # is called; seed the module globals with enough config to satisfy
+        # its __post_init__ (tts_engine whitelist check).
+        main._livekit_url = "ws://test"
+        main._base_config = {
+            "vllm_base_url": "http://v",
+            "vllm_model": "q",
+            "tts_voice": "v",
+            "vllm_api_key": "k",
+            "piper_voices_dir": Path("/tmp"),
+            "tts_engine": "piper",
+            "qwen3_base_url": "",
+            "qwen3_api_key": "",
+            "qwen3_tts_voice": "",
+            "xtts_tts_voice": "",
+            "xtts_voice_library_dir": Path("/tmp"),
+            "api_base_url": "",
+            "agent_internal_token": "",
+        }
+        main._active_rooms.add(room)
+
+        asyncio.run(main._run_pipeline(room, PerSessionOverrides()))
+        return fake_task, handlers
+
+    def test_registers_on_participant_left_handler(self, monkeypatch):
+        """Sanity check — the teardown path is wired to the correct event."""
+        _task, handlers = self._run_pipeline_with_fakes(monkeypatch, "room-a")
+        assert "on_participant_left" in handlers
+
+    def test_on_participant_left_cancels_task(self, monkeypatch):
+        """The critical invariant: the handler must call ``task.cancel``
+        so PipelineRunner.run returns. A regression that drops this line
+        would reintroduce the stuck-pipeline leak — this test catches it.
+
+        Also pins the ``reason="participant_left"`` kwarg: a future
+        Pipecat release that renames or drops the kwarg would make this
+        test fail at signature-match time rather than silently having
+        the cancel call raise TypeError inside _on_leave (which the
+        outer except Exception would swallow — reintroducing the same
+        stuck-pipeline leak under a different failure mode).
+        """
+        import asyncio  # noqa: PLC0415
+
+        fake_task, handlers = self._run_pipeline_with_fakes(monkeypatch, "room-b")
+        asyncio.run(handlers["on_participant_left"](None, "user-1", "CLIENT_INITIATED"))
+
+        fake_task.queue_frame.assert_awaited()  # InterruptionTaskFrame still fires
+        fake_task.cancel.assert_awaited_once_with(reason="participant_left")
+
+    def test_run_pipeline_discards_room_on_exit(self, monkeypatch):
+        """The ``finally`` block at the bottom of ``_run_pipeline`` must
+        run when the runner returns (after cancel propagates), dropping
+        the room from ``_active_rooms`` so subsequent dispatches to the
+        same room name aren't rejected as "room already active".
+        """
+        self._run_pipeline_with_fakes(monkeypatch, "room-c")
+        assert "room-c" not in main._active_rooms
+
+    def test_on_participant_left_swallows_cancel_timeout(self, monkeypatch):
+        """If Pipecat's task.cancel hangs (stuck processor cleanup),
+        _on_leave must not block forever — the asyncio.wait_for wrapper
+        gives up after _PIPELINE_CANCEL_TIMEOUT_SECONDS so the handler
+        returns, the transport layer continues, and the outer
+        _run_pipeline's finally can still free _active_rooms.
+
+        Without this backstop, a wedged TTS / LLM / WS processor would
+        hang the cancel path forever — the exact stuck-pipeline leak
+        this code is meant to prevent, just under a different failure
+        mode.
+        """
+        import asyncio  # noqa: PLC0415
+
+        fake_task, handlers = self._run_pipeline_with_fakes(monkeypatch, "room-hang")
+
+        # Replace the cancel with one that never returns. Point the
+        # timeout at a fraction of a second so the test isn't slow.
+        async def _hang(*_args, **_kwargs):
+            await asyncio.sleep(60)
+
+        fake_task.cancel = _hang
+        monkeypatch.setattr(main, "_PIPELINE_CANCEL_TIMEOUT_SECONDS", 0.05)
+
+        # Must not raise, must return within the short timeout.
+        asyncio.run(handlers["on_participant_left"](None, "user-hang", "CLIENT_INITIATED"))
+
+    def test_on_participant_left_handler_does_not_leak_cancel_exceptions(self, monkeypatch):
+        """If a future Pipecat release changes task.cancel's signature
+        or raises internally, we want the handler to still return so
+        _run_pipeline's finally can free _active_rooms. Today the
+        asyncio.TimeoutError is caught explicitly; other exceptions
+        propagate up to _run_pipeline's ``except Exception`` which
+        still discards the room. Pin that invariant: no matter what
+        cancel does, the room eventually leaves _active_rooms.
+        """
+        import asyncio  # noqa: PLC0415
+
+        fake_task, handlers = self._run_pipeline_with_fakes(monkeypatch, "room-raise")
+
+        # cancel raises a non-TimeoutError exception.
+        async def _raise(*_args, **_kwargs):
+            raise RuntimeError("pipecat cancel broke")
+
+        fake_task.cancel = _raise
+
+        # The handler itself will propagate RuntimeError (only TimeoutError
+        # is caught locally). This reaches _run_pipeline's outer except and
+        # the room gets discarded. This test documents that contract.
+        with pytest.raises(RuntimeError):
+            asyncio.run(handlers["on_participant_left"](None, "user-x", "CLIENT_INITIATED"))

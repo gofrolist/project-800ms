@@ -39,6 +39,13 @@ AGENT_TOKEN_TTL = datetime.timedelta(minutes=30)
 # the whole container (which would take Piper/Silero/Qwen3 down too).
 _XTTS_MIN_FREE_BYTES = 2_000_000_000
 
+# Upper bound on how long to wait for Pipecat's task.cancel to drain.
+# Clean cancels complete in well under a second; 5s accommodates slow
+# processor cleanup (LLM in-flight request cancellation, WebRTC teardown)
+# without letting a wedged processor hang the on_participant_left handler
+# indefinitely — which would defeat the auto-teardown the cancel is for.
+_PIPELINE_CANCEL_TIMEOUT_SECONDS = 5.0
+
 # Shared config loaded once at startup.
 _livekit_url: str = ""
 _api_key: str = ""
@@ -156,8 +163,39 @@ async def _run_pipeline(room: str, overrides: PerSessionOverrides) -> None:
 
         @transport.event_handler("on_participant_left")
         async def _on_leave(_transport: object, participant_id: str, _reason: object) -> None:
+            # Without the task.cancel below, on_participant_left only interrupts
+            # in-flight TTS — PipelineRunner.run keeps awaiting forever, the
+            # agent bot stays in the (now empty) LiveKit room, and LiveKit's
+            # empty_timeout never fires because the agent is still a
+            # participant. Result: stuck pipelines accumulate (GPU refs, WS
+            # connections, model handles) and _active_rooms never releases
+            # the slot so re-dispatch of the same room returns 409 forever.
+            # Cancelling drains the pipeline, unblocks PipelineRunner.run,
+            # and triggers the agent's own participant-left → room empties →
+            # LiveKit reclaims the room.
+            #
+            # task.cancel is wrapped in wait_for because Pipecat's cancel
+            # awaits every processor's cleanup + runner finish. A stuck
+            # TTS / LLM / WS processor would hang the handler forever; the
+            # finally in _run_pipeline never runs, _active_rooms stays
+            # held — the exact leak this code is meant to prevent, just
+            # under a different failure mode. 5s is generous for a clean
+            # drain; if cleanup genuinely takes longer something is wedged.
             logger.info("Participant left room={room}: {pid}", room=room, pid=participant_id)
             await task.queue_frame(InterruptionTaskFrame())
+            try:
+                await asyncio.wait_for(
+                    task.cancel(reason="participant_left"),
+                    timeout=_PIPELINE_CANCEL_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "task.cancel timed out after {t}s for room={room}; "
+                    "pipeline may leave residual resources until process "
+                    "recycles",
+                    t=_PIPELINE_CANCEL_TIMEOUT_SECONDS,
+                    room=room,
+                )
 
         await PipelineRunner().run(task)
         logger.info("Pipeline exited for room={room}", room=room)

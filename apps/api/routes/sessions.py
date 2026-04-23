@@ -13,6 +13,7 @@ from drifting out of sync with what's actually running in LiveKit.
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import logging
 import uuid
@@ -97,6 +98,62 @@ def _mint_caller_token(room: str, identity: str) -> str:
         .with_ttl(datetime.timedelta(seconds=settings.session_ttl_seconds))
         .to_jwt()
     )
+
+
+async def _delete_livekit_room(room: str) -> None:
+    """Best-effort tear down of the LiveKit room.
+
+    Calls LiveKit's ``RoomService.delete_room``, which is idempotent
+    server-side (deleting a non-existent room is a no-op) and force-kicks
+    every participant — including the agent bot, which then completes
+    its pipeline shutdown via the same on_participant_left path the
+    browser-close case uses.
+
+    Errors are logged and swallowed intentionally. Rationale:
+    - The primary teardown path is the agent's own on_participant_left →
+      task.cancel, fired whenever the caller disconnects. DELETE is a
+      belt-and-braces user-initiated signal and an operator tool.
+    - If LiveKit's API is transiently unavailable, we still want to mark
+      the session ``ended`` in the DB so billing, audit, and idempotency
+      are consistent. The room will fall out on LiveKit's own
+      ``empty_timeout`` once the caller's browser disconnects.
+    - Returning 503 on LiveKit flakes would make DELETE un-idempotent and
+      block the DB-side close the caller actually cares about.
+
+    Timeout: 5 seconds. The LiveKit SDK's default is 60s (aiohttp default)
+    which would stall the DELETE handler far longer than a best-effort
+    cleanup should ever take. A hanging LiveKit should fall through to
+    the DB-side close quickly; any actual teardown that needs >5s is
+    pathological and the client can retry.
+    """
+    # Only narrow the catch below to the exceptions we actually expect from
+    # LiveKit/aiohttp. ValueError (empty url/key), protobuf TypeError, or
+    # asyncio.InvalidStateError indicate programmer errors that should
+    # surface rather than be silently logged as a transient failure.
+    import aiohttp  # noqa: PLC0415
+
+    # Server-side URL takes precedence; fall back to the public URL for
+    # deploys where the two are the same (prod behind a routable
+    # hostname). See settings.livekit_url docstring for the split.
+    server_url = settings.livekit_url or settings.livekit_public_url
+    try:
+        async with lkapi.LiveKitAPI(
+            server_url,
+            settings.livekit_api_key,
+            settings.livekit_api_secret,
+            timeout=aiohttp.ClientTimeout(total=5),
+        ) as lk:
+            await lk.room.delete_room(lkapi.DeleteRoomRequest(room=room))
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as exc:
+        # Network-level transient errors: log and continue. DB-side close
+        # still commits; LiveKit will reclaim the room via empty_timeout
+        # once the caller's browser disconnects.
+        logger.warning(
+            "LiveKit delete_room failed for room=%s: %s. "
+            "Session will still be marked ended in the database.",
+            room,
+            exc,
+        )
 
 
 async def _dispatch_agent(room: str, body: CreateSessionRequest) -> None:
@@ -263,6 +320,16 @@ async def get_session(
         # don't leak existence across tenants.
         raise APIError(404, "not_found", f"Session {room!r} not found")
 
+    return _session_to_details(session)
+
+
+def _session_to_details(session: SessionRow) -> SessionDetails:
+    """Project a Session row to its SessionDetails API shape.
+
+    Shared between GET /v1/sessions/{room} and DELETE /v1/sessions/{room}
+    so adding a field to SessionDetails can't leave one endpoint out of
+    sync with the other.
+    """
     return SessionDetails(
         session_id=str(session.id),
         room=session.room,
@@ -280,3 +347,149 @@ async def get_session(
         ended_at=session.ended_at.isoformat() if session.ended_at else None,
         audio_seconds=session.audio_seconds,
     )
+
+
+# Terminal session statuses for which DELETE is a no-op short-circuit.
+# ``ended`` is the normal close path; ``failed`` means the pipeline or
+# dispatch errored and the row already carries its final state — DELETE
+# must preserve it rather than overwrite with ``ended``, or we'd lose
+# diagnostic signal for incident triage.
+_SESSION_TERMINAL_STATUSES: frozenset[str] = frozenset({"ended", "failed"})
+
+
+@router.delete(
+    "/sessions/{room}",
+    response_model=SessionDetails,
+    summary="End a voice session",
+    description=(
+        "Force-close a session: tears down the LiveKit room (kicking the "
+        "caller and the agent bot) and marks the session ``ended`` in the "
+        "database.\n\n"
+        "Idempotent: calling DELETE on a session that is already ``ended`` "
+        "or ``failed`` returns 200 with the existing details and does not "
+        "re-tear the already-deleted LiveKit room. The terminal ``failed`` "
+        "status is preserved (not overwritten with ``ended``) so incident "
+        "diagnostic state survives retries.\n\n"
+        "Returns **409 conflict** for sessions still in ``pending`` — "
+        "``started_at`` has not been populated yet (POST is mid-flight), so "
+        "closing now would produce a row invisible to usage reports. "
+        "Client should retry shortly.\n\n"
+        "Returns **404 not_found** for sessions owned by other tenants or "
+        "that do not exist — existence is deliberately not distinguishable "
+        "across tenants. Belt-and-braces on top of the agent's own "
+        "participant-left auto-teardown; this endpoint lets the UI's "
+        '"hang up" button release resources immediately rather than '
+        "waiting on LiveKit's ``empty_timeout``."
+    ),
+    responses={
+        404: {
+            "description": "No session with this room name for this tenant.",
+            "content": {"application/json": {"schema": _ERROR_ENVELOPE_SCHEMA}},
+        },
+        409: {
+            "description": "Session is still pending (not yet active); cannot close yet.",
+            "content": {"application/json": {"schema": _ERROR_ENVELOPE_SCHEMA}},
+        },
+        **_COMMON_ERROR_RESPONSES,
+    },
+)
+async def delete_session(
+    request: Request,
+    room: str,
+    identity: TenantIdentity = Depends(enforce_tenant_rate_limit),
+    db: AsyncSession = Depends(get_db),
+) -> SessionDetails:
+    room_var.set(room)
+    stmt = (
+        select(SessionRow)
+        .where(SessionRow.room == room)
+        .where(SessionRow.tenant_id == uuid.UUID(identity.tenant_id))
+    )
+    session = (await db.execute(stmt)).scalar_one_or_none()
+    if session is None:
+        # Same cross-tenant opacity rule as GET: don't leak existence.
+        raise APIError(404, "not_found", f"Session {room!r} not found")
+
+    # DELETE on status='pending' would produce an ended row with
+    # started_at=NULL, which usage.py's ``WHERE started_at >= start``
+    # filter excludes entirely — the call vanishes from reports. Tell
+    # the client to retry once POST commits (status transitions
+    # pending → active in create_session before returning 201, so this
+    # window is narrow but real under high concurrency).
+    if session.status == "pending":
+        raise APIError(
+            409,
+            "conflict",
+            f"Session {room!r} is still pending; retry once it is active",
+        )
+
+    # Idempotent short-circuit: if the session is already at a terminal
+    # status (ended or failed), skip the LiveKit call (the room is gone)
+    # and the DB write (nothing to change). ``failed`` is preserved as-is
+    # so diagnostic state survives — we refuse to overwrite it with
+    # ``ended`` just because a client sent DELETE.
+    if session.status in _SESSION_TERMINAL_STATUSES:
+        logger.info(
+            "DELETE on already-closed session tenant=%s key=%s room=%s status=%s",
+            identity.tenant_slug,
+            identity.key_prefix,
+            room,
+            session.status,
+        )
+        return _session_to_details(session)
+
+    # LiveKit first — actually kick the agent + caller out of the
+    # room. The agent's on_participant_left auto-teardown then fires
+    # and the pipeline drains. Any LiveKit API error is logged and
+    # swallowed so the DB close below still runs (see
+    # _delete_livekit_room docstring).
+    await _delete_livekit_room(room)
+
+    # Conditional UPDATE guards against concurrent DELETE races: if two
+    # requests both pass the status check above, only one row update
+    # lands ``status='ended'`` in the row; the second finds 0 affected
+    # rows and returns the already-closed state below. This keeps
+    # ``ended_at`` stable across retries (matters for billing joins).
+    now = datetime.datetime.now(datetime.UTC)
+    audio_seconds = (
+        max(int((now - session.started_at).total_seconds()), 0)
+        if session.started_at is not None
+        else None
+    )
+    update_stmt = (
+        SessionRow.__table__.update()
+        .where(SessionRow.id == session.id)
+        .where(SessionRow.status == session.status)
+        .values(status="ended", ended_at=now, audio_seconds=audio_seconds)
+    )
+    result = await db.execute(update_stmt)
+    await db.commit()
+
+    if result.rowcount == 0:
+        # Another concurrent DELETE (or the room_finished webhook)
+        # beat us to the update. Re-read so the response reflects the
+        # winning write's timestamps rather than our local mutations.
+        await db.refresh(session)
+        logger.info(
+            "DELETE raced with concurrent close tenant=%s key=%s room=%s winner_status=%s",
+            identity.tenant_slug,
+            identity.key_prefix,
+            room,
+            session.status,
+        )
+        return _session_to_details(session)
+
+    # Reflect the UPDATE in the in-memory session object so the response
+    # body uses the values we actually wrote.
+    session.status = "ended"
+    session.ended_at = now
+    session.audio_seconds = audio_seconds
+
+    logger.info(
+        "Session ended tenant=%s key=%s room=%s audio_seconds=%s",
+        identity.tenant_slug,
+        identity.key_prefix,
+        room,
+        audio_seconds,
+    )
+    return _session_to_details(session)

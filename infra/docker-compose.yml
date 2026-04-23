@@ -268,6 +268,11 @@ services:
     restart: unless-stopped
     environment:
       - LIVEKIT_PUBLIC_URL=${LIVEKIT_PUBLIC_URL:-ws://localhost:7880}
+      # Internal LiveKit URL for server-side RoomService calls
+      # (DELETE /v1/sessions/{room} tear-down). The container network
+      # reaches LiveKit at ws://livekit:7880, not at the public
+      # localhost mapping the browser uses.
+      - LIVEKIT_URL=ws://livekit:7880
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-["*"]}
