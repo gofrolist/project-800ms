@@ -323,6 +323,110 @@ class TestLoadXtts:
         with pytest.raises(RuntimeError, match="call load_xtts"):
             get_xtts()
 
+    def test_sentinel_written_after_successful_load(self, monkeypatch, tmp_path):
+        """load_xtts() must write .xtts-download-complete in the cache dir
+        after TTS() returns cleanly, so subsequent boots can tell this
+        cache from a partial one.
+
+        The fake TTS() constructor creates the cache dir as a side
+        effect, matching real coqui-tts behavior (it downloads into the
+        cache dir during __init__). The sentinel is then written by
+        load_xtts after the constructor returns cleanly.
+        """
+        import torch  # noqa: PLC0415
+
+        monkeypatch.setenv("TTS_HOME", str(tmp_path))
+        cache_dir = tmp_path / "tts_models--multilingual--multi-dataset--xtts_v2"
+
+        def _tts_side_effect(*_args, **_kwargs):
+            # Simulate coqui-tts creating the cache dir during its
+            # download + materialization phase.
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            (cache_dir / "model.pth").write_bytes(b"fake weights")
+            return MagicMock(name="xtts_model")
+
+        tts_cls = MagicMock(name="TTS", side_effect=_tts_side_effect)
+        self._patch_tts_import(monkeypatch, tts_cls)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+        load_xtts()
+
+        sentinel = cache_dir / ".xtts-download-complete"
+        assert sentinel.exists(), (
+            f"expected sentinel {sentinel} to exist after load_xtts(); "
+            f"dir contents: {list(cache_dir.iterdir()) if cache_dir.exists() else 'dir-missing'}"
+        )
+
+    def test_partial_download_is_cleaned_on_next_boot(self, monkeypatch, tmp_path):
+        """Regression guard: a cache dir present WITHOUT the sentinel
+        is treated as a partial download and cleared before TTS() runs.
+
+        Without this self-heal, coqui-tts would trust the stale dir and
+        torch.load() inside TTS() would raise FileNotFoundError on the
+        missing weight file — permanent crashloop until manual cache wipe.
+        """
+        import torch  # noqa: PLC0415
+
+        monkeypatch.setenv("TTS_HOME", str(tmp_path))
+        cache_dir = tmp_path / "tts_models--multilingual--multi-dataset--xtts_v2"
+        cache_dir.mkdir()
+        stale_weight = cache_dir / "model.pth"
+        stale_weight.write_bytes(b"partial download junk")
+        # No sentinel file — this is the corruption state.
+
+        fake_tts = MagicMock(name="xtts_model")
+        tts_cls = MagicMock(name="TTS", return_value=fake_tts)
+        self._patch_tts_import(monkeypatch, tts_cls)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+        load_xtts()
+
+        # The stale weight was removed (via rmtree of cache_dir), and
+        # nothing pre-existed to re-create it — after rmtree the dir
+        # is gone entirely since TTS() is mocked and doesn't re-download.
+        assert not stale_weight.exists()
+
+    def test_sentinel_present_skips_cleanup(self, monkeypatch, tmp_path):
+        """If a previous successful load wrote the sentinel, subsequent
+        loads must NOT touch the cache dir — the cache is valid."""
+        import torch  # noqa: PLC0415
+
+        monkeypatch.setenv("TTS_HOME", str(tmp_path))
+        cache_dir = tmp_path / "tts_models--multilingual--multi-dataset--xtts_v2"
+        cache_dir.mkdir()
+        weight = cache_dir / "model.pth"
+        weight.write_bytes(b"valid cached weights")
+        (cache_dir / ".xtts-download-complete").touch()
+
+        fake_tts = MagicMock(name="xtts_model")
+        tts_cls = MagicMock(name="TTS", return_value=fake_tts)
+        self._patch_tts_import(monkeypatch, tts_cls)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+        load_xtts()
+
+        # Weight was preserved (not cleared).
+        assert weight.exists()
+        assert weight.read_bytes() == b"valid cached weights"
+
+    def test_missing_cache_dir_does_not_raise(self, monkeypatch, tmp_path):
+        """Fresh deploy: TTS_HOME is set but the model cache dir doesn't
+        exist yet. Self-heal and sentinel-write must both no-op cleanly."""
+        import torch  # noqa: PLC0415
+
+        monkeypatch.setenv("TTS_HOME", str(tmp_path))
+        # Don't create the cache dir — simulates first-ever boot before
+        # coqui-tts has downloaded anything. Our mocked TTS() doesn't
+        # create it either.
+
+        fake_tts = MagicMock(name="xtts_model")
+        tts_cls = MagicMock(name="TTS", return_value=fake_tts)
+        self._patch_tts_import(monkeypatch, tts_cls)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+        # Must not raise despite the cache dir being absent.
+        load_xtts()
+
 
 # ─── XTTSTTSService.run_tts ──────────────────────────────────────────
 
