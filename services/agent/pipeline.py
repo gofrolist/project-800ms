@@ -32,7 +32,11 @@ from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 
 from gigaam_stt import GigaAMSettings, GigaAMSTTService
 from overrides import PerSessionOverrides, build_system_prompt
-from transcript import AssistantTranscriptForwarder, UserTranscriptForwarder
+from transcript import (
+    AssistantTranscriptForwarder,
+    ErrorFrameForwarder,
+    UserTranscriptForwarder,
+)
 from transcript_sink import TranscriptSink
 from tts_factory import build_tts_service
 
@@ -185,6 +189,12 @@ def build_task(
 
     user_transcript = UserTranscriptForwarder(transport, sink=sink)
     assistant_transcript = AssistantTranscriptForwarder(transport, sink=sink)
+    # ErrorFrameForwarder sits AFTER the TTS service so that TTS synth
+    # errors (missing voice profile, CUDA OOM, model-not-loaded) are
+    # surfaced to the UI via the LiveKit data channel instead of the
+    # user hearing silence. Upstream STT / LLM errors also flow through,
+    # so any backend ErrorFrame gets shown to the caller.
+    error_forwarder = ErrorFrameForwarder(transport)
 
     # The aggregator's LLMUserAggregatorParams(vad_analyzer=...) runs VAD
     # internally via its own VADController and broadcasts the resulting
@@ -201,6 +211,7 @@ def build_task(
             llm,
             assistant_transcript,
             tts,
+            error_forwarder,
             transport.output(),
             assistant_agg,
         ]

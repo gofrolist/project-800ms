@@ -191,3 +191,52 @@ body {
   line-height: 1.4;
   color: #e5e7eb;
 }
+
+.session-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  text-align: left;
+  line-height: 1.4;
+}
+
+.session-error-soft {
+  background: #3f2a1d;
+  border: 1px solid #b45309;
+  color: #fcd9b3;
+}
+
+.session-error-fatal {
+  background: #3f1d1d;
+  border: 1px solid #b91c1c;
+  color: #fecaca;
+}
+
+.session-error-label {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.session-error-text {
+  flex: 1;
+  word-break: break-word;
+}
+
+.session-error-dismiss {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.2rem;
+  opacity: 0.7;
+}
+
+.session-error-dismiss:hover {
+  opacity: 1;
+}

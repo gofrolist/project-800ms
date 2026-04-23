@@ -9,6 +9,7 @@ import json
 
 from loguru import logger
 from pipecat.frames.frames import (
+    ErrorFrame,
     Frame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
@@ -38,8 +39,16 @@ async def _forward(
 
     Both paths swallow their own errors (best-effort). A LiveKit-side
     failure shouldn't drop the DB write and vice versa.
+
+    Payload shape includes a ``type`` discriminator so the web client
+    can distinguish transcripts from error frames (see
+    ``ErrorFrameForwarder``). Legacy clients that read ``role`` + ``text``
+    directly keep working — the extra field is additive.
     """
-    msg = json.dumps({"role": role, "text": text}, ensure_ascii=False)
+    msg = json.dumps(
+        {"type": "transcript", "role": role, "text": text},
+        ensure_ascii=False,
+    )
     logger.debug("Transcript role={role} chars={n}", role=role, n=len(text))
     try:
         await transport.send_message(msg)
@@ -129,4 +138,60 @@ class AssistantTranscriptForwarder(FrameProcessor):
                 await _forward(self._transport, self._sink, "assistant", full)
             self._buf.clear()
 
+        await self.push_frame(frame, direction)
+
+
+class ErrorFrameForwarder(FrameProcessor):
+    """Forward backend ``ErrorFrame`` instances to the web UI via the
+    LiveKit data channel.
+
+    Pipecat's default behavior on ``ErrorFrame`` is to log and let the
+    frame continue through the pipeline — it doesn't reach the
+    transport's audio output, and the client sees no audio + no UI
+    signal. For the demo, silence-on-error is the worst failure mode;
+    the user has no idea whether to retry, switch engines, or report.
+
+    Put this processor in the pipeline AFTER the TTS service so it
+    catches TTS errors (the most common class: missing voice profile,
+    CUDA OOM, model load failure). STT and LLM errors also propagate
+    through, so any upstream ``ErrorFrame`` gets surfaced too.
+
+    The payload shape uses a ``type: "error"`` discriminator so the
+    web client can distinguish from transcripts. Pipecat's
+    ``ErrorFrame.error`` is the redacted message string; ``fatal``
+    signals whether the session is recoverable.
+    """
+
+    def __init__(
+        self,
+        transport: LiveKitTransport,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self._transport = transport
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, ErrorFrame):
+            payload = json.dumps(
+                {
+                    "type": "error",
+                    "error": frame.error or "Unknown backend error",
+                    "fatal": bool(getattr(frame, "fatal", False)),
+                },
+                ensure_ascii=False,
+            )
+            logger.debug(
+                "Forwarding ErrorFrame to LiveKit: error={err} fatal={fatal}",
+                err=frame.error,
+                fatal=getattr(frame, "fatal", False),
+            )
+            try:
+                await self._transport.send_message(payload)
+            except Exception:
+                # Best-effort, same pattern as _forward. A data channel
+                # failure here shouldn't prevent the frame from
+                # continuing through the pipeline (it may be a
+                # non-fatal error the pipeline recovers from).
+                logger.exception("Failed to forward ErrorFrame over LiveKit data channel")
         await self.push_frame(frame, direction)

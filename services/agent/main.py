@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import errno
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -29,6 +31,14 @@ from pipeline import AgentConfig, build_task
 AGENT_IDENTITY = "agent-bot"
 AGENT_TOKEN_TTL = datetime.timedelta(minutes=30)
 
+# Minimum free space at TTS_HOME before we even try the XTTS download.
+# The weights themselves are ~1.8 GB; 2 GB leaves breathing room for the
+# partial-download file and the final rename without hitting ENOSPC
+# mid-way. If the cache volume has less than this, skip preload and
+# degrade XTTS to "unavailable on this agent" rather than crashlooping
+# the whole container (which would take Piper/Silero/Qwen3 down too).
+_XTTS_MIN_FREE_BYTES = 2_000_000_000
+
 # Shared config loaded once at startup.
 _livekit_url: str = ""
 _api_key: str = ""
@@ -44,6 +54,47 @@ _active_rooms: set[str] = set()
 # this guard, such a dispatch returns 200 + LiveKit token, and the
 # pipeline failure only surfaces as "user hears silence" much later.
 _preload_engines: frozenset[str] = frozenset()
+
+
+def _xtts_has_disk_space() -> bool:
+    """Return True if TTS_HOME has enough free space for the XTTS download.
+
+    Checks the filesystem free-bytes at the TTS_HOME directory (or its
+    nearest existing ancestor on first boot, before coqui-tts has
+    created the cache directory). Returns True if free bytes >=
+    ``_XTTS_MIN_FREE_BYTES``, False otherwise. Logs a warning with the
+    measured free space when the check fails so operators can correlate
+    with downstream 409s on XTTS sessions.
+
+    Returns True on any OSError from the disk_usage probe — err on the
+    side of attempting the download and letting the real load_xtts
+    surface a specific error, rather than silently skipping preload
+    on spurious probe failures.
+    """
+    tts_home_env = os.environ.get("TTS_HOME")
+    probe = Path(tts_home_env) if tts_home_env else Path.home() / ".local" / "share" / "tts"
+    # Walk up to an existing ancestor so disk_usage doesn't fail on a
+    # not-yet-created cache path.
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    try:
+        free = shutil.disk_usage(probe).free
+    except OSError:
+        logger.warning(
+            "Could not probe disk space at {path}; attempting XTTS preload anyway",
+            path=probe,
+        )
+        return True
+    if free < _XTTS_MIN_FREE_BYTES:
+        logger.warning(
+            "XTTS cache {path} has {free_mb:.0f} MB free — below {min_mb:.0f} MB "
+            "minimum for the 1.8 GB weight download",
+            path=probe,
+            free_mb=free / 1_000_000,
+            min_mb=_XTTS_MIN_FREE_BYTES / 1_000_000,
+        )
+        return False
+    return True
 
 
 def _mint_agent_token(room: str) -> str:
@@ -271,7 +322,9 @@ def main() -> None:
         # will silently create an empty bind-mount target if the host
         # path is missing, so the first dispatch would raise inside
         # ``_resolve_voice_profile`` → get swallowed → silent dead session.
-        # Fail at boot with a clear message instead.
+        # Hard-fail at boot with a clear message — a missing profile
+        # mount is an operator misconfiguration, not a transient
+        # resource issue, and won't self-heal on restart.
         voice_library_dir = _base_config.get("xtts_voice_library_dir")
         if isinstance(voice_library_dir, Path):
             profiles_dir = voice_library_dir / "profiles"
@@ -282,11 +335,47 @@ def main() -> None:
                     path=profiles_dir,
                 )
                 sys.exit(3)
-        try:
-            load_xtts()
-        except Exception:  # noqa: BLE001 — intentional hard-fail at startup
-            logger.exception("XTTS pre-load failed — refusing to start agent")
-            sys.exit(3)
+
+        # Disk-space pre-check: XTTS downloads ~1.8 GB into the
+        # hf_cache_agent volume. If free space is below the 2 GB
+        # threshold, skip preload and drop xtts from the preload set.
+        # The dispatch handler already returns 409 for engines missing
+        # from _preload_engines, so sessions pick a different engine
+        # instead of the whole agent crashlooping on ENOSPC.
+        #
+        # Rationale: disk-full is a resource constraint, not a code
+        # bug — hard-failing takes Piper/Silero/Qwen3 down as
+        # collateral. Graceful degrade keeps the other engines serving
+        # while operators free space.
+        if not _xtts_has_disk_space():
+            logger.warning(
+                "Skipping XTTS preload due to insufficient disk space. "
+                "Sessions requesting tts_engine=xtts will receive 409 "
+                "until the cache volume has free space.",
+            )
+            preload_engines.discard("xtts")
+            _preload_engines = frozenset(preload_engines)
+        else:
+            try:
+                load_xtts()
+            except OSError as e:  # noqa: BLE001 — specific disk-full handling below
+                if e.errno == errno.ENOSPC:
+                    # Disk filled mid-download (the pre-check passed but
+                    # something else consumed the free space between
+                    # probe and download). Same degrade path as above.
+                    logger.warning(
+                        "XTTS preload failed with ENOSPC mid-download. "
+                        "Dropping xtts from the preload set; sessions "
+                        "requesting tts_engine=xtts will receive 409.",
+                    )
+                    preload_engines.discard("xtts")
+                    _preload_engines = frozenset(preload_engines)
+                else:
+                    logger.exception("XTTS pre-load failed — refusing to start agent")
+                    sys.exit(3)
+            except Exception:  # noqa: BLE001 — intentional hard-fail at startup
+                logger.exception("XTTS pre-load failed — refusing to start agent")
+                sys.exit(3)
 
     app = web.Application()
     app.router.add_post("/dispatch", handle_dispatch)

@@ -228,6 +228,10 @@ class TestXttsPreload:
         """An XTTS load failure at startup must exit with code 3 — same
         hard-fail semantics as the Silero case. Boot-but-can't-synth is
         strictly worse than a container restart loop.
+
+        Exception here is a plain RuntimeError (not OSError/ENOSPC), so
+        the graceful-degrade branch does NOT apply — we want the hard
+        fail for code/dep bugs that won't self-heal on restart.
         """
         monkeypatch.setenv("TTS_ENGINE", "xtts")
         patches = _patch_runtime_bits()
@@ -290,6 +294,145 @@ class TestXttsPreload:
             main.main()
 
             fake_xtts.assert_called_once()
+
+
+class TestXttsDiskSpaceDegrade:
+    """Graceful degrade: insufficient free disk at TTS_HOME must skip
+    the XTTS preload rather than sys.exit(3) the whole agent. Other
+    engines (Piper, Silero, Qwen3) keep serving. handle_dispatch's 409
+    for absent engines then covers sessions that still request xtts.
+    """
+
+    def _seed_voice_library(self, monkeypatch, tmp_path):
+        profile = tmp_path / "profiles" / "demo-ru"
+        profile.mkdir(parents=True, exist_ok=True)
+        (profile / "meta.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("XTTS_VOICE_LIBRARY_DIR", str(tmp_path))
+
+    def test_low_disk_skips_preload_and_drops_xtts_from_preload_set(self, monkeypatch, tmp_path):
+        """With <2 GB free at TTS_HOME, agent boots normally but xtts
+        is NOT in _preload_engines. load_xtts is never called.
+        """
+        import shutil as real_shutil  # noqa: PLC0415
+
+        monkeypatch.setenv("TTS_ENGINE", "xtts")
+        self._seed_voice_library(monkeypatch, tmp_path)
+
+        # Simulate a near-full volume — 500 MB free, below the 2 GB threshold.
+        def _fake_disk_usage(path):
+            return real_shutil._ntuple_diskusage(
+                total=10_000_000_000,
+                used=9_500_000_000,
+                free=500_000_000,
+            )
+
+        monkeypatch.setattr(main.shutil, "disk_usage", _fake_disk_usage)
+        patches = _patch_runtime_bits()
+        with (
+            patches["load_gigaam"],
+            patches["load_silero"],
+            patches["load_xtts"] as fake_xtts,
+            patches["web_run_app"],
+        ):
+            main.main()
+
+            # Preload NOT attempted.
+            fake_xtts.assert_not_called()
+            # _preload_engines does NOT contain xtts — dispatch will 409.
+            assert "xtts" not in main._preload_engines
+
+    def test_enospc_mid_download_drops_xtts_not_exit_3(self, monkeypatch, tmp_path):
+        """Pre-check passes (enough free), but the actual download
+        raises ENOSPC (something else consumed space in the meantime).
+        Must still degrade gracefully, not sys.exit(3).
+        """
+        import shutil as real_shutil  # noqa: PLC0415
+
+        monkeypatch.setenv("TTS_ENGINE", "xtts")
+        self._seed_voice_library(monkeypatch, tmp_path)
+
+        # Enough free at pre-check time.
+        def _fake_disk_usage(path):
+            return real_shutil._ntuple_diskusage(
+                total=100_000_000_000,
+                used=10_000_000_000,
+                free=90_000_000_000,
+            )
+
+        monkeypatch.setattr(main.shutil, "disk_usage", _fake_disk_usage)
+        patches = _patch_runtime_bits()
+        with (
+            patches["load_gigaam"],
+            patches["load_silero"],
+            patches["load_xtts"] as fake_xtts,
+            patches["web_run_app"],
+        ):
+            fake_xtts.side_effect = OSError(28, "No space left on device")  # errno 28 = ENOSPC
+
+            # Must NOT raise SystemExit — this is the graceful path.
+            main.main()
+
+            fake_xtts.assert_called_once()
+            # xtts dropped from preload set after the failed load.
+            assert "xtts" not in main._preload_engines
+
+    def test_non_enospc_oserror_still_exits_3(self, monkeypatch, tmp_path):
+        """A non-ENOSPC OSError (permission denied, I/O error, etc.) is
+        not a resource-constraint issue and should keep the existing
+        hard-fail behavior — graceful-degrade is only for disk-full.
+        """
+        import shutil as real_shutil  # noqa: PLC0415
+
+        monkeypatch.setenv("TTS_ENGINE", "xtts")
+        self._seed_voice_library(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            main.shutil,
+            "disk_usage",
+            lambda _p: real_shutil._ntuple_diskusage(
+                total=100_000_000_000, used=10_000_000_000, free=90_000_000_000
+            ),
+        )
+        patches = _patch_runtime_bits()
+        with (
+            patches["load_gigaam"],
+            patches["load_silero"],
+            patches["load_xtts"] as fake_xtts,
+            patches["web_run_app"],
+        ):
+            fake_xtts.side_effect = OSError(13, "Permission denied")  # errno 13 = EACCES
+
+            with pytest.raises(SystemExit) as exc_info:
+                main.main()
+
+            assert exc_info.value.code == 3
+
+    def test_ample_disk_proceeds_to_preload(self, monkeypatch, tmp_path):
+        """Baseline regression guard: when disk has plenty of space,
+        the degrade path is not entered — load_xtts runs and xtts stays
+        in the preload set.
+        """
+        import shutil as real_shutil  # noqa: PLC0415
+
+        monkeypatch.setenv("TTS_ENGINE", "xtts")
+        self._seed_voice_library(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            main.shutil,
+            "disk_usage",
+            lambda _p: real_shutil._ntuple_diskusage(
+                total=100_000_000_000, used=10_000_000_000, free=90_000_000_000
+            ),
+        )
+        patches = _patch_runtime_bits()
+        with (
+            patches["load_gigaam"],
+            patches["load_silero"],
+            patches["load_xtts"] as fake_xtts,
+            patches["web_run_app"],
+        ):
+            main.main()
+
+            fake_xtts.assert_called_once()
+            assert "xtts" in main._preload_engines
 
 
 class TestHandleDispatchEngineGuard:

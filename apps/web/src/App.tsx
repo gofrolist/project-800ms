@@ -115,6 +115,52 @@ interface ErrorEnvelope {
 
 type Status = "idle" | "connecting" | "live" | "error";
 
+// Discriminated union for LiveKit data-channel payloads from the agent.
+// The agent's transcript.py / ErrorFrameForwarder emit this shape; the
+// discriminator keeps transcript rendering separate from error banners
+// in the UI and lets the `useDataChannel` handler drop unknown shapes
+// deterministically instead of silently swallowing them.
+type TranscriptMessage = {
+  type: "transcript";
+  role: "user" | "assistant";
+  text: string;
+};
+
+type ErrorMessage = {
+  type: "error";
+  error: string;
+  fatal: boolean;
+};
+
+type DataPayload = TranscriptMessage | ErrorMessage;
+
+// Legacy payload shape emitted by older agents: {role, text} without the
+// `type` field. Kept for back-compat during rolling deploys where one
+// agent version has the new ErrorFrameForwarder and another doesn't.
+type LegacyTranscriptMessage = {
+  role: "user" | "assistant";
+  text: string;
+};
+
+function isTranscript(x: unknown): x is TranscriptMessage | LegacyTranscriptMessage {
+  if (typeof x !== "object" || x === null) return false;
+  const o = x as Record<string, unknown>;
+  return (
+    (o.type === "transcript" || o.type === undefined) &&
+    (o.role === "user" || o.role === "assistant") &&
+    typeof o.text === "string"
+  );
+}
+
+function isError(x: unknown): x is ErrorMessage {
+  if (typeof x !== "object" || x === null) return false;
+  const o = x as Record<string, unknown>;
+  return o.type === "error" && typeof o.error === "string";
+}
+
+// Legacy Message type kept for the transcript list state. Error
+// payloads live in a separate state slot (sessionError) so they render
+// as a dismissable banner instead of a transcript row.
 interface Message {
   role: "user" | "assistant";
   text: string;
@@ -283,17 +329,29 @@ interface CallViewProps {
 function CallView({ onEnd, identity, ttsEngine, voice }: CallViewProps) {
   const { state, audioTrack } = useVoiceAssistant();
   const [messages, setMessages] = useState<Message[]>([]);
+  const [sessionError, setSessionError] = useState<ErrorMessage | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useDataChannel((msg) => {
     try {
       const text = new TextDecoder().decode(msg.payload);
-      const parsed = JSON.parse(text) as Message;
-      if (parsed.role && parsed.text) {
-        setMessages((prev) => [...prev, parsed]);
+      const parsed: unknown = JSON.parse(text);
+      if (isError(parsed)) {
+        setSessionError(parsed);
+        return;
       }
+      if (isTranscript(parsed)) {
+        // Normalize legacy shape (no `type` field) into the same
+        // internal Message type — CallView only needs role + text.
+        setMessages((prev) => [...prev, { role: parsed.role, text: parsed.text }]);
+        return;
+      }
+      // Fell through all discriminators — log at debug so we can
+      // spot unknown payloads during dev without spamming prod.
+      console.debug("Unrecognized data-channel payload", parsed);
     } catch {
-      // ignore non-JSON data messages
+      // JSON parse failed — likely a non-JSON binary message. Drop
+      // silently; the protocol expects JSON text payloads here.
     }
   });
 
@@ -307,6 +365,25 @@ function CallView({ onEnd, identity, ttsEngine, voice }: CallViewProps) {
       <div style={{ width: 240, height: 120, margin: "0 auto 1rem" }}>
         <BarVisualizer state={state} trackRef={audioTrack} barCount={12} />
       </div>
+      {sessionError && (
+        <div
+          className={`session-error session-error-${sessionError.fatal ? "fatal" : "soft"}`}
+          role="alert"
+        >
+          <span className="session-error-label">
+            {sessionError.fatal ? "Сессия прервана" : "Ошибка синтеза"}
+          </span>
+          <span className="session-error-text">{sessionError.error}</span>
+          <button
+            type="button"
+            className="session-error-dismiss"
+            aria-label="Скрыть ошибку"
+            onClick={() => setSessionError(null)}
+          >
+            ×
+          </button>
+        </div>
+      )}
       <div className="transcript" ref={scrollRef}>
         {messages.map((m, i) => (
           <div key={i} className={`msg msg-${m.role}`}>
