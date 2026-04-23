@@ -757,6 +757,28 @@ class TestParticipantLeftTeardown:
         # Must not raise, must return within the short timeout.
         asyncio.run(handlers["on_participant_left"](None, "user-hang", "CLIENT_INITIATED"))
 
+    def test_on_participant_left_suppresses_double_cancel(self, monkeypatch):
+        """If participant_left fires twice in rapid succession (caller
+        disconnect + operator DELETE both triggering LiveKit events),
+        task.cancel must only be invoked once. Pipecat's own re-entry
+        guard has a narrow window between "cancel started" and
+        "_finished=True" where both invocations would slip through —
+        we close that locally.
+        """
+        import asyncio  # noqa: PLC0415
+
+        fake_task, handlers = self._run_pipeline_with_fakes(monkeypatch, "room-dup")
+
+        # First participant_left fires normally.
+        asyncio.run(handlers["on_participant_left"](None, "user-1", "CLIENT_INITIATED"))
+        # Second firing — should be a no-op.
+        asyncio.run(handlers["on_participant_left"](None, "user-2", "SERVER_KICKED"))
+
+        # Both invocations logged an interrupt-frame push (cheap, and
+        # the handler gives the user a final TTS abort) but cancel must
+        # have fired exactly once total.
+        fake_task.cancel.assert_awaited_once_with(reason="participant_left")
+
     def test_on_participant_left_handler_does_not_leak_cancel_exceptions(self, monkeypatch):
         """If a future Pipecat release changes task.cancel's signature
         or raises internally, we want the handler to still return so

@@ -194,6 +194,43 @@ if settings.cors_allowed_origins == ["*"]:
         "an explicit comma-separated list of origins."
     )
 
+
+def _warn_if_livekit_url_missing_in_non_local_env() -> None:
+    """Emit a startup warning when LIVEKIT_URL is unset outside dev.
+
+    LIVEKIT_URL is the server-side URL the API uses for RoomService calls
+    (today: delete_room on DELETE /v1/sessions/{room}). When unset, the
+    code falls back to ``livekit_public_url`` — which is correct for prod
+    deploys where both are the same routable hostname, but wrong for
+    docker-compose single-box and any deploy where the API container
+    cannot reach LiveKit via the public URL (typically the browser's
+    ``ws://localhost:7880`` port mapping). In that case, every DELETE
+    silently fails in ``_delete_livekit_room`` (swallowed best-effort) —
+    operators discover the problem only from support tickets about
+    zombie rooms. Warn loudly at startup so misconfigured non-local
+    deploys surface during boot instead of at the first hang-up click.
+
+    Extracted for testability — inline module-level checks are awkward
+    to exercise without module reload.
+    """
+    env = os.environ.get("ENV", "development")
+    if settings.livekit_url == "" and env != "development":
+        logger.warning(
+            "LIVEKIT_URL is not set and ENV=%s (non-development). DELETE "
+            "/v1/sessions/{room} will fall back to livekit_public_url=%s for "
+            "server-side RoomService calls. This is only correct if the API "
+            "container can actually reach LiveKit at that URL. Set LIVEKIT_URL "
+            "to the internal service hostname (e.g. ws://livekit:7880 for "
+            "docker-compose, http://livekit.svc.cluster.local:7880 for k8s). "
+            "Without a reachable URL every DELETE silently fails — zombie "
+            "rooms only fall out on LiveKit's own empty_timeout.",
+            env,
+            settings.livekit_public_url,
+        )
+
+
+_warn_if_livekit_url_missing_in_non_local_env()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_allowed_origins,

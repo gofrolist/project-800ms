@@ -153,6 +153,20 @@ async def _run_pipeline(room: str, overrides: PerSessionOverrides) -> None:
         )
         greeting = resolve_greeting(overrides.persona, overrides.effective_language)
 
+        # Guard against a double-cancel race: on_participant_left can fire
+        # twice in rapid succession when the caller disconnects and an
+        # operator DELETE lands nearly simultaneously (the DELETE triggers
+        # LiveKit delete_room, which in turn emits participant_left for
+        # both the caller and the agent bot). Pipecat's TaskManager.cancel
+        # is guarded by its own _finished flag but that flag is only set
+        # in run()'s finally — a short re-entry window exists where both
+        # invocations see _finished=False and both execute the cancel
+        # path, which at minimum duplicates work and at worst produces
+        # noisy logs / confusing traces. A local flag closes that window.
+        # nonlocal binding lets the nested handler mutate the captured
+        # variable on each call without the usual dict-shim dance.
+        cancel_fired = False
+
         @transport.event_handler("on_first_participant_joined")
         async def _on_join(_transport: object, participant_id: str) -> None:
             logger.info("Participant joined room={room}: {pid}", room=room, pid=participant_id)
@@ -181,7 +195,19 @@ async def _run_pipeline(room: str, overrides: PerSessionOverrides) -> None:
             # held — the exact leak this code is meant to prevent, just
             # under a different failure mode. 5s is generous for a clean
             # drain; if cleanup genuinely takes longer something is wedged.
+            nonlocal cancel_fired
             logger.info("Participant left room={room}: {pid}", room=room, pid=participant_id)
+            if cancel_fired:
+                # Second participant_left event for this pipeline — the
+                # cancel is already in flight. Skip to avoid Pipecat's
+                # narrow TaskManager.cancel re-entry window.
+                logger.debug(
+                    "on_participant_left re-entry for room={room} pid={pid} — skipping duplicate cancel",
+                    room=room,
+                    pid=participant_id,
+                )
+                return
+            cancel_fired = True
             await task.queue_frame(InterruptionTaskFrame())
             try:
                 await asyncio.wait_for(

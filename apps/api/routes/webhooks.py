@@ -6,9 +6,12 @@ the matching api-secret; the JWT's `sha` claim is the SHA-256 of the
 request body so the SDK's WebhookReceiver both authenticates the caller
 AND verifies body integrity.
 
-We only act on two events today:
-    room_started   — update sessions.status='active' + started_at
-    room_finished  — update sessions.status='ended'  + ended_at + audio_seconds
+We act on three events today:
+    room_started       — update sessions.status='active' + started_at
+    room_finished      — update sessions.status='ended'  + ended_at + audio_seconds
+    participant_joined — defensive remove_participant if the joiner's
+                         session is already at a terminal status, closing
+                         the DELETE-before-join ghost-room race
 
 Everything else is acknowledged with 204 (LiveKit retries on non-2xx).
 Unknown rooms are also 204 — someone could be using the same LiveKit
@@ -26,6 +29,7 @@ from __future__ import annotations
 import datetime
 import logging
 
+import aiohttp
 import jwt
 from fastapi import APIRouter, Depends, Header, Request, Response
 from livekit import api as lkapi
@@ -37,6 +41,24 @@ from errors import APIError
 from models import Session as SessionRow
 from rate_limit import enforce_webhook_ip_rate_limit
 from settings import settings
+
+# Statuses that mean the session is over. A participant joining a room
+# whose session is at any of these states is a ghost-join — the caller's
+# JWT is still valid but the pipeline has been torn down, so we kick the
+# participant immediately rather than let them sit in an empty room for
+# the token's remaining 15 minutes. Mirrors the terminal-status set in
+# apps/api/routes/sessions.py.
+_TERMINAL_SESSION_STATUSES: frozenset[str] = frozenset({"ended", "failed"})
+
+# Agent bot identity prefix from services/agent/main.py AGENT_IDENTITY.
+# participant_joined fires for both the caller AND the agent; the agent
+# joining a room whose session is 'active' (i.e. the normal lifecycle)
+# must NOT be kicked, obviously, but the agent joining a room whose
+# session already flipped to 'ended' (because DELETE raced the agent
+# dispatch) also must not be kicked — the agent's own on_participant_left
+# hook fires as soon as the caller leaves and takes care of teardown.
+# Use the identity prefix to identify the agent and skip the ghost-kick.
+_AGENT_IDENTITY_PREFIX = "agent-bot-"
 
 logger = logging.getLogger("project-800ms.api.webhooks")
 
@@ -60,6 +82,42 @@ _TIMING_PARITY_DUMMY_JWT = jwt.encode(
     "x" * 32,  # deliberately wrong — verification will fail
     algorithm="HS256",
 )
+
+
+async def _remove_participant(room: str, identity: str) -> None:
+    """Best-effort kick of a participant from a LiveKit room.
+
+    Called when a participant_joined event fires for a session that is
+    already terminal (ended / failed) — closes the DELETE-before-join
+    race where the caller's JWT is still valid but the session is over.
+
+    Errors are logged and swallowed (same policy as
+    ``_delete_livekit_room`` in routes/sessions.py): a failure here
+    leaves the ghost caller in a now-empty room for up to the JWT's
+    15-minute TTL, which is annoying but not a correctness bug. The
+    alternative — propagating 5xx to LiveKit — would cause the webhook
+    to be retried, which is pointless since the participant is almost
+    certainly still there. Retries make the race worse, not better.
+    """
+    server_url = settings.livekit_url or settings.livekit_public_url
+    try:
+        async with lkapi.LiveKitAPI(
+            server_url,
+            settings.livekit_api_key,
+            settings.livekit_api_secret,
+            timeout=aiohttp.ClientTimeout(total=5),
+        ) as lk:
+            await lk.room.remove_participant(
+                lkapi.RoomParticipantIdentity(room=room, identity=identity)
+            )
+    except (aiohttp.ClientError, TimeoutError, OSError) as exc:
+        logger.warning(
+            "LiveKit remove_participant failed for room=%s identity=%s: %s. "
+            "Ghost participant will remain until JWT expires.",
+            room,
+            identity,
+            exc,
+        )
 
 
 @router.post(
@@ -173,9 +231,44 @@ async def livekit_webhook(
             session.audio_seconds,
         )
 
+    elif event.event == "participant_joined":
+        # Ghost-join defense: a participant joining a room whose session
+        # is already at a terminal status means the DELETE /v1/sessions
+        # call tore down the pipeline but the caller's JWT is still
+        # valid (15min TTL). LiveKit auto-creates an empty room on
+        # token-valid join — kick immediately so the caller sees a
+        # disconnect instead of sitting alone in silence.
+        #
+        # Skip the agent bot's own join (identity prefix agent-bot-*):
+        # during normal lifecycle the agent joins BEFORE the session
+        # flips to ended, so we shouldn't land here, but during a
+        # DELETE-vs-dispatch race the agent could arrive after the
+        # status flip and we'd be kicking it from its own cleanup path.
+        # Let the agent's on_participant_left auto-teardown handle it.
+        if session.status in _TERMINAL_SESSION_STATUSES and event.participant is not None:
+            identity = event.participant.identity
+            if identity.startswith(_AGENT_IDENTITY_PREFIX):
+                logger.info(
+                    "Ghost-join defense skipped for agent identity=%s room=%s status=%s",
+                    identity,
+                    room_name,
+                    session.status,
+                )
+            else:
+                logger.info(
+                    "Ghost-join detected: kicking participant identity=%s from "
+                    "room=%s tenant=%s (session.status=%s)",
+                    identity,
+                    room_name,
+                    session.tenant_id,
+                    session.status,
+                )
+                await _remove_participant(room_name, identity)
+        return Response(status_code=204)
+
     else:
-        # participant_joined, participant_left, track_published, etc. —
-        # not used today. Ack without DB writes.
+        # participant_left, track_published, etc. — not used today. Ack
+        # without DB writes.
         return Response(status_code=204)
 
     await db.commit()

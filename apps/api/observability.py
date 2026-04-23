@@ -141,6 +141,22 @@ http_request_duration_seconds = Histogram(
     buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
 )
 
+# LiveKit server-side API errors swallowed by ``_delete_livekit_room``.
+# Incremented every time the best-effort cleanup on DELETE /v1/sessions/{room}
+# sees an exception from the LiveKit SDK. The DB-side close still commits,
+# so these failures are invisible in HTTP metrics (the response is 200) —
+# this counter is the only signal a prolonged LiveKit outage is producing
+# zombie rooms. Alert: ``rate(api_livekit_delete_failures_total[5m]) > 0``
+# sustained over 10 minutes.
+#
+# Labeled by exception class so distinct failure modes (connect error vs
+# timeout vs OS error) are separable on the dashboard.
+livekit_delete_failures_total = Counter(
+    "api_livekit_delete_failures_total",
+    "Count of LiveKit delete_room calls that failed and were swallowed by _delete_livekit_room.",
+    ("exception_type",),
+)
+
 
 class PrometheusMiddleware(BaseHTTPMiddleware):
     """Observes every request into the counter + histogram."""

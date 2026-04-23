@@ -28,7 +28,7 @@ from auth import TenantIdentity
 from db import get_db
 from errors import APIError
 from models import Session as SessionRow
-from observability import room_var
+from observability import livekit_delete_failures_total, room_var
 from rate_limit import enforce_tenant_rate_limit
 from schemas import CreateSessionRequest, CreateSessionResponse, SessionDetails
 from settings import settings
@@ -148,6 +148,13 @@ async def _delete_livekit_room(room: str) -> None:
         # Network-level transient errors: log and continue. DB-side close
         # still commits; LiveKit will reclaim the room via empty_timeout
         # once the caller's browser disconnects.
+        #
+        # Increment a dedicated counter so operators can alert on
+        # sustained failures — the DB-side close succeeds, so these
+        # outages are invisible in HTTP response metrics (200s all the
+        # way down). Label with exception class so connect errors,
+        # timeouts, and OS errors are separable on the dashboard.
+        livekit_delete_failures_total.labels(exception_type=type(exc).__name__).inc()
         logger.warning(
             "LiveKit delete_room failed for room=%s: %s. "
             "Session will still be marked ended in the database.",

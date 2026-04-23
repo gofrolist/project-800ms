@@ -548,10 +548,23 @@ async def test_delete_session_survives_livekit_outage(
     the agent's own on_participant_left handler, and we don't want a
     transient LiveKit outage to block the caller's "hang up" — the room
     will fall out on LiveKit's own empty_timeout once the browser
-    disconnects."""
+    disconnects.
+
+    Also asserts the ``api_livekit_delete_failures_total`` counter
+    increments — it's the only ops signal that a sustained LiveKit
+    outage is producing zombie rooms, since the HTTP response is 200.
+    """
+    from observability import livekit_delete_failures_total  # noqa: PLC0415
+
     _tenant, raw_key = seed_tenant
     r = await client.post("/v1/sessions", headers={"X-API-Key": raw_key}, json={})
     room = r.json()["room"]
+
+    # Capture counter value before the failure path fires. Use the
+    # exception class the fixture is currently parameterized over so we
+    # read the exact series we expect to increment.
+    exc_type_name = type(livekit_down.room.delete_room.side_effect).__name__
+    before = livekit_delete_failures_total.labels(exception_type=exc_type_name)._value.get()
 
     d = await client.delete(f"/v1/sessions/{room}", headers={"X-API-Key": raw_key})
     assert d.status_code == 200, d.text
@@ -561,6 +574,10 @@ async def test_delete_session_survives_livekit_outage(
     row = (await db_session.execute(select(SessionRow).where(SessionRow.room == room))).scalar_one()
     assert row.status == "ended"
     assert row.ended_at is not None
+
+    # Counter incremented exactly once with the right exception_type label.
+    after = livekit_delete_failures_total.labels(exception_type=exc_type_name)._value.get()
+    assert after == before + 1
 
 
 async def test_delete_session_on_pending_returns_409(

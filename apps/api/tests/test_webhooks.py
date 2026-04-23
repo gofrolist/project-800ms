@@ -63,17 +63,34 @@ def _sign(body: str, *, secret: str | None = None) -> str:
     return jwt.encode(claims, secret or settings.livekit_api_secret, algorithm="HS256")
 
 
-def _event_body(event_type: str, room_name: str, *, creation_time: int | None = None) -> str:
-    """Build the JSON payload LiveKit would POST for this event."""
+def _event_body(
+    event_type: str,
+    room_name: str,
+    *,
+    creation_time: int | None = None,
+    participant_identity: str | None = None,
+) -> str:
+    """Build the JSON payload LiveKit would POST for this event.
+
+    ``participant_identity`` adds a participant block — LiveKit includes
+    it on participant_joined / participant_left / track_* events. Tests
+    for the ghost-join defense need to set this so the server sees the
+    joiner's identity.
+    """
     room: dict = {"name": room_name, "sid": "RM_test"}
     if creation_time is not None:
         room["creationTime"] = creation_time
-    payload = {
+    payload: dict = {
         "event": event_type,
         "room": room,
         "id": f"EV_{event_type}_{room_name}",
         "createdAt": int(datetime.datetime.now(datetime.UTC).timestamp()),
     }
+    if participant_identity is not None:
+        payload["participant"] = {
+            "sid": f"PA_{participant_identity}",
+            "identity": participant_identity,
+        }
     return json.dumps(payload)
 
 
@@ -251,6 +268,11 @@ async def test_unknown_room_is_silently_acked(client):
 
 
 async def test_unknown_event_type_is_ignored(client, db_session, seed_tenant):
+    """Events we don't specifically handle (participant_left,
+    track_published, egress events) are silently acked without any DB
+    write. participant_joined has its own specific handling — see the
+    ghost-join tests below.
+    """
     from models import ApiKey
 
     tenant, _ = seed_tenant
@@ -259,7 +281,7 @@ async def test_unknown_event_type_is_ignored(client, db_session, seed_tenant):
     ).scalar_one()
     session = await _insert_session(db_session, tenant, api_key.id, room="room-d")
 
-    body = _event_body("participant_joined", "room-d")
+    body = _event_body("track_published", "room-d")
     r = await client.post(
         "/v1/livekit-webhook",
         content=body,
@@ -268,6 +290,154 @@ async def test_unknown_event_type_is_ignored(client, db_session, seed_tenant):
     assert r.status_code == 204
 
     await db_session.refresh(session)
-    # status untouched — we don't act on participant_joined today.
+    # Status untouched — we don't act on track_published.
     assert session.status == "pending"
     assert session.started_at is None
+
+
+# ─── participant_joined ghost-join defense ──────────────────────────────────
+# Covers the DELETE-before-join race: POST returns a caller JWT with 15min
+# TTL, DELETE fires before the browser completes WebRTC, browser eventually
+# joins the (now-empty, LiveKit-recreated) room. The webhook handler must
+# kick the ghost caller so they see a disconnect instead of sitting alone.
+
+
+@pytest.fixture
+def livekit_remove_stub():
+    """Patch lkapi.LiveKitAPI so remove_participant calls can be asserted."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("routes.webhooks.lkapi.LiveKitAPI") as mock_lk_class:
+        mock_lk = AsyncMock()
+        mock_lk.__aenter__.return_value = mock_lk
+        mock_lk.__aexit__.return_value = None
+        mock_lk.room = AsyncMock()
+        mock_lk.room.remove_participant = AsyncMock(return_value=None)
+        mock_lk_class.return_value = mock_lk
+        yield mock_lk
+
+
+async def test_participant_joined_active_session_no_kick(
+    client, db_session, seed_tenant, livekit_remove_stub
+):
+    """Normal lifecycle: caller joins an active session — no kick."""
+    from models import ApiKey
+
+    tenant, _ = seed_tenant
+    api_key = (
+        await db_session.execute(select(ApiKey).where(ApiKey.tenant_id == tenant.id))
+    ).scalar_one()
+    await _insert_session(db_session, tenant, api_key.id, room="room-active", status="active")
+
+    body = _event_body("participant_joined", "room-active", participant_identity="user-xyz")
+    r = await client.post(
+        "/v1/livekit-webhook",
+        content=body,
+        headers={"Authorization": _sign(body), "Content-Type": "application/webhook+json"},
+    )
+    assert r.status_code == 204
+    livekit_remove_stub.room.remove_participant.assert_not_called()
+
+
+async def test_participant_joined_ended_session_kicks_caller(
+    client, db_session, seed_tenant, livekit_remove_stub
+):
+    """Ghost-join: caller's browser finishes WebRTC handshake after DELETE
+    has torn the session down. Kick them — otherwise they sit in an
+    empty room for the remaining JWT TTL (up to 15 minutes)."""
+    from models import ApiKey
+
+    tenant, _ = seed_tenant
+    api_key = (
+        await db_session.execute(select(ApiKey).where(ApiKey.tenant_id == tenant.id))
+    ).scalar_one()
+    await _insert_session(db_session, tenant, api_key.id, room="room-ghost", status="ended")
+
+    body = _event_body("participant_joined", "room-ghost", participant_identity="user-ghost")
+    r = await client.post(
+        "/v1/livekit-webhook",
+        content=body,
+        headers={"Authorization": _sign(body), "Content-Type": "application/webhook+json"},
+    )
+    assert r.status_code == 204
+    livekit_remove_stub.room.remove_participant.assert_called_once()
+    # Verify the RoomParticipantIdentity carries both the room name and
+    # the joining participant's identity — kicking the wrong identity
+    # (or no identity) in a multi-participant room would nuke the wrong
+    # person.
+    req = livekit_remove_stub.room.remove_participant.call_args.args[0]
+    assert req.room == "room-ghost"
+    assert req.identity == "user-ghost"
+
+
+async def test_participant_joined_failed_session_kicks_caller(
+    client, db_session, seed_tenant, livekit_remove_stub
+):
+    """Same ghost-join rule for status='failed' — the pipeline blew up
+    but the JWT is still valid. A caller joining now has no agent on
+    the other side; kick so the UI gets a definitive disconnect."""
+    from models import ApiKey
+
+    tenant, _ = seed_tenant
+    api_key = (
+        await db_session.execute(select(ApiKey).where(ApiKey.tenant_id == tenant.id))
+    ).scalar_one()
+    await _insert_session(db_session, tenant, api_key.id, room="room-failed", status="failed")
+
+    body = _event_body("participant_joined", "room-failed", participant_identity="user-fail")
+    r = await client.post(
+        "/v1/livekit-webhook",
+        content=body,
+        headers={"Authorization": _sign(body), "Content-Type": "application/webhook+json"},
+    )
+    assert r.status_code == 204
+    livekit_remove_stub.room.remove_participant.assert_called_once()
+
+
+async def test_participant_joined_agent_identity_not_kicked(
+    client, db_session, seed_tenant, livekit_remove_stub
+):
+    """If the agent bot joins after the session has already flipped to
+    ended (possible during a DELETE-vs-dispatch race), we must NOT
+    ghost-kick it — the agent's own on_participant_left handler takes
+    care of teardown. Kicking the agent would double-fire that
+    teardown path needlessly.
+    """
+    from models import ApiKey
+
+    tenant, _ = seed_tenant
+    api_key = (
+        await db_session.execute(select(ApiKey).where(ApiKey.tenant_id == tenant.id))
+    ).scalar_one()
+    await _insert_session(db_session, tenant, api_key.id, room="room-agent", status="ended")
+
+    body = _event_body(
+        "participant_joined",
+        "room-agent",
+        participant_identity="agent-bot-room-agent",
+    )
+    r = await client.post(
+        "/v1/livekit-webhook",
+        content=body,
+        headers={"Authorization": _sign(body), "Content-Type": "application/webhook+json"},
+    )
+    assert r.status_code == 204
+    livekit_remove_stub.room.remove_participant.assert_not_called()
+
+
+async def test_participant_joined_unknown_room_no_kick(client, livekit_remove_stub):
+    """Unknown room → silent 204, no kick attempt. Mirrors the
+    existing unknown-room policy: LiveKit may run rooms we didn't
+    mint, and we shouldn't mess with them."""
+    body = _event_body(
+        "participant_joined",
+        "room-does-not-exist",
+        participant_identity="some-user",
+    )
+    r = await client.post(
+        "/v1/livekit-webhook",
+        content=body,
+        headers={"Authorization": _sign(body), "Content-Type": "application/webhook+json"},
+    )
+    assert r.status_code == 204
+    livekit_remove_stub.room.remove_participant.assert_not_called()
