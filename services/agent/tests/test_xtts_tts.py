@@ -221,6 +221,11 @@ class TestLoadXtts:
         assert second is fake_tts
         # Single construction across two calls with the same name.
         assert tts_cls.call_count == 1
+        # Pin the XTTS v2 model-name argument so a regression that
+        # swaps the hard-coded string or changes the positional/keyword
+        # contract is caught here. The default argument on load_xtts()
+        # must match what the coqui-tts TTS() constructor expects.
+        tts_cls.assert_called_once_with("tts_models/multilingual/multi-dataset/xtts_v2")
 
     def test_second_load_with_different_name_raises(self, monkeypatch):
         import torch  # noqa: PLC0415
@@ -495,6 +500,10 @@ class TestRunTts:
         )
         fake_model_b.tts = fake_tts
 
+        from pipecat.frames.frames import TTSAudioRawFrame  # noqa: PLC0415
+
+        frames_by_ctx: dict[str, list[TTSAudioRawFrame]] = {}
+
         async def _race():
             async def _release_after_both_started():
                 await asyncio.sleep(0.02)
@@ -505,16 +514,31 @@ class TestRunTts:
             async def _collect(gen):
                 return [frame async for frame in gen]
 
-            await asyncio.gather(
+            results = await asyncio.gather(
                 _collect(svc_a.run_tts("a", context_id="ctx-a")),
                 _collect(svc_b.run_tts("b", context_id="ctx-b")),
             )
+            # Capture the frames so the assertions below can verify
+            # both calls actually produced audio. Without this, a bug
+            # that made both calls ErrorFrame before reaching the lock
+            # would leave max_in_flight=0 and pass the serialization
+            # check with a false sense of coverage.
+            frames_by_ctx["a"] = results[0]
+            frames_by_ctx["b"] = results[1]
 
         asyncio.run(_race())
 
         assert max_in_flight == 1, (
             f"expected serialized tts() calls, got max_in_flight={max_in_flight}"
         )
+        # Both calls must have produced at least one audio frame; if either
+        # bailed out with an ErrorFrame before the lock, max_in_flight would
+        # still be <= 1 and the serialization check alone would pass.
+        for ctx in ("a", "b"):
+            audio_frames = [f for f in frames_by_ctx[ctx] if isinstance(f, TTSAudioRawFrame)]
+            assert audio_frames, (
+                f"ctx-{ctx} produced no audio frames — lock test is not actually exercising synth"
+            )
 
 
 class TestInitValidation:

@@ -73,7 +73,10 @@ class CreateSessionRequest(BaseModel):
             "TTS engine for this session — one of 'piper', 'silero', 'qwen3', "
             "'xtts'. Falls back to the agent's TTS_ENGINE env default when "
             "omitted. Used by the demo site's engine selector to route each "
-            "session to a different backend without restarting the agent."
+            "session to a different backend without restarting the agent. "
+            "Note: 'xtts' uses Coqui XTTS v2 weights released under the "
+            "Coqui Public Model License (non-commercial); verify licensing "
+            "posture before enabling on paid deployments."
         ),
     )
 

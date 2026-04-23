@@ -11,18 +11,25 @@ import {
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const API_KEY = import.meta.env.VITE_API_KEY ?? "";
 
-type TtsEngine = "piper" | "silero" | "qwen3" | "xtts";
-
 interface VoiceOption {
   id: string;
   label: string;
 }
 
+// Non-empty tuple — `voices[0].id` is read unguarded at state init time.
+// Enforcing non-emptiness in the type means an engine with zero voices
+// fails to compile instead of throwing at App mount.
+type NonEmptyVoices = readonly [VoiceOption, ...VoiceOption[]];
+
 interface EngineDescriptor {
-  id: TtsEngine;
+  // id is not constrained to a specific union here — TtsEngine is
+  // derived from TTS_ENGINES below, so constraining here would be a
+  // circular dependency. The `satisfies` at the array site keeps the
+  // id values narrow during authoring.
+  id: string;
   label: string;
   sub: string;
-  voices: readonly VoiceOption[];
+  voices: NonEmptyVoices;
 }
 
 // Per-engine voice catalogs. Voice ids must match what the engine expects:
@@ -37,7 +44,11 @@ interface EngineDescriptor {
 //
 // Curated to a few options per engine so the dropdown stays scannable.
 // Add more here as you commission new voices on the backend.
-const TTS_ENGINES: readonly EngineDescriptor[] = [
+//
+// `satisfies` validates the shape without widening away the literal
+// types, so `TtsEngine` below can be inferred as the narrow string-
+// literal union of actual `id` values rather than `string`.
+const TTS_ENGINES = [
   {
     id: "piper",
     label: "Piper",
@@ -76,7 +87,13 @@ const TTS_ENGINES: readonly EngineDescriptor[] = [
     sub: "GPU · cloned",
     voices: [{ id: "clone:demo-ru", label: "Cloned voice" }],
   },
-] as const;
+] as const satisfies readonly EngineDescriptor[];
+
+// Single source of truth for the engine union: derived from the
+// narrow tuple that `as const` + `satisfies` preserves. Adding an entry
+// above automatically extends `TtsEngine`; removing one narrows it. No
+// second place to keep in sync.
+type TtsEngine = (typeof TTS_ENGINES)[number]["id"];
 
 interface Session {
   session_id: string;
@@ -145,11 +162,21 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   // One selected voice per engine. Initialized to each engine's first
   // voice so the dropdowns always have a sensible default.
+  //
+  // Built via reduce with an explicit accumulator type so TypeScript
+  // verifies completeness against TtsEngine. An Object.fromEntries +
+  // `as Record<TtsEngine, string>` cast would silently paper over a
+  // future engine added to the union but not to TTS_ENGINES; with
+  // TtsEngine now derived from TTS_ENGINES this is less likely, but the
+  // reduce pattern keeps the invariant visible at the call site.
   const [selectedVoice, setSelectedVoice] = useState<Record<TtsEngine, string>>(() =>
-    Object.fromEntries(TTS_ENGINES.map((e) => [e.id, e.voices[0].id])) as Record<
-      TtsEngine,
-      string
-    >,
+    TTS_ENGINES.reduce(
+      (acc, e) => {
+        acc[e.id] = e.voices[0].id;
+        return acc;
+      },
+      {} as Record<TtsEngine, string>,
+    ),
   );
 
   const startCall = useCallback(

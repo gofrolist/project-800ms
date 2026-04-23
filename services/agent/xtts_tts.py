@@ -43,15 +43,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from loguru import logger
 from pipecat.frames.frames import ErrorFrame, Frame
 from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TTSService
+
+from tts_utils import single_shot_audio_iterator
 
 # XTTS v2 emits 24 kHz natively (``tts_models/multilingual/multi-dataset/
 # xtts_v2`` output_sample_rate in the published config). 24 kHz matches
@@ -64,50 +67,64 @@ _XTTS_SAMPLE_RATE = 24_000
 # (matches Silero + WAV/CD convention).
 _INT16_SCALE = 32767
 
-# XTTS v2 supports 17 languages — mapping declared in
-# ``tts_models/multilingual/multi-dataset/xtts_v2`` config.
-# Keys here are lowercased meta.json values (``"Russian"`` → ``"russian"``
-# via str.lower().strip()) plus the XTTS code itself, so both
-# ``language: "Russian"`` and ``language: "ru"`` in a profile's meta.json
-# resolve to the same XTTS code. Anything not in this table falls back
-# to ``_DEFAULT_XTTS_LANGUAGE`` (Russian) — the demo's primary language.
-_XTTS_LANGUAGE_ALIASES: dict[str, str] = {
+# XTTS v2 supports 17 languages — the codes below are the canonical
+# forms accepted by the ``tts_models/multilingual/multi-dataset/xtts_v2``
+# config. Language lookup in ``_resolve_voice_profile`` is two-step:
+#   1. If the meta.json value is a human-readable alias (``"Russian"``
+#      → ``"russian"`` via str.lower().strip()), translate via
+#      ``_XTTS_LANGUAGE_NAME_TO_CODE``.
+#   2. Otherwise, if the value is already one of the 17 codes, pass
+#      through unchanged.
+#   3. Anything else falls back to ``_DEFAULT_XTTS_LANGUAGE``.
+# Splitting alias-vs-code-set this way keeps each language a single
+# entry in the alias table and lets the valid-code set be asserted
+# independently — the previous flat dict duplicated every code as its
+# own self-entry, making "adding a new language" a two-edit operation.
+_XTTS_LANGUAGE_NAME_TO_CODE: dict[str, str] = {
     "arabic": "ar",
-    "ar": "ar",
     "chinese": "zh-cn",
     "zh": "zh-cn",
-    "zh-cn": "zh-cn",
     "czech": "cs",
-    "cs": "cs",
     "dutch": "nl",
-    "nl": "nl",
     "english": "en",
-    "en": "en",
     "french": "fr",
-    "fr": "fr",
     "german": "de",
-    "de": "de",
     "hindi": "hi",
-    "hi": "hi",
     "hungarian": "hu",
-    "hu": "hu",
     "italian": "it",
-    "it": "it",
     "japanese": "ja",
-    "ja": "ja",
     "korean": "ko",
-    "ko": "ko",
     "polish": "pl",
-    "pl": "pl",
     "portuguese": "pt",
-    "pt": "pt",
     "russian": "ru",
-    "ru": "ru",
     "spanish": "es",
-    "es": "es",
     "turkish": "tr",
-    "tr": "tr",
 }
+
+# The 17-language canonical code set XTTS v2 accepts. Kept as a frozenset
+# (not derived from the alias dict values) so adding a new alias requires
+# confirming the target code is actually supported.
+_XTTS_VALID_CODES: frozenset[str] = frozenset(
+    {
+        "ar",
+        "cs",
+        "de",
+        "en",
+        "es",
+        "fr",
+        "hi",
+        "hu",
+        "it",
+        "ja",
+        "ko",
+        "nl",
+        "pl",
+        "pt",
+        "ru",
+        "tr",
+        "zh-cn",
+    }
+)
 
 # Primary language of this demo. Used when the profile's meta.json lacks
 # a ``language`` field or carries an unknown value. Picking the wrong
@@ -196,29 +213,28 @@ def _resolve_voice_profile(
         )
     ref_audio_path = profile_dir / ref_filename
     if not ref_audio_path.is_file():
-        raise ValueError(f"XTTS ref audio not found: {ref_audio_path}")
+        # Include the meta.json path so operators who forgot to set
+        # ``ref_audio_filename`` (implicit default "ref.wav") can see
+        # where to update vs. a genuinely missing audio file.
+        raise ValueError(
+            f"XTTS ref audio not found: {ref_audio_path}. "
+            f"Check 'ref_audio_filename' in {meta_path}."
+        )
 
     language_raw = meta.get("language", "")
     language_key = str(language_raw).lower().strip()
-    language_code = _XTTS_LANGUAGE_ALIASES.get(language_key, _DEFAULT_XTTS_LANGUAGE)
+    # Two-step resolution: alias → code → default. See the
+    # _XTTS_LANGUAGE_NAME_TO_CODE / _XTTS_VALID_CODES split above.
+    language_code = _XTTS_LANGUAGE_NAME_TO_CODE.get(
+        language_key,
+        language_key if language_key in _XTTS_VALID_CODES else _DEFAULT_XTTS_LANGUAGE,
+    )
 
     return _ResolvedProfile(
         profile_id=profile_id,
         ref_audio_path=ref_audio_path,
         language=language_code,
     )
-
-
-async def _single_shot_audio_iterator(pcm: bytes) -> AsyncIterator[bytes]:
-    """Wrap a complete PCM buffer as a one-yield async iterator.
-
-    Matches Silero's helper — ``_stream_audio_frames_from_iterator``
-    expects this shape for file-at-a-time TTS engines. The whole
-    utterance is synthesized off-thread into a single buffer, then fed
-    back as a one-element async iterator so the framing helper can chunk
-    it into ``TTSAudioRawFrame``\\s.
-    """
-    yield pcm
 
 
 class XTTSTTSService(TTSService):
@@ -238,7 +254,7 @@ class XTTSTTSService(TTSService):
         *,
         xtts_model: object | None = None,
         settings: XTTSSettings,
-        **kwargs,
+        **kwargs: Any,
     ):
         # Resolve the voice profile eagerly so a bad profile identifier
         # or missing ref audio fails at service construction time, not on
@@ -327,14 +343,21 @@ class XTTSTTSService(TTSService):
                     language=self._language,
                 )
 
-            # ``TTS.api.TTS.tts()`` returns either ``list[float]`` (most
-            # cases) or ``np.ndarray``; ``np.asarray`` handles both
-            # without copying the ndarray branch.
+            # ``TTS.api.TTS.tts()`` returns ``list[float]``, ``np.ndarray``,
+            # or — on GPU synth paths — a CUDA ``torch.Tensor``.
+            # ``np.asarray`` on a CUDA tensor raises ``TypeError: can't
+            # convert cuda tensor to numpy. Use .cpu() first`` which the
+            # broad ``except`` below would catch and redact as an opaque
+            # ErrorFrame. Duck-type on ``.detach`` (present on every
+            # ``torch.Tensor`` subclass, absent on list/ndarray) to route
+            # tensors through the correct conversion chain.
+            if hasattr(wav_out, "detach"):
+                wav_out = wav_out.detach().cpu().numpy()
             audio_np = np.asarray(wav_out, dtype=np.float32)
             pcm_bytes = (audio_np * _INT16_SCALE).astype(np.int16).tobytes()
 
             async for frame in self._stream_audio_frames_from_iterator(
-                _single_shot_audio_iterator(pcm_bytes),
+                single_shot_audio_iterator(pcm_bytes),
                 in_sample_rate=_XTTS_SAMPLE_RATE,
                 context_id=context_id,
             ):

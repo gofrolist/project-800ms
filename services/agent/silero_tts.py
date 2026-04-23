@@ -31,7 +31,7 @@ rationale; this is an accepted MVP limitation, not a bug.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
 import numpy as np
@@ -39,6 +39,8 @@ from loguru import logger
 from pipecat.frames.frames import ErrorFrame, Frame
 from pipecat.services.settings import TTSSettings
 from pipecat.services.tts_service import TTSService
+
+from tts_utils import single_shot_audio_iterator
 
 # Silero v5 ``v5_cis_base`` emits 24 kHz natively (also supports 8 kHz and
 # 48 kHz). 24 kHz matches LiveKit's transport expectation, so there's no
@@ -108,19 +110,6 @@ class SileroSettings:
     # languages will emit gibberish. The factory does not currently
     # route non-Russian traffic to this service.
     language: str = "ru"
-
-
-async def _single_shot_audio_iterator(pcm: bytes) -> AsyncIterator[bytes]:
-    """Wrap a complete PCM buffer as a one-yield async iterator.
-
-    This is the shape Pipecat's ``_stream_audio_frames_from_iterator``
-    expects for file-at-a-time TTS engines like Silero: the whole
-    utterance is synthesized off-thread into a single buffer, then
-    fed back as a one-element async iterator so the framing helper can
-    chunk it into ``TTSAudioRawFrame``\\s at the configured sample
-    rate.
-    """
-    yield pcm
 
 
 class SileroTTSService(TTSService):
@@ -245,7 +234,7 @@ class SileroTTSService(TTSService):
             pcm_bytes = (audio_np * _INT16_SCALE).astype(np.int16).tobytes()
 
             async for frame in self._stream_audio_frames_from_iterator(
-                _single_shot_audio_iterator(pcm_bytes),
+                single_shot_audio_iterator(pcm_bytes),
                 in_sample_rate=_SILERO_SAMPLE_RATE,
                 context_id=context_id,
             ):
