@@ -163,15 +163,31 @@ async def _delete_livekit_room(room: str) -> None:
         )
 
 
-async def _dispatch_agent(room: str, body: CreateSessionRequest) -> None:
+async def _dispatch_agent(
+    room: str,
+    body: CreateSessionRequest,
+    *,
+    tenant_id: str,
+    session_id: str,
+) -> None:
     """Tell the agent worker to spawn a pipeline for this room.
 
     Extra fields (persona, voice, language, llm_model, context) are sent
     today but the agent ignores anything beyond `room` until the Phase 1e
     pipeline changes land. Forward-compat safe — aiohttp's json.get drops
     unknown keys silently.
+
+    `tenant_id` + `session_id` are the pair the agent's KBRetrievalProcessor
+    needs to call the retriever (spec 002-helper-guide-npc). The retriever
+    FKs `retrieval_traces.session_id` back to `sessions.id`, so the same
+    UUID the API just wrote MUST reach the agent — if they drift, every
+    trace insert will fail with a foreign-key violation.
     """
-    payload: dict[str, object] = {"room": room}
+    payload: dict[str, object] = {
+        "room": room,
+        "tenant_id": tenant_id,
+        "session_id": session_id,
+    }
     if body.user_id is not None:
         payload["user_id"] = body.user_id
     if body.npc_id is not None:
@@ -263,7 +279,12 @@ async def create_session(
     await db.flush()
 
     try:
-        await _dispatch_agent(room, body)
+        await _dispatch_agent(
+            room,
+            body,
+            tenant_id=str(session.tenant_id),
+            session_id=str(session.id),
+        )
     except APIError:
         await db.rollback()
         raise

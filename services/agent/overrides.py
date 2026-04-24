@@ -67,6 +67,14 @@ class PerSessionOverrides:
     user_id: str | None = None
     npc_id: str | None = None
     context: dict[str, Any] | None = None
+    # Tenant + sessions.id UUIDs — used by KBRetrievalProcessor to call
+    # the retriever with correct tenancy and to write `retrieval_traces`
+    # rows that FK-link to the owning session. Strings here (not UUID
+    # objects) so this dataclass stays cheap to construct / serialize;
+    # the processor parses at its boundary. Both None → retriever is
+    # disabled for the session (pass-through mode).
+    tenant_id: str | None = None
+    session_id: str | None = None
     # When set, selects the TTS engine for this session. Validated against
     # the same whitelist used by pipeline.AgentConfig; unknown or empty
     # values are dropped (fall back to cfg.tts_engine). This is how the
@@ -103,6 +111,8 @@ class PerSessionOverrides:
             npc_id=_as_str(body.get("npc_id")),
             context=_as_dict(body.get("context")),
             tts_engine=_as_tts_engine(body.get("tts_engine")),
+            tenant_id=_as_str(body.get("tenant_id")),
+            session_id=_as_str(body.get("session_id")),
         )
 
     @property
