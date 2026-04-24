@@ -91,7 +91,7 @@ pre-commit run --all-files  # ruff, gitleaks, file hygiene, actionlint
 
 ## Conventions
 
-- Commit format: `type(scope): description` — types: feat, fix, refactor, docs, test, chore, perf, ci. Scopes: api, agent, web, infra, ci.
+- Commit format: `type(scope): description` — types: feat, fix, refactor, docs, test, chore, perf, ci. Scopes: api, agent, web, infra, retriever, ci.
 - Python: type hints on all signatures, Pydantic for settings/validation, loguru with lazy `{name}` placeholders (not f-strings) for logger calls.
 - Docker images: multi-stage, non-root (UID 1001 `appuser`), BuildKit cache mounts for uv/pip.
 - Agent image split: `services/agent/Dockerfile.base` carries CUDA + Python deps (rebuilt only when `pyproject.toml` / `uv.lock` change); `services/agent/Dockerfile` is a thin `FROM ${BASE_IMAGE}` + `COPY . /app` layer on top. Model weights are NOT baked — the `hf_cache_agent` named volume persists HF downloads across restarts.

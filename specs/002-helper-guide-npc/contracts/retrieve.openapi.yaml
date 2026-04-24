@@ -69,6 +69,10 @@ paths:
       responses:
         '200':
           description: Process up
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthzResponse'
 
   /ready:
     get:
@@ -77,13 +81,21 @@ paths:
       description: |
         Returns 200 iff the embedder is preloaded, DB connection pool is
         reachable, and the rewriter LLM endpoint answered a hello ping within
-        the last 30 s. Used by Compose healthcheck with `start_period: 300s`
+        the last 30 s. Used by Compose healthcheck with `start_period: 600s`
         (BGE-M3 weight download on cold start).
       responses:
         '200':
           description: Fully ready to serve /retrieve
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
         '503':
           description: One or more dependencies not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
 
 components:
   schemas:
@@ -147,7 +159,7 @@ components:
 
     RetrieveResponse:
       type: object
-      required: [rewritten_query, in_scope, chunks, stage_timings_ms]
+      required: [rewritten_query, in_scope, chunks, stage_timings_ms, trace_id]
       properties:
         rewritten_query:
           type: string
@@ -165,7 +177,9 @@ components:
         trace_id:
           type: string
           format: uuid
-          description: UUID of the retrieval_traces row written for this turn.
+          description: |
+            UUID of the retrieval_traces row written for this turn. Always
+            present on success (every turn produces a trace row).
 
     RetrievedChunk:
       type: object
@@ -218,6 +232,35 @@ components:
           description: |
             End-to-end wall clock for this `/retrieve` call. Invariant:
             total ≈ rewrite + (embed + sql) + pad ± 1.
+
+    HealthzResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+
+    ReadyResponse:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        checks:
+          type: object
+          required: [embedder, db, rewriter]
+          properties:
+            embedder:
+              type: boolean
+              description: BGE-M3 singleton loaded and ready to encode.
+            db:
+              type: boolean
+              description: DB pool served `SELECT 1` within the probe budget.
+            rewriter:
+              type: boolean
+              description: Rewriter LLM answered a trivial ping (cached 30s).
 
     Error:
       type: object

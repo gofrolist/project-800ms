@@ -119,3 +119,14 @@ repos:
         files: ^apps/api/.*\.py$
         pass_filenames: false
         stages: [pre-push]
+      - id: pytest-retriever
+        name: pytest services/retriever
+        # Slow tests (integration tests that spin pgvector/pgvector:pg16
+        # containers via testcontainers) are deselected here — devs would
+        # otherwise --no-verify around a 30-second pre-push. CI runs the
+        # full suite (including -m slow) against a service container.
+        entry: bash -c 'cd services/retriever && uv run pytest -q -m "not slow"'
+        language: system
+        files: ^services/retriever/.*\.py$
+        pass_filenames: false
+        stages: [pre-push]

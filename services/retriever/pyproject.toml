@@ -1,0 +1,79 @@
+[project]
+name = "project-800ms-retriever"
+version = "0.1.0"
+description = "KB-grounded Helper/Guide NPC retriever (hybrid pgvector + Russian tsvector)"
+requires-python = "==3.12.*"
+dependencies = [
+    # HTTP surface — matches apps/api's FastAPI/Uvicorn pin to keep ops surface small.
+    "fastapi==0.136.0",
+    "uvicorn[standard]==0.45.0",
+    "pydantic-settings==2.14.0",
+    # SQLAlchemy 2.0 async + asyncpg + pgvector-python mirrors apps/api's stack.
+    # pgvector-python plugs vector(n) column types into SQLAlchemy so typed ORM
+    # survives the pgvector extension.
+    "sqlalchemy[asyncio]>=2.0.49",
+    "asyncpg==0.31.0",
+    "pgvector>=0.3.6",
+    # Alembic is pulled as a dev dep here even though migrations live in
+    # apps/api/migrations/ — the retriever runs `alembic upgrade head`
+    # against its test containers and reads the same versions/ dir.
+    "alembic==1.18.4",
+    # BGE-M3 embedder — 1024-dim multilingual dense embeddings with strong
+    # Russian retrieval on ruMTEB. No prefix discipline (unlike
+    # multilingual-e5-large), so ingestion and query paths can't silently
+    # desync. See specs/002-helper-guide-npc/research.md R1.
+    #
+    # Loaded via `sentence-transformers` directly — we only need dense
+    # vectors in v1. If sparse / multi-vector retrieval is adopted later
+    # (a deferred research survivor), `FlagEmbedding` becomes the natural
+    # add since BAAI ships it with that tri-output API.
+    "sentence-transformers>=3.3,<5.0",
+    # Internal HTTP (agent → retriever, retriever → LLM rewriter).
+    "httpx>=0.28.1",
+    # Structured logging — matches the agent + apps/api choice.
+    "loguru==0.7.3",
+    # retrieval_traces + kb_chunks JSONB handling uses orjson for speed;
+    # stdlib json is fine too. Pinning a single encoder keeps rewriter-JSON
+    # parse behavior consistent across platforms.
+    "orjson>=3.10",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.0.3",
+    "pytest-asyncio==1.3.0",
+    "pytest-cov==7.1.0",
+    # testcontainers with the pgvector/pgvector:pg16 image — real Postgres +
+    # pgvector in integration tests, never a mock (constitution Principle II).
+    # testcontainers 4.x ships the postgres module in the base install; no
+    # extra is needed (or exists — [postgres]/[postgresql] both warn).
+    "testcontainers>=4.14,<5",
+    # Mock httpx responses for rewriter LLM tests.
+    "respx>=0.21",
+    # Validate the /retrieve response against contracts/retrieve.openapi.yaml.
+    "openapi-spec-validator>=0.7",
+]
+
+[tool.uv]
+# We deploy to linux x86_64 (Docker). macOS dev boxes still resolve wheels
+# on the fly via `uv sync`.
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".venv", "tests/.pytest_cache"]
+
+[tool.ruff.format]
+# Defaults are fine; this section makes the contract explicit and lets
+# `ruff format --check .` catch drift in CI.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+asyncio_mode = "auto"
+markers = [
+    "slow: tests that spin up Postgres testcontainers (skipped in quick runs)",
+]
