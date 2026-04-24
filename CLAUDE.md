@@ -91,7 +91,7 @@ pre-commit run --all-files  # ruff, gitleaks, file hygiene, actionlint
 
 ## Conventions
 
-- Commit format: `type(scope): description` — types: feat, fix, refactor, docs, test, chore, perf, ci. Scopes: api, agent, web, infra, ci.
+- Commit format: `type(scope): description` — types: feat, fix, refactor, docs, test, chore, perf, ci. Scopes: api, agent, web, infra, retriever, ci.
 - Python: type hints on all signatures, Pydantic for settings/validation, loguru with lazy `{name}` placeholders (not f-strings) for logger calls.
 - Docker images: multi-stage, non-root (UID 1001 `appuser`), BuildKit cache mounts for uv/pip.
 - Agent image split: `services/agent/Dockerfile.base` carries CUDA + Python deps (rebuilt only when `pyproject.toml` / `uv.lock` change); `services/agent/Dockerfile` is a thin `FROM ${BASE_IMAGE}` + `COPY . /app` layer on top. Model weights are NOT baked — the `hf_cache_agent` named volume persists HF downloads across restarts.
@@ -100,3 +100,20 @@ pre-commit run --all-files  # ruff, gitleaks, file hygiene, actionlint
 ## Documented Solutions
 
 `docs/solutions/` — solutions to past problems (security issues, build errors, runtime issues, best practices), organized by category with YAML frontmatter (`title`, `module`, `tags`, `problem_type`). Relevant when implementing or debugging in documented areas.
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan:
+[specs/002-helper-guide-npc/plan.md](specs/002-helper-guide-npc/plan.md)
+
+Companion artifacts in the same directory:
+- [spec.md](specs/002-helper-guide-npc/spec.md) — feature requirements
+- [research.md](specs/002-helper-guide-npc/research.md) — resolved technical decisions
+- [data-model.md](specs/002-helper-guide-npc/data-model.md) — schema and state transitions
+- [contracts/](specs/002-helper-guide-npc/contracts/) — retriever API + ingestion CLI
+- [quickstart.md](specs/002-helper-guide-npc/quickstart.md) — dev bring-up
+
+Constitution: [.specify/memory/constitution.md](.specify/memory/constitution.md) — v1.0.0.
+Prior feature: [specs/001-voice-assistant-core/spec.md](specs/001-voice-assistant-core/spec.md)
+(voice platform; this feature depends on it).
+<!-- SPECKIT END -->

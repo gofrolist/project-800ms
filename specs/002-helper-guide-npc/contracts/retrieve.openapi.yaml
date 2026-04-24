@@ -1,0 +1,291 @@
+openapi: 3.0.3
+info:
+  title: Retriever Service — Helper/Guide NPC
+  version: 0.1.0
+  description: |
+    Internal HTTP surface exposed by `services/retriever` on port 8002.
+    Called from `services/agent` (Pipecat KBRetrievalProcessor). NOT exposed
+    to the public internet. No caller authentication in v1 — the retriever
+    binds to the internal Docker network; Compose does not publish :8002
+    to the host. Defense-in-depth: every request MUST carry `tenant_id`,
+    and the retriever refuses if the tenant id is missing or malformed.
+
+servers:
+  - url: http://retriever:8002
+    description: Internal Docker Compose network
+
+paths:
+  /retrieve:
+    post:
+      operationId: retrieve
+      summary: Rewrite, classify scope, and retrieve KB context for one turn
+      description: |
+        Called once per final TranscriptionFrame. Does three things in order:
+          1. LLM call: rewrite raw transcript into a standalone Russian query;
+             classify `in_scope` (game-help) vs `out_of_scope`.
+          2. If in_scope: embed rewritten query (BGE-M3); run hybrid SQL
+             (pgvector cosine + `ts_rank_cd` on Russian tsvector; weighted
+             sum 0.7/0.3); return top-K chunks.
+          3. Write a retrieval_trace row.
+          4. If out_of_scope: skip retrieval; pad response with the tenant's
+             rolling p50 retrieval-SQL latency (timing-channel parity, SC-008);
+             return `chunks: []`.
+        Latency SLO (p95): ≤ 500 ms end-to-end in-scope; out-of-scope padded to
+        match.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetrieveRequest'
+      responses:
+        '200':
+          description: Retrieval complete (including out-of-scope refusal path)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetrieveResponse'
+        '400':
+          description: Malformed request (missing tenant_id, bad schema, empty transcript)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: |
+            Dependency unavailable (DB down, embedder failed, rewriter LLM
+            timed out). Agent's KBRetrievalProcessor interprets this as
+            fail-closed → refusal path (FR-008 / FR-022).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness probe
+      description: Returns 200 iff the process is up; does not check dependencies.
+      responses:
+        '200':
+          description: Process up
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthzResponse'
+
+  /ready:
+    get:
+      operationId: ready
+      summary: Readiness probe
+      description: |
+        Returns 200 iff the embedder is preloaded, DB connection pool is
+        reachable, and the rewriter LLM endpoint answered a hello ping within
+        the last 30 s. Used by Compose healthcheck with `start_period: 600s`
+        (BGE-M3 weight download on cold start).
+      responses:
+        '200':
+          description: Fully ready to serve /retrieve
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+        '503':
+          description: One or more dependencies not ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+
+components:
+  schemas:
+    RetrieveRequest:
+      type: object
+      required: [tenant_id, session_id, turn_id, transcript]
+      properties:
+        tenant_id:
+          type: string
+          format: uuid
+          description: Must match a valid tenant in the `tenants` table.
+        session_id:
+          type: string
+          format: uuid
+          description: LiveKit/voice session identifier.
+        turn_id:
+          type: string
+          description: |
+            Monotonic identifier within a session. Agent assigns; retriever
+            echoes into retrieval_traces. Enables barge-in discard on the
+            agent side (FR-018).
+          minLength: 1
+          maxLength: 64
+        npc_id:
+          type: string
+          description: Persona binding. v1 only accepts `"helper_guide"`.
+          enum: [helper_guide]
+          default: helper_guide
+        language:
+          type: string
+          description: Locale. v1 only accepts `"ru"`.
+          enum: [ru]
+          default: ru
+        transcript:
+          type: string
+          description: Raw finalized user transcript from GigaAM STT.
+          minLength: 1
+          maxLength: 4000
+        history:
+          type: array
+          description: |
+            Bounded conversation history for follow-up resolution (R6).
+            Up to last 3 user + 3 assistant turns; older turns ignored.
+          maxItems: 6
+          items:
+            type: object
+            required: [role, text]
+            properties:
+              role:
+                type: string
+                enum: [user, assistant]
+              text:
+                type: string
+                maxLength: 4000
+        top_k:
+          type: integer
+          description: Number of chunks to return on the in-scope branch.
+          default: 5
+          minimum: 1
+          maximum: 20
+
+    RetrieveResponse:
+      type: object
+      required: [rewritten_query, in_scope, chunks, stage_timings_ms, trace_id]
+      properties:
+        rewritten_query:
+          type: string
+          nullable: true
+          description: Null on rewriter failure (then in_scope=false, fail-closed).
+        in_scope:
+          type: boolean
+        chunks:
+          type: array
+          description: Empty when in_scope=false.
+          items:
+            $ref: '#/components/schemas/RetrievedChunk'
+        stage_timings_ms:
+          $ref: '#/components/schemas/StageTimings'
+        trace_id:
+          type: string
+          format: uuid
+          description: |
+            UUID of the retrieval_traces row written for this turn. Always
+            present on success (every turn produces a trace row).
+
+    RetrievedChunk:
+      type: object
+      required: [id, title, content, score]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: kb_chunks.id
+        title:
+          type: string
+        content:
+          type: string
+        score:
+          type: number
+          description: Final fused score (0.7·semantic + 0.3·lexical).
+        fusion_components:
+          type: object
+          required: [semantic, lexical]
+          properties:
+            semantic:
+              type: number
+              description: 1 - cosine distance, bounded [0, 1]
+            lexical:
+              type: number
+              description: ts_rank_cd raw score
+        metadata:
+          type: object
+          description: JSONB metadata from kb_chunks.metadata (prices, commands, etc.)
+          additionalProperties: true
+
+    StageTimings:
+      type: object
+      required: [rewrite, total]
+      properties:
+        rewrite:
+          type: integer
+          description: Milliseconds spent in rewriter LLM call.
+        embed:
+          type: integer
+          description: Milliseconds spent in BGE-M3 encode (0 on out-of-scope).
+        sql:
+          type: integer
+          description: Milliseconds spent in hybrid SQL (0 on out-of-scope).
+        pad:
+          type: integer
+          description: Milliseconds of synthetic delay for timing parity (0 on in-scope).
+        total:
+          type: integer
+          description: |
+            End-to-end wall clock for this `/retrieve` call. Invariant:
+            total ≈ rewrite + (embed + sql) + pad ± 1.
+
+    HealthzResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+
+    ReadyResponse:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        checks:
+          type: object
+          required: [embedder, db, rewriter]
+          properties:
+            embedder:
+              type: boolean
+              description: BGE-M3 singleton loaded and ready to encode.
+            db:
+              type: boolean
+              description: DB pool served `SELECT 1` within the probe budget.
+            rewriter:
+              type: boolean
+              description: Rewriter LLM answered a trivial ping (cached 30s).
+
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          description: Short machine-readable error code.
+          enum:
+            - invalid_request
+            - unknown_tenant
+            - unsupported_npc
+            - unsupported_language
+            - rewriter_timeout
+            - rewriter_malformed_output
+            - embedder_unavailable
+            - db_unavailable
+            - internal_error
+        message:
+          type: string
+          description: Short human-readable summary. MUST NOT include KB content, transcript, or internal prompts.
+        trace_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Present if a retrieval_traces row was written before failure. Lets
+            the agent correlate the error with a persisted record.

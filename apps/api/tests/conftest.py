@@ -64,8 +64,11 @@ def postgres_url() -> str:
     from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
 
     # Use the image that ships in our own compose stack so dialect behavior
-    # matches prod exactly.
-    container = PostgresContainer("postgres:18-alpine", driver="asyncpg")
+    # matches prod exactly. Migration 0004_kb_chunks issues
+    # `CREATE EXTENSION vector`, which requires the pgvector-bundled image
+    # — stock `postgres:18-alpine` does not ship the extension and
+    # `alembic upgrade head` would fail here.
+    container = PostgresContainer("pgvector/pgvector:pg18", driver="asyncpg")
     container.start()
     url = container.get_connection_url()
     # testcontainers returns postgresql+psycopg2:// by default on older
