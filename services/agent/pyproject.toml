@@ -42,6 +42,12 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest==9.0.3",
+    # Async test support + httpx transport mock — needed by the
+    # KBRetrievalProcessor tests (services/agent/tests/test_kb_retrieval.py).
+    # The processor is async and POSTs to the retriever via httpx; respx
+    # intercepts without a live network dependency.
+    "pytest-asyncio>=1.0,<2",
+    "respx>=0.21,<1",
 ]
 
 [tool.uv]
@@ -88,3 +94,6 @@ extend-exclude = [".venv", "tests/.pytest_cache"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+# Auto mode lets async tests be plain `async def test_*` without per-
+# test `@pytest.mark.asyncio`. Matches the retriever convention.
+asyncio_mode = "auto"
