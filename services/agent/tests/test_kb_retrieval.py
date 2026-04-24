@@ -135,6 +135,11 @@ async def test_in_scope_result_pushes_llm_messages_append_with_grounded_prompt(
     # The user message is the REWRITTEN query, not the raw transcript.
     assert msgs[-1]["role"] == "user"
     assert msgs[-1]["content"] == "как получить права"
+    # run_llm=True is LOAD-BEARING: pipecat's aggregator only invokes
+    # the LLM when this flag is truthy (see _handle_llm_messages_append
+    # in llm_response_universal.py). Without it the grounded context
+    # reaches memory but the LLM never fires — feature silently inert.
+    assert pushed_frames[0].run_llm is True
 
 
 @respx.mock
@@ -151,6 +156,9 @@ async def test_retriever_503_falls_back_to_refusal_without_crashing(processor, c
     # Refusal prompt, not grounded.
     msgs = pushed_frames[0].messages
     assert BASIC_REFUSAL_SYSTEM_PROMPT_RU.split(".")[0] in msgs[0]["content"]
+    # Refusal path must also trigger the LLM — otherwise the user hears
+    # nothing after an out-of-scope/error turn.
+    assert pushed_frames[0].run_llm is True
 
 
 @respx.mock
@@ -231,3 +239,32 @@ async def test_pass_through_mode_when_tenant_missing(captured, monkeypatch) -> N
     assert len(captured) == 1
     assert captured[0][0] is frame
     assert not proc.is_enabled
+    assert proc._disable_reason() == "tenant_id_missing"
+
+
+async def test_pass_through_mode_when_retriever_url_empty(captured, monkeypatch) -> None:
+    """Empty retriever_url must also route the processor to pass-through.
+
+    Regression guard for code-review finding P1 #3: the earlier sentinel
+    URL `http://disabled` combined with "is_enabled only checks
+    tenant/session" caused every turn to DNS-fail and hit the refusal
+    branch — the opposite of pass-through.
+    """
+    proc = KBRetrievalProcessor(
+        retriever_url="",
+        tenant_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+    )
+
+    async def _capture(frame, direction=FrameDirection.DOWNSTREAM):
+        captured.append((frame, direction))
+
+    monkeypatch.setattr(proc, "push_frame", _capture)
+    frame = _tx_frame("любой запрос")
+    await proc.process_frame(frame, FrameDirection.DOWNSTREAM)
+
+    # No retriever call, frame forwarded as-is (NOT routed to refusal).
+    assert len(captured) == 1
+    assert captured[0][0] is frame
+    assert not proc.is_enabled
+    assert proc._disable_reason() == "retriever_url_missing"

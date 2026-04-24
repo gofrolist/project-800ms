@@ -372,6 +372,170 @@ def test_contract_yaml_is_itself_a_valid_openapi_document() -> None:
     validate_spec(spec_dict)
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Pydantic validation → 400 invalid_request (not 422)
+# ─────────────────────────────────────────────────────────────────────
+
+
+@respx.mock
+async def test_pydantic_validation_failure_returns_400_invalid_request(
+    retriever_app: dict[str, Any],
+) -> None:
+    """Code-review finding P1 #7: Pydantic validation errors must land on
+    400 + {error: invalid_request, message} envelope, not FastAPI's
+    default 422 + {detail:[...]} shape. Verified by sending a missing
+    required field.
+    """
+    _mock_rewriter()
+    async with await _client(retriever_app["app"]) as client:
+        resp = await client.post(
+            "/retrieve",
+            json={
+                # missing tenant_id entirely
+                "session_id": str(retriever_app["session_id"]),
+                "turn_id": "t-1",
+                "transcript": "hi",
+            },
+        )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["error"] == "invalid_request"
+    assert "tenant_id" in body["message"]
+
+
+@respx.mock
+async def test_empty_transcript_returns_400_invalid_request(
+    retriever_app: dict[str, Any],
+) -> None:
+    _mock_rewriter()
+    async with await _client(retriever_app["app"]) as client:
+        resp = await client.post(
+            "/retrieve",
+            json={
+                "tenant_id": str(retriever_app["tenant_id"]),
+                "session_id": str(retriever_app["session_id"]),
+                "turn_id": "t-1",
+                "transcript": "",
+            },
+        )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"] == "invalid_request"
+
+
+@respx.mock
+async def test_top_k_out_of_bounds_returns_400_invalid_request(
+    retriever_app: dict[str, Any],
+) -> None:
+    _mock_rewriter()
+    async with await _client(retriever_app["app"]) as client:
+        resp = await client.post(
+            "/retrieve",
+            json={
+                "tenant_id": str(retriever_app["tenant_id"]),
+                "session_id": str(retriever_app["session_id"]),
+                "turn_id": "t-1",
+                "transcript": "hi",
+                "top_k": 999,
+            },
+        )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"] == "invalid_request"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Failure-path trace writes (P1 #4 + #5)
+# ─────────────────────────────────────────────────────────────────────
+
+
+async def _count_traces_for_session(dsn: str, session_id: uuid.UUID) -> list[dict]:
+    """Read all retrieval_traces rows for a given session, for test
+    assertions about failure-path forensics."""
+    engine = create_async_engine(dsn)
+    try:
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                text(
+                    "SELECT turn_id, in_scope, rewritten_query, error_class, "
+                    "stage_timings_ms FROM retrieval_traces "
+                    "WHERE session_id = :sid ORDER BY created_at"
+                ),
+                {"sid": session_id},
+            )
+            return [dict(row) for row in result.mappings()]
+    finally:
+        await engine.dispose()
+
+
+@respx.mock
+async def test_rewriter_timeout_returns_503_and_writes_error_trace(
+    retriever_app: dict[str, Any], pgvector_postgres
+) -> None:
+    """Code-review finding P1 #4: rewriter timeout must produce both
+    a 503 + rewriter_timeout envelope AND a retrieval_traces row with
+    error_class populated (FR-021). Previously neither happened: the
+    exception escaped before write_trace, and rewriter errors weren't
+    converted to the 503 envelope.
+    """
+    respx.post(_LLM_URL).mock(side_effect=httpx.ReadTimeout("slow"))
+    async with await _client(retriever_app["app"]) as client:
+        resp = await client.post(
+            "/retrieve",
+            json={
+                "tenant_id": str(retriever_app["tenant_id"]),
+                "session_id": str(retriever_app["session_id"]),
+                "turn_id": "t-timeout",
+                "transcript": "как получить права?",
+            },
+        )
+
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["error"] == "rewriter_timeout"
+
+    # Forensics row must exist for this turn with error_class populated.
+    dsn = pgvector_postgres.get_connection_url().replace("+psycopg2", "+asyncpg")
+    traces = await _count_traces_for_session(dsn, retriever_app["session_id"])
+    matches = [t for t in traces if t["turn_id"] == "t-timeout"]
+    assert len(matches) == 1, f"expected 1 trace row for t-timeout, got {matches}"
+    assert matches[0]["error_class"] == "rewriter_timeout"
+    # Rewriter stage time should be recorded even on timeout.
+    st = matches[0]["stage_timings_ms"]
+    assert "rewrite" in st
+    assert st["total"] == sum(v for k, v in st.items() if k != "total")
+
+
+@respx.mock
+async def test_embedder_failure_returns_503_embedder_unavailable(
+    retriever_app: dict[str, Any], monkeypatch
+) -> None:
+    """Code-review finding P1 #5: bare ValueError from the embedder
+    must be translated to the typed EmbedderUnavailable (503 +
+    envelope), not propagate as an untyped FastAPI 500.
+    """
+    _mock_rewriter(in_scope=True)
+
+    async def _bad_encode(text: str) -> list[float]:
+        raise ValueError("embedder shape mismatch: (768,) expected (1024,)")
+
+    # Patch at the module where retrieve.py imported it.
+    import retrieve
+
+    monkeypatch.setattr(retrieve, "encode", _bad_encode)
+
+    async with await _client(retriever_app["app"]) as client:
+        resp = await client.post(
+            "/retrieve",
+            json={
+                "tenant_id": str(retriever_app["tenant_id"]),
+                "session_id": str(retriever_app["session_id"]),
+                "turn_id": "t-embfail",
+                "transcript": "как получить права?",
+            },
+        )
+
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["error"] == "embedder_unavailable"
+
+
 @respx.mock
 async def test_response_shape_conforms_to_openapi_contract(
     retriever_app: dict[str, Any],
