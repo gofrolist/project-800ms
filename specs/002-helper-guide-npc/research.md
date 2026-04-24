@@ -66,7 +66,10 @@ ordered by `final_score DESC LIMIT 5`.
 ...)`, `plainto_tsquery('russian', ...)`).
 
 **Rationale**:
-- Ships with `postgres:18-alpine` — no image rebuild, no extension to manage.
+- The `russian` snowball text-search config ships with upstream Postgres
+  (including the `pgvector/pgvector:pg18` base image we deploy) — no image
+  rebuild, no extension to manage. The `vector` extension itself is NOT
+  part of stock Postgres; it comes from the `pgvector/pgvector` image.
 - Good enough for v1 against a curated KB; the eval harness will measure recall
   and we can swap if numbers fall short.
 - No new attack surface.
@@ -289,7 +292,7 @@ only ingestion.
 
 ## R12 — Testcontainers Postgres + pgvector for tests
 
-**Decision**: Use the `pgvector/pgvector:pg16` container image in
+**Decision**: Use the `pgvector/pgvector:pg18` container image in
 `testcontainers` for all integration tests that touch the schema. Run Alembic
 migrations against the fresh container per-test-module. No mocking of
 pgvector.

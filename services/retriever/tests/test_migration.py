@@ -1,7 +1,7 @@
 """Integration test for migration 0004_kb_chunks.
 
 Asserts that the Alembic migration introduced in this feature applies
-cleanly against a fresh `pgvector/pgvector:pg16` container, creates the
+cleanly against a fresh `pgvector/pgvector:pg18` container, creates the
 expected extensions, tables, and indexes (with the correct pgvector
 operator class on the HNSW index), and downgrades cleanly back to
 revision 0003.
@@ -76,7 +76,7 @@ def fresh_pgvector() -> Iterator[PostgresContainer]:
     migration up/down cycles in isolation."""
     try:
         container = PostgresContainer(
-            image="pgvector/pgvector:pg16",
+            image="pgvector/pgvector:pg18",
             username="voice",
             password="test",
             dbname="voice",

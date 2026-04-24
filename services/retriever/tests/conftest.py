@@ -1,7 +1,7 @@
 """Shared pytest fixtures for the retriever test suite.
 
 Per constitution Principle II, integration tests hit a real Postgres +
-pgvector instance rather than mocks. We spin up the `pgvector/pgvector:pg16`
+pgvector instance rather than mocks. We spin up the `pgvector/pgvector:pg18`
 image via `testcontainers[postgresql]`, apply the project's Alembic
 migrations once per session, and hand function-scoped rolled-back sessions
 to each test for isolation.
@@ -26,7 +26,7 @@ _API_DIR = _REPO_ROOT / "apps" / "api"
 
 @pytest.fixture(scope="session")
 def pgvector_postgres() -> Iterator[PostgresContainer]:
-    """Session-scoped pgvector/pgvector:pg16 container.
+    """Session-scoped pgvector/pgvector:pg18 container.
 
     Starts once per pytest session; every test re-uses it. The container
     is torn down on session exit. Skipped (via pytest.skip) if Docker
@@ -34,7 +34,7 @@ def pgvector_postgres() -> Iterator[PostgresContainer]:
     """
     try:
         container = PostgresContainer(
-            image="pgvector/pgvector:pg16",
+            image="pgvector/pgvector:pg18",
             username="voice",
             password="test",
             dbname="voice",

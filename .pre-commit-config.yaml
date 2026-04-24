@@ -121,7 +121,7 @@ repos:
         stages: [pre-push]
       - id: pytest-retriever
         name: pytest services/retriever
-        # Slow tests (integration tests that spin pgvector/pgvector:pg16
+        # Slow tests (integration tests that spin pgvector/pgvector:pg18
         # containers via testcontainers) are deselected here — devs would
         # otherwise --no-verify around a 30-second pre-push. CI runs the
         # full suite (including -m slow) against a service container.

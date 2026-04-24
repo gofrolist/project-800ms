@@ -43,7 +43,7 @@ dev = [
     "pytest==9.0.3",
     "pytest-asyncio==1.3.0",
     "pytest-cov==7.1.0",
-    # testcontainers with the pgvector/pgvector:pg16 image — real Postgres +
+    # testcontainers with the pgvector/pgvector:pg18 image — real Postgres +
     # pgvector in integration tests, never a mock (constitution Principle II).
     # testcontainers 4.x ships the postgres module in the base install; no
     # extra is needed (or exists — [postgres]/[postgresql] both warn).

@@ -53,7 +53,9 @@ trip). No speculative prefetch, no between-turn caching in v1 — those are defe
   `services/agent`).
 
 **Storage**:
-- PostgreSQL 18 (existing `postgres:18-alpine` in `infra/docker-compose.yml`).
+- PostgreSQL 18 via `pgvector/pgvector:pg18` in `infra/docker-compose.yml`
+  (swapped from stock `postgres:18-alpine` so the `vector` extension is
+  available for migration 0004_kb_chunks).
 - New extensions: `vector` (pgvector) and `pg_trgm`.
 - New tables: `kb_entries`, `kb_chunks`, `retrieval_traces`,
   `synthetic_questions` (optional, gated on eval-set measurement).

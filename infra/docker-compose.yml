@@ -70,7 +70,11 @@ services:
   # State
   # ─────────────────────────────────────────────────────────────────────────
   postgres:
-    image: postgres:18-alpine
+    # pgvector/pgvector:pg18 — upstream Postgres 18 with the `vector`
+    # extension preinstalled. Migration 0004_kb_chunks issues
+    # `CREATE EXTENSION vector` and will fail on stock `postgres:18-alpine`
+    # since the extension is not available to load.
+    image: pgvector/pgvector:pg18
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-voice}

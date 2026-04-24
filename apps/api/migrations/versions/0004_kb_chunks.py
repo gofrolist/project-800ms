@@ -17,9 +17,13 @@ Introduces the schema for KB-grounded Helper/Guide NPC answers:
 All entities are tenant-scoped. Every retrieval query MUST carry
 `WHERE tenant_id = $1` (constitution Principle IV; spec 002 FR-002).
 
-The vector extension ships with pgvector; pg_trgm is a standard Postgres
-contrib extension. Both are CREATE-ON-MISSING and do not touch any
-existing table, so this migration is safe on a live system.
+The `vector` extension is provided by the `pgvector/pgvector:pg18` base
+image (see infra/docker-compose.yml). It is NOT bundled with upstream
+Postgres — running this migration against stock `postgres:*` images will
+fail at `CREATE EXTENSION vector`. `pg_trgm` is a standard Postgres
+contrib extension bundled with upstream Postgres. Both statements are
+`CREATE ... IF NOT EXISTS` and do not touch any existing table, so this
+migration is safe on a live system.
 
 See specs/002-helper-guide-npc/data-model.md for field-level contracts.
 """
