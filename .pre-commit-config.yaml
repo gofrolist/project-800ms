@@ -125,7 +125,11 @@ repos:
         # containers via testcontainers) are deselected here — devs would
         # otherwise --no-verify around a 30-second pre-push. CI runs the
         # full suite (including -m slow) against a service container.
-        entry: bash -c 'cd services/retriever && uv run pytest -q -m "not slow"'
+        # Exit 5 = "no tests collected"; treated as pass because today
+        # every retriever test is slow-marked. Once Phase 3 lands
+        # non-slow unit tests the hook starts enforcing them without
+        # any config change.
+        entry: bash -c 'cd services/retriever && uv run pytest -q -m "not slow"; c=$?; [ $c -eq 0 ] || [ $c -eq 5 ]'
         language: system
         files: ^services/retriever/.*\.py$
         pass_filenames: false
