@@ -16,11 +16,13 @@ from loguru import logger
 from sqlalchemy import text
 
 import embedder
+import rewriter
 from config import get_settings
 from db import get_engine
 from errors import register_exception_handlers
 from health import router as health_router
 from logging_setup import configure_logging
+from retrieve import router as retrieve_router
 
 # Guard for `configure_logging` so repeat calls from `create_app()` in
 # tests don't stack loguru sinks. Flipped on first successful configure.
@@ -51,7 +53,18 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
             "lifespan.db_warmup_failed message={message}",
             message="DB not reachable at boot; /ready will report degraded",
         )
-    yield
+
+    # Initialize the shared rewriter httpx client so the first
+    # /retrieve turn doesn't pay DNS + TCP + TLS setup on the hot
+    # path (code-review finding P1 #8). Idempotent.
+    rewriter.init_client()
+
+    try:
+        yield
+    finally:
+        # Drain the rewriter client on shutdown so pending keep-alive
+        # connections release cleanly.
+        await rewriter.close_client()
 
 
 def create_app() -> FastAPI:
@@ -78,7 +91,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health_router)
-    # /retrieve is registered in Phase 3 (US1, task T027).
+    app.include_router(retrieve_router)
 
     register_exception_handlers(app)
 

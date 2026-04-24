@@ -1,0 +1,235 @@
+# Curated in-scope Russian eval set (T022).
+#
+# 50 questions, each tagged with the (kb_entry_key, section) it SHOULD
+# retrieve from. Sourced against `sample_kb.yaml` in the same directory.
+#
+# Question style is deliberately varied:
+#   - Direct keyword-match forms ("где купить оружие?")
+#   - Paraphrases with no shared stems ("как получить права" vs
+#     "как оформить водительское удостоверение?")
+#   - Colloquial / noisy-STT forms ("а сколько стоит эта ваша автошкола")
+#   - Follow-up-style (resolved by the rewriter against history in US3;
+#     for US1 they should still retrieve on surface form alone)
+#
+# SC-001 gates at ≥80 % top-3 recall against this set.
+
+questions:
+  # driving_license
+  - id: q001
+    query: Как получить водительские права?
+    expected_kb_entry_key: driving_license
+    expected_section: Получение
+  - id: q002
+    query: Где можно выучиться на права?
+    expected_kb_entry_key: driving_license
+    expected_section: Получение
+  - id: q003
+    query: Сколько стоит обучение в автошколе?
+    expected_kb_entry_key: driving_license
+    expected_section: Стоимость
+  - id: q004
+    query: Почём курс на водительские права?
+    expected_kb_entry_key: driving_license
+    expected_section: Стоимость
+  - id: q005
+    query: Из чего состоит экзамен на права?
+    expected_kb_entry_key: driving_license
+    expected_section: Экзамены
+  - id: q006
+    query: Сколько вопросов в теоретическом тесте на права?
+    expected_kb_entry_key: driving_license
+    expected_section: Экзамены
+
+  # vehicles
+  - id: q007
+    query: Сколько стоит грузовик?
+    expected_kb_entry_key: vehicles
+    expected_section: Цены
+  - id: q008
+    query: Цена спортивной машины Sultan RS?
+    expected_kb_entry_key: vehicles
+    expected_section: Цены
+  - id: q009
+    query: Можно ли арендовать автомобиль?
+    expected_kb_entry_key: vehicles
+    expected_section: Аренда
+  - id: q010
+    query: На сколько дней даётся аренда машины?
+    expected_kb_entry_key: vehicles
+    expected_section: Аренда
+  - id: q011
+    query: Зачем нужна страховка автомобиля?
+    expected_kb_entry_key: vehicles
+    expected_section: Страховка
+  - id: q012
+    query: Какой штраф за езду без страховки?
+    expected_kb_entry_key: vehicles
+    expected_section: Страховка
+
+  # housing
+  - id: q013
+    query: Сколько стоит однокомнатная квартира в центре?
+    expected_kb_entry_key: housing
+    expected_section: Квартиры
+  - id: q014
+    query: Можно ли снять жильё в аренду?
+    expected_kb_entry_key: housing
+    expected_section: Квартиры
+  - id: q015
+    query: Где продаются частные дома?
+    expected_kb_entry_key: housing
+    expected_section: Дома
+  - id: q016
+    query: Сколько машин можно поставить в гараже дома?
+    expected_kb_entry_key: housing
+    expected_section: Дома
+  - id: q017
+    query: Какой вес выдерживает личный шкаф?
+    expected_kb_entry_key: housing
+    expected_section: Хранилище
+  - id: q018
+    query: Могут ли другие игроки взломать мой шкаф?
+    expected_kb_entry_key: housing
+    expected_section: Хранилище
+
+  # jobs
+  - id: q019
+    query: Какие работы доступны новичкам без лицензии?
+    expected_kb_entry_key: jobs
+    expected_section: Стартовые
+  - id: q020
+    query: Сколько получает курьер в час?
+    expected_kb_entry_key: jobs
+    expected_section: Стартовые
+  - id: q021
+    query: С какого уровня можно стать полицейским?
+    expected_kb_entry_key: jobs
+    expected_section: Лицензированные
+  - id: q022
+    query: Какие профессии требуют лицензии?
+    expected_kb_entry_key: jobs
+    expected_section: Лицензированные
+  - id: q023
+    query: Какие уровни есть на фермерской работе?
+    expected_kb_entry_key: jobs
+    expected_section: Фермерство
+  - id: q024
+    query: Сколько платят на 10 уровне фермера?
+    expected_kb_entry_key: jobs
+    expected_section: Фермерство
+
+  # weapons
+  - id: q025
+    query: Сколько стоит лицензия на оружие?
+    expected_kb_entry_key: weapons
+    expected_section: Лицензия
+  - id: q026
+    query: С какого уровня можно получить оружейную лицензию?
+    expected_kb_entry_key: weapons
+    expected_section: Лицензия
+  - id: q027
+    query: Где купить оружие?
+    expected_kb_entry_key: weapons
+    expected_section: Покупка
+  - id: q028
+    query: Сколько стоит автомат?
+    expected_kb_entry_key: weapons
+    expected_section: Покупка
+  - id: q029
+    query: Сколько патронов можно иметь с собой?
+    expected_kb_entry_key: weapons
+    expected_section: Патроны
+  - id: q030
+    query: Цена пачки патронов к автомату?
+    expected_kb_entry_key: weapons
+    expected_section: Патроны
+
+  # clans
+  - id: q031
+    query: Как вступить в клан?
+    expected_kb_entry_key: clans
+    expected_section: Вступление
+  - id: q032
+    query: Могу ли я быть в двух кланах одновременно?
+    expected_kb_entry_key: clans
+    expected_section: Вступление
+  - id: q033
+    query: С какого уровня можно создать свой клан?
+    expected_kb_entry_key: clans
+    expected_section: Создание
+  - id: q034
+    query: Сколько денег нужно для создания клана?
+    expected_kb_entry_key: clans
+    expected_section: Создание
+  - id: q035
+    query: Когда проходят клановые войны?
+    expected_kb_entry_key: clans
+    expected_section: Войны
+  - id: q036
+    query: Сколько длится бой за территорию?
+    expected_kb_entry_key: clans
+    expected_section: Войны
+
+  # banking
+  - id: q037
+    query: Как открыть счёт в банке?
+    expected_kb_entry_key: banking
+    expected_section: Счёт
+  - id: q038
+    query: Какой максимальный перевод между игроками?
+    expected_kb_entry_key: banking
+    expected_section: Счёт
+  - id: q039
+    query: Как взять кредит?
+    expected_kb_entry_key: banking
+    expected_section: Кредит
+  - id: q040
+    query: Под какой процент выдают кредит?
+    expected_kb_entry_key: banking
+    expected_section: Кредит
+  - id: q041
+    query: На какой срок можно открыть депозит?
+    expected_kb_entry_key: banking
+    expected_section: Депозит
+  - id: q042
+    query: Потеряю ли я проценты при досрочном снятии вклада?
+    expected_kb_entry_key: banking
+    expected_section: Депозит
+
+  # medicine
+  - id: q043
+    query: Сколько стоит осмотр у врача?
+    expected_kb_entry_key: medicine
+    expected_section: Больница
+  - id: q044
+    query: Что продают в аптеке?
+    expected_kb_entry_key: medicine
+    expected_section: Аптека
+  - id: q045
+    query: Сколько здоровья восстанавливает аптечка?
+    expected_kb_entry_key: medicine
+    expected_section: Аптека
+
+  # casino
+  - id: q046
+    query: Какая максимальная ставка на слотах?
+    expected_kb_entry_key: casino
+    expected_section: Слоты
+  - id: q047
+    query: Во сколько открывается рулетка?
+    expected_kb_entry_key: casino
+    expected_section: Рулетка
+  - id: q048
+    query: С какого уровня пускают за покерный стол?
+    expected_kb_entry_key: casino
+    expected_section: Покер
+
+  # transport_public
+  - id: q049
+    query: Сколько стоит поездка на автобусе?
+    expected_kb_entry_key: transport_public
+    expected_section: Автобусы
+  - id: q050
+    query: Нужна ли лицензия для работы таксистом?
+    expected_kb_entry_key: transport_public
+    expected_section: Такси

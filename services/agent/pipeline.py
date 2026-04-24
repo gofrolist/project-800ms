@@ -15,6 +15,7 @@ different NPC speaking a different language.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.transports.livekit.transport import LiveKitParams, LiveKitTransport
 
 from gigaam_stt import GigaAMSettings, GigaAMSTTService
+from kb_retrieval import KBRetrievalProcessor
 from overrides import PerSessionOverrides, build_system_prompt
 from transcript import (
     AssistantTranscriptForwarder,
@@ -39,6 +41,30 @@ from transcript import (
 )
 from transcript_sink import TranscriptSink
 from tts_factory import build_tts_service
+
+
+def _parse_uuid(value: str | None) -> uuid.UUID | None:
+    """Tolerant UUID parser for dispatch-payload strings.
+
+    Returns None for None / empty / malformed input so the
+    KBRetrievalProcessor falls back to pass-through mode rather than
+    crashing the whole session on a single bad field. Malformed
+    non-empty values are logged once at boot (via the processor's
+    constructor) so ops can distinguish "configured off" from
+    "configured wrong".
+    """
+    if not value:
+        return None
+    try:
+        return uuid.UUID(value)
+    except (ValueError, TypeError):
+        from loguru import logger
+
+        logger.warning(
+            "pipeline.malformed_uuid_in_dispatch value_prefix={prefix}",
+            prefix=value[:8],
+        )
+        return None
 
 
 _VALID_TTS_ENGINES: frozenset[str] = frozenset({"piper", "silero", "qwen3", "xtts"})
@@ -96,6 +122,16 @@ class AgentConfig:
     # transcripts only (no DB persistence).
     api_base_url: str = ""
     agent_internal_token: str = ""
+    # Base URL of the retriever service (e.g. "http://retriever:8002").
+    # Empty disables the KBRetrievalProcessor — the pipeline reverts to
+    # raw transcript → aggregator → LLM behavior, matching pre-RAG
+    # sessions. Set via RETRIEVER_URL env in main.py.
+    retriever_url: str = ""
+    # Agent-side hard timeout on the /retrieve call. Bounds how long
+    # the pipeline can stall per turn if the retriever hangs. Larger
+    # than the retriever's own rewriter_timeout_ms so the retriever
+    # gets a chance to fail-closed to its refusal branch first.
+    retriever_timeout_ms: int = 2000
 
     def __post_init__(self) -> None:
         if self.tts_engine not in _VALID_TTS_ENGINES:
@@ -189,6 +225,26 @@ def build_task(
 
     user_transcript = UserTranscriptForwarder(transport, sink=sink)
     assistant_transcript = AssistantTranscriptForwarder(transport, sink=sink)
+
+    # KBRetrievalProcessor sits between user_transcript and user_agg so
+    # each finalized TranscriptionFrame hits /retrieve BEFORE the
+    # aggregator flushes to the LLM. The processor swallows the raw
+    # transcript and emits an LLMMessagesAppendFrame with grounded
+    # system prompt + retrieved context + rewritten query. When
+    # cfg.retriever_url is empty OR overrides lack tenant_id /
+    # session_id, the processor becomes a pass-through — the pipeline
+    # still works, just without RAG grounding.
+    kb_retrieval = KBRetrievalProcessor(
+        # Pass empty string when not configured; KBRetrievalProcessor's
+        # is_enabled property treats empty as pass-through. The earlier
+        # sentinel "http://disabled" caused every turn to DNS-fail and
+        # route to refusal rather than passing the transcript through
+        # unchanged (code-review finding P1 #3).
+        retriever_url=cfg.retriever_url,
+        tenant_id=_parse_uuid(overrides.tenant_id),
+        session_id=_parse_uuid(overrides.session_id),
+        timeout_ms=cfg.retriever_timeout_ms,
+    )
     # ErrorFrameForwarder sits AFTER the TTS service so that TTS synth
     # errors (missing voice profile, CUDA OOM, model-not-loaded) are
     # surfaced to the UI via the LiveKit data channel instead of the
@@ -207,6 +263,7 @@ def build_task(
             transport.input(),
             stt,
             user_transcript,
+            kb_retrieval,
             user_agg,
             llm,
             assistant_transcript,
