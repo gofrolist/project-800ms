@@ -84,11 +84,66 @@ class KBRetrievalProcessor(FrameProcessor):
         self._session_id = session_id
         self._timeout_ms = timeout_ms
         self._turn_counter = 0
+        # Shared httpx client reused across every turn — one DNS +
+        # TCP + TLS setup for the whole session instead of per turn.
+        # Initialized lazily in enabled mode; stays None in pass-
+        # through mode so we never pay for an unused pool.
+        # Code-review finding P1 #8.
+        self._client: httpx.AsyncClient | None = None
+
+        # Single mode evaluation at construction so the operator gets
+        # one log line instead of one-per-turn, and misconfiguration
+        # ("tenant_id set but retriever_url missing") is visible at boot.
+        if not self.is_enabled:
+            reason = self._disable_reason()
+            logger.warning(
+                "kb_retrieval.passthrough_mode reason={reason} "
+                "tenant_set={tenant_set} session_set={session_set} "
+                "retriever_url_set={url_set}",
+                reason=reason,
+                tenant_set=tenant_id is not None,
+                session_set=session_id is not None,
+                url_set=bool(self._retriever_url),
+            )
+        else:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self._timeout_ms / 1000, connect=1.0),
+            )
+
+    async def cleanup(self) -> None:
+        """Release the shared httpx client on pipeline teardown."""
+        await super().cleanup()
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     @property
     def is_enabled(self) -> bool:
-        """False when tenant_id or session_id is missing (pass-through mode)."""
-        return self._tenant_id is not None and self._session_id is not None
+        """False when any of retriever_url / tenant_id / session_id is missing.
+
+        Previously the check was tenant/session only — the processor
+        relied on a sentinel `http://disabled` retriever URL that would
+        DNS-fail and route every turn through the except-→-refusal
+        path. That contradicted the pass-through contract. Every leg
+        that makes the HTTP call unsafe must drop the processor to
+        pass-through so the raw TranscriptionFrame reaches the
+        aggregator unchanged.
+        """
+        return (
+            bool(self._retriever_url)
+            and self._tenant_id is not None
+            and self._session_id is not None
+        )
+
+    def _disable_reason(self) -> str:
+        """Human-readable reason for pass-through mode, for logs + tests."""
+        if not self._retriever_url:
+            return "retriever_url_missing"
+        if self._tenant_id is None:
+            return "tenant_id_missing"
+        if self._session_id is None:
+            return "session_id_missing"
+        return "enabled"
 
     async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
@@ -128,8 +183,18 @@ class KBRetrievalProcessor(FrameProcessor):
         # receive our composed messages instead; forwarding the raw
         # transcript here would give the LLM two user turns (raw +
         # rewritten), which confuses the grounded-answer contract.
+        #
+        # run_llm=True is LOAD-BEARING. Without it, pipecat's
+        # LLMContextAggregatorPair._handle_llm_messages_append only
+        # calls self.add_messages(...) and skips push_context_frame —
+        # meaning our composed context reaches memory but the LLM is
+        # never invoked. Combined with swallowing the transcript
+        # (which would have been the aggregator's normal trigger),
+        # the grounded-answer path becomes silently inert. See
+        # services/agent/.venv/…/pipecat/processors/aggregators/
+        # llm_response_universal.py:636-644.
         await self.push_frame(
-            LLMMessagesAppendFrame(messages=messages),
+            LLMMessagesAppendFrame(messages=messages, run_llm=True),
             direction,
         )
 
@@ -141,9 +206,10 @@ class KBRetrievalProcessor(FrameProcessor):
         non-2xx). Raises on transport / timeout so the caller's except
         handler logs it and falls back.
         """
-        # tenant_id / session_id are checked non-None by is_enabled.
+        # tenant_id / session_id / client are checked non-None by is_enabled.
         assert self._tenant_id is not None
         assert self._session_id is not None
+        assert self._client is not None
 
         payload = {
             "tenant_id": str(self._tenant_id),
@@ -151,13 +217,11 @@ class KBRetrievalProcessor(FrameProcessor):
             "turn_id": turn_id,
             "transcript": transcript,
         }
-        timeout = httpx.Timeout(self._timeout_ms / 1000, connect=1.0)
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                f"{self._retriever_url}/retrieve",
-                json=payload,
-            )
+        resp = await self._client.post(
+            f"{self._retriever_url}/retrieve",
+            json=payload,
+        )
 
         if resp.status_code != 200:
             logger.warning(

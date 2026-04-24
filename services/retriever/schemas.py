@@ -40,10 +40,15 @@ class RetrieveRequest(BaseModel):
     session_id: uuid.UUID
     turn_id: str = Field(min_length=1, max_length=64)
     transcript: str = Field(min_length=1, max_length=4000)
-    # Validated by the handler against a typed-error set (see module
-    # docstring for why these aren't `Literal` fields).
-    npc_id: str = Field(default="helper_guide", min_length=1, max_length=64)
-    language: str = Field(default="ru", min_length=2, max_length=8)
+    # npc_id + language are validated by the handler so unknown values
+    # surface as typed errors (UnsupportedNpc / UnsupportedLanguage,
+    # both 400 per the OpenAPI contract). Length-bound them loosely —
+    # a lower bound of 1 would force Pydantic to take over on empty
+    # strings with a 422 shape (and even with the validation handler
+    # translating 422 → 400 invalid_request, that's the wrong error
+    # code for a typed-enum violation). max_length is a safety cap.
+    npc_id: str = Field(default="helper_guide", max_length=64)
+    language: str = Field(default="ru", max_length=8)
     history: list[HistoryTurn] = Field(default_factory=list, max_length=6)
     top_k: int = Field(default=5, ge=1, le=20)
 

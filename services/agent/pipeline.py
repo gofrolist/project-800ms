@@ -48,13 +48,22 @@ def _parse_uuid(value: str | None) -> uuid.UUID | None:
 
     Returns None for None / empty / malformed input so the
     KBRetrievalProcessor falls back to pass-through mode rather than
-    crashing the whole session on a single bad field.
+    crashing the whole session on a single bad field. Malformed
+    non-empty values are logged once at boot (via the processor's
+    constructor) so ops can distinguish "configured off" from
+    "configured wrong".
     """
     if not value:
         return None
     try:
         return uuid.UUID(value)
     except (ValueError, TypeError):
+        from loguru import logger
+
+        logger.warning(
+            "pipeline.malformed_uuid_in_dispatch value_prefix={prefix}",
+            prefix=value[:8],
+        )
         return None
 
 
@@ -226,7 +235,12 @@ def build_task(
     # session_id, the processor becomes a pass-through — the pipeline
     # still works, just without RAG grounding.
     kb_retrieval = KBRetrievalProcessor(
-        retriever_url=cfg.retriever_url or "http://disabled",
+        # Pass empty string when not configured; KBRetrievalProcessor's
+        # is_enabled property treats empty as pass-through. The earlier
+        # sentinel "http://disabled" caused every turn to DNS-fail and
+        # route to refusal rather than passing the transcript through
+        # unchanged (code-review finding P1 #3).
+        retriever_url=cfg.retriever_url,
         tenant_id=_parse_uuid(overrides.tenant_id),
         session_id=_parse_uuid(overrides.session_id),
         timeout_ms=cfg.retriever_timeout_ms,

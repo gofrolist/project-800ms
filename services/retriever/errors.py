@@ -13,6 +13,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 
@@ -152,3 +153,29 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RetrieverError)
     async def _handle_retriever_error(_request: Request, exc: RetrieverError) -> JSONResponse:
         return JSONResponse(status_code=exc.http_status, content=exc.to_envelope())
+
+    @app.exception_handler(RequestValidationError)
+    async def _handle_validation_error(
+        _request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """Translate Pydantic validation failures to the Error envelope.
+
+        Without this handler FastAPI returns its default
+        ``422 {"detail": [...]}`` shape, which violates the OpenAPI
+        contract (only 200/400/503 are documented and the caller is
+        promised ``{error, message}``). We squash the pydantic detail
+        list into a compact message — the structure differs too much
+        from the contract to surface verbatim, and the message stays
+        PII-safe because pydantic echoes only the field path + rule
+        name, not the rejected value.
+        """
+        first = exc.errors()[0] if exc.errors() else None
+        if first is not None:
+            loc = ".".join(str(p) for p in first.get("loc", ()) if p != "body")
+            message = f"invalid_request: {loc}: {first.get('msg', 'invalid')}"
+        else:
+            message = "invalid_request"
+        return JSONResponse(
+            status_code=400,
+            content={"error": ErrorCode.INVALID_REQUEST.value, "message": message},
+        )

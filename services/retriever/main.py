@@ -16,6 +16,7 @@ from loguru import logger
 from sqlalchemy import text
 
 import embedder
+import rewriter
 from config import get_settings
 from db import get_engine
 from errors import register_exception_handlers
@@ -52,7 +53,18 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
             "lifespan.db_warmup_failed message={message}",
             message="DB not reachable at boot; /ready will report degraded",
         )
-    yield
+
+    # Initialize the shared rewriter httpx client so the first
+    # /retrieve turn doesn't pay DNS + TCP + TLS setup on the hot
+    # path (code-review finding P1 #8). Idempotent.
+    rewriter.init_client()
+
+    try:
+        yield
+    finally:
+        # Drain the rewriter client on shutdown so pending keep-alive
+        # connections release cleanly.
+        await rewriter.close_client()
 
 
 def create_app() -> FastAPI:

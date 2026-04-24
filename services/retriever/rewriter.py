@@ -29,6 +29,38 @@ from errors import RewriterMalformedOutput, RewriterTimeout
 
 REWRITER_VERSION = "rewriter-v1-2026-04-24"
 
+# Module-level client holder. Initialized from the FastAPI lifespan
+# (`init_client`) so every `/retrieve` turn reuses one keep-alive pool
+# instead of paying DNS + TCP + TLS per request — material for the
+# 500 ms retrieval SLO (code-review finding P1 #8).
+_client: httpx.AsyncClient | None = None
+
+
+def init_client() -> httpx.AsyncClient:
+    """Initialize the shared rewriter httpx client. Idempotent."""
+    global _client
+    if _client is None:
+        settings = get_settings()
+        _client = httpx.AsyncClient(
+            timeout=httpx.Timeout(settings.rewriter_timeout_ms / 1000, connect=1.0),
+        )
+    return _client
+
+
+async def close_client() -> None:
+    """Close the shared rewriter httpx client. Idempotent."""
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    """Return the shared client, lazily initializing if the lifespan
+    didn't run (e.g. import-time tests that bypass FastAPI)."""
+    return _client if _client is not None else init_client()
+
+
 # Most recent entries win. The rewriter only needs enough context to
 # resolve pronouns ("а сколько это стоит?") and recent referents; older
 # turns leak unrelated topic drift into the prompt. Matches R6.
@@ -121,10 +153,13 @@ async def rewrite_and_classify(
         "temperature": 0.0,
     }
 
-    timeout = httpx.Timeout(settings.rewriter_timeout_ms / 1000, connect=1.0)
+    # Shared client (FastAPI lifespan-scoped) keeps keep-alive pools
+    # warm across turns. The `settings.rewriter_timeout_ms` still
+    # bounds per-request wait — it's pinned at client construction
+    # and honored by httpx without a per-call override.
+    client = _get_client()
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, headers=headers, json=payload)
+        resp = await client.post(url, headers=headers, json=payload)
     except httpx.TimeoutException as exc:
         logger.warning("rewriter.timeout kind={kind}", kind=type(exc).__name__)
         raise RewriterTimeout() from exc
