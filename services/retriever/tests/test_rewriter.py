@@ -34,6 +34,11 @@ def _llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
     we can't forget it. The DB_URL / LIVEKIT_* envs still come from the
     outer test-runner command.
     """
+    # DB_URL is required by Settings validation even though rewriter
+    # tests never hit the DB. Set a placeholder so the fixture works
+    # under pre-push (which doesn't export these) as well as under
+    # interactive runs that do.
+    monkeypatch.setenv("DB_URL", "postgresql+asyncpg://placeholder/placeholder")
     monkeypatch.setenv("LLM_BASE_URL", _LLM_BASE)
     monkeypatch.setenv("LLM_API_KEY", "test-api-key")
     monkeypatch.setenv("REWRITER_MODEL", "default-model")
