@@ -70,7 +70,11 @@ services:
   # State
   # ─────────────────────────────────────────────────────────────────────────
   postgres:
-    image: postgres:18-alpine
+    # pgvector/pgvector:pg18 — upstream Postgres 18 with the `vector`
+    # extension preinstalled. Migration 0004_kb_chunks issues
+    # `CREATE EXTENSION vector` and will fail on stock `postgres:18-alpine`
+    # since the extension is not available to load.
+    image: pgvector/pgvector:pg18
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-voice}
@@ -445,10 +449,71 @@ services:
         condition: service_healthy
         required: false
 
+  # ─────────────────────────────────────────────────────────────────────────
+  # Retriever — KB-grounded Helper/Guide NPC.
+  #
+  # Called internally by the Pipecat agent's KBRetrievalProcessor on every
+  # finalized TranscriptionFrame. Runs the rewriter+classifier LLM call, the
+  # BGE-M3 embed, and the hybrid pgvector + tsvector SQL. Writes a
+  # retrieval_traces row per turn.
+  #
+  # NOT published to the host — reachable only on the internal docker
+  # network as `http://retriever:8002`. Defense-in-depth: every /retrieve
+  # request carries a tenant_id which the service validates against
+  # `tenants` in Postgres.
+  #
+  # Build order (local dev):
+  #   docker build -f services/retriever/Dockerfile.base \
+  #     -t project-800ms-retriever-base:local services/retriever/
+  #   docker compose -f infra/docker-compose.yml build retriever
+  #
+  # Cold start: BGE-M3 downloads ~2 GB into hf_cache_retriever on first run.
+  # healthcheck start_period covers this (300s).
+  # ─────────────────────────────────────────────────────────────────────────
+  retriever:
+    build:
+      context: ../services/retriever
+      args:
+        BASE_IMAGE: project-800ms-retriever-base:local
+    restart: unless-stopped
+    environment:
+      - DB_URL=postgresql+asyncpg://${POSTGRES_USER:-voice}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-voice}
+      - LLM_BASE_URL=${LLM_BASE_URL:?LLM_BASE_URL is required}
+      - LLM_API_KEY=${LLM_API_KEY:?LLM_API_KEY is required}
+      - REWRITER_MODEL=${REWRITER_MODEL:-${LLM_MODEL:-qwen-7b}}
+      - REWRITER_TIMEOUT_MS=${REWRITER_TIMEOUT_MS:-1500}
+      - EMBEDDER_DEVICE=${EMBEDDER_DEVICE:-cpu}
+      - LOG_LEVEL=${RETRIEVER_LOG_LEVEL:-INFO}
+      - HF_HOME=/home/appuser/.cache/huggingface
+      - HF_HUB_DOWNLOAD_TIMEOUT=600
+    volumes:
+      # Dedicated HF cache — per-service UID isolation. Don't share with
+      # hf_cache_agent (GigaAM) or hf_cache_vllm: different UIDs would
+      # leave cache files unwritable for the neighboring service.
+      - hf_cache_retriever:/home/appuser/.cache/huggingface
+    # NOT publishing any host port. The retriever is for internal consumption
+    # only. Operators needing to curl it from the host can use
+    # `docker compose exec retriever curl http://localhost:8002/ready`.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/ready').read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      # BGE-M3 (~2 GB) downloads into hf_cache_retriever on first run.
+      # 600s matches HF_HUB_DOWNLOAD_TIMEOUT in this service's env AND
+      # the agent's 600s start_period — a 300s window was prone to
+      # boot-loop the container on slow networks: partial cache → kill
+      # → re-download → kill. Warm restarts still finish in <60s.
+      start_period: 600s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   pg_data:
   hf_cache_vllm:
   hf_cache_agent:
   hf_cache_qwen3:
+  hf_cache_retriever:
   piper_voices:
   torch_cache_agent:
