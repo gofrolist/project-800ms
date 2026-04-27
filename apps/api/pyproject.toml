@@ -4,8 +4,8 @@ version = "0.1.0"
 description = "FastAPI control plane for the project-800ms voice assistant"
 requires-python = "==3.14.*"
 dependencies = [
-    "fastapi==0.136.0",
-    "uvicorn[standard]==0.45.0",
+    "fastapi==0.136.1",
+    "uvicorn[standard]==0.46.0",
     "pydantic-settings==2.14.0",
     "livekit-api==1.1.0",
     # Per-tenant rate limiting. See Phase 1 PRD — key_func resolves to
