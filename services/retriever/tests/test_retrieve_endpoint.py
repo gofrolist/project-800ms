@@ -456,19 +456,59 @@ async def test_retrieve_returns_503_when_internal_token_unset(
 
     config.get_settings.cache_clear()
 
-    _mock_rewriter()
-    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
-        resp = await client.post(
-            "/retrieve",
-            json={
-                "tenant_id": str(retriever_app["tenant_id"]),
-                "session_id": str(retriever_app["session_id"]),
-                "turn_id": "t-unconfig",
-                "transcript": "как получить права?",
-            },
-        )
-    assert resp.status_code == 503, resp.text
-    assert resp.json()["error"] == "retriever_unconfigured"
+    try:
+        _mock_rewriter()
+        async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
+            resp = await client.post(
+                "/retrieve",
+                json={
+                    "tenant_id": str(retriever_app["tenant_id"]),
+                    "session_id": str(retriever_app["session_id"]),
+                    "turn_id": "t-unconfig",
+                    "transcript": "как получить права?",
+                },
+            )
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["error"] == "retriever_unconfigured"
+    finally:
+        # Restore the cached Settings so subsequent tests don't see
+        # the empty token (review finding correctness-006 / adv-006).
+        config.get_settings.cache_clear()
+
+
+@respx.mock
+async def test_retrieve_503_takes_priority_over_401_when_unconfigured(
+    retriever_app: dict[str, Any], monkeypatch
+) -> None:
+    """A wrong header AND empty server token must still yield 503
+    `retriever_unconfigured`, not 401. The auth dep checks
+    `if not token` BEFORE the comparison — flipping that order would
+    leak the auth state of an unconfigured server and break the
+    'fail-closed at request time' contract.
+    """
+    monkeypatch.setenv("RETRIEVER_INTERNAL_TOKEN", "")
+    import config
+
+    config.get_settings.cache_clear()
+
+    try:
+        _mock_rewriter()
+        async with await _client(
+            retriever_app["app"], {"X-Internal-Token": "some-wrong-token"}
+        ) as client:
+            resp = await client.post(
+                "/retrieve",
+                json={
+                    "tenant_id": str(retriever_app["tenant_id"]),
+                    "session_id": str(retriever_app["session_id"]),
+                    "turn_id": "t-unconfig-wrong",
+                    "transcript": "вопрос",
+                },
+            )
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["error"] == "retriever_unconfigured"
+    finally:
+        config.get_settings.cache_clear()
 
 
 @respx.mock

@@ -19,6 +19,7 @@ Covers the four T021 properties:
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from typing import Any
 
@@ -108,10 +109,66 @@ async def test_transcription_triggers_retrieve_call_with_expected_payload(
     assert body["tenant_id"] == str(processor._test_tenant_id)
     assert body["session_id"] == str(processor._test_session_id)
     assert body["transcript"] == "как получить ПРАВА"
-    # Format is `<4-hex-salt>-<5-digit-counter>` per issue #48.
-    import re
+    # Format is `<4-hex-salt>-<5+-digit-counter>` per issue #48. The
+    # `\d{5,}` (not `\d{5}`) tolerates the >99,999-turn case in case
+    # one process accidentally lives that long.
+    assert re.match(r"^[0-9a-f]{4}-\d{5,}$", body["turn_id"])
 
-    assert re.match(r"^[0-9a-f]{4}-\d{5}$", body["turn_id"])
+
+@respx.mock
+async def test_outgoing_request_carries_x_internal_token_when_set(captured, monkeypatch) -> None:
+    """Issue #40: the agent MUST attach `X-Internal-Token` to every
+    /retrieve POST when the secret is configured. A regression that
+    drops the header silently turns every turn into a refusal (401
+    on the retriever side) — feature breaks but tests stay green
+    unless we pin this assertion (review finding TEST-001).
+    """
+    proc = KBRetrievalProcessor(
+        retriever_url=_RETRIEVER_BASE,
+        tenant_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        internal_token="secret-token-xyz",
+    )
+
+    async def _capture(frame, direction=FrameDirection.DOWNSTREAM):
+        captured.append((frame, direction))
+
+    monkeypatch.setattr(proc, "push_frame", _capture)
+    route = respx.post(f"{_RETRIEVER_BASE}/retrieve").mock(
+        return_value=httpx.Response(200, json=_response_body())
+    )
+    await proc.process_frame(_tx_frame("вопрос"), FrameDirection.DOWNSTREAM)
+
+    assert route.called
+    headers = route.calls[0].request.headers
+    assert headers.get("x-internal-token") == "secret-token-xyz"
+
+
+@respx.mock
+async def test_outgoing_request_omits_x_internal_token_when_unset(captured, monkeypatch) -> None:
+    """The complementary contract: empty `internal_token` must NOT
+    attach the header. The retriever returns 401 on missing header,
+    which surfaces as a kb_retrieval.auth_failed log on-call can
+    triage."""
+    proc = KBRetrievalProcessor(
+        retriever_url=_RETRIEVER_BASE,
+        tenant_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        internal_token="",  # empty
+    )
+
+    async def _capture(frame, direction=FrameDirection.DOWNSTREAM):
+        captured.append((frame, direction))
+
+    monkeypatch.setattr(proc, "push_frame", _capture)
+    route = respx.post(f"{_RETRIEVER_BASE}/retrieve").mock(
+        return_value=httpx.Response(401, json={"error": "unauthenticated"})
+    )
+    await proc.process_frame(_tx_frame("вопрос"), FrameDirection.DOWNSTREAM)
+
+    assert route.called
+    headers = route.calls[0].request.headers
+    assert "x-internal-token" not in {k.lower() for k in headers}
 
 
 @respx.mock
@@ -196,8 +253,6 @@ async def test_turn_id_monotonic_within_session(processor, captured) -> None:
     counter is monotonic per processor; the salt is randomized in
     __init__ so a restart inside the same session can't replay
     earlier turn_ids and collide with UNIQUE(session_id, turn_id)."""
-    import re
-
     route = respx.post(f"{_RETRIEVER_BASE}/retrieve").mock(
         return_value=httpx.Response(200, json=_response_body())
     )
@@ -206,7 +261,7 @@ async def test_turn_id_monotonic_within_session(processor, captured) -> None:
 
     assert route.call_count == 3
     turn_ids = [json.loads(call.request.content)["turn_id"] for call in route.calls]
-    pattern = re.compile(r"^[0-9a-f]{4}-\d{5}$")
+    pattern = re.compile(r"^[0-9a-f]{4}-\d{5,}$")
     for tid in turn_ids:
         assert pattern.match(tid), tid
     # The numeric suffix is monotonic 1..3.

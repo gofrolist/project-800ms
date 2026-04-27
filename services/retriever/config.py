@@ -59,10 +59,12 @@ class Settings(BaseSettings):
     # call; the retriever rejects callers without it. Mirrors apps/api's
     # `agent_internal_token` pattern (header: X-Internal-Token).
     #
-    # Empty in dev / tests is allowed but logs a warning at boot —
-    # production deploys MUST set it (issue #47/#40). When empty the
-    # endpoint accepts unauthenticated calls so existing tests +
-    # one-shot eval harnesses keep working without ceremony.
+    # When empty, `auth.require_internal_token` returns 503
+    # `retriever_unconfigured` — fail-closed at request time so a deploy
+    # missing the secret cannot accidentally serve traffic. Tests + eval
+    # harnesses set this explicitly (see conftest.py session baseline).
+    # Production deploys MUST set it (compose's `${...:?}` enforces this
+    # at boot; see issue #47/#40).
     retriever_internal_token: str = ""
 
 

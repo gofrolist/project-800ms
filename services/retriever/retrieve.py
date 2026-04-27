@@ -158,6 +158,8 @@ async def retrieve(req: RetrieveRequest) -> RetrieveResponse:
     stage_timings: dict[str, int] = {}
     rewrite_result: RewriterResult | None = None
     chunks: list = []
+    refusal_pad_ms: int | None = None
+    refusal_response: RetrieveResponse | None = None
 
     async with get_session() as session:
         # resolve_tenant can raise UnknownTenant → no trace row (no
@@ -188,13 +190,16 @@ async def retrieve(req: RetrieveRequest) -> RetrieveResponse:
             # 0 ms when this tenant has no recorded in-scope latency
             # yet — that's the correct degradation (a brand-new tenant
             # has no leak surface to measure against).
+            #
+            # The actual `asyncio.sleep` runs AFTER this `async with`
+            # block exits — so the DB session is committed and the
+            # connection slot is back in the pool while we sleep.
+            # Earlier shape kept the session held for the full pad,
+            # exhausting the pool under partial outage for a turn
+            # that needs no further DB work (review finding rel-004).
             if not rewrite_result.in_scope:
-                pad_target_ms = p50_for(tenant.id)
-                pad_start = time.perf_counter()
-                if pad_target_ms > 0:
-                    await asyncio.sleep(pad_target_ms / 1000.0)
-                stage_timings["pad"] = _ms_since(pad_start)
-
+                refusal_pad_ms = p50_for(tenant.id)
+                stage_timings["pad"] = refusal_pad_ms
                 trace_id = await _emit_trace(
                     session,
                     req,
@@ -208,64 +213,72 @@ async def retrieve(req: RetrieveRequest) -> RetrieveResponse:
                     **stage_timings,
                     "total": sum(stage_timings.values()),
                 }
-                return RetrieveResponse(
+                refusal_response = RetrieveResponse(
                     rewritten_query=rewrite_result.query,
                     in_scope=False,
                     chunks=[],
                     stage_timings_ms=StageTimings(**stage_timings_with_total),
                     trace_id=trace_id,
                 )
+                # Fall through to the end of the `async with` block.
+                # The session commits + releases the connection on
+                # context exit; we sleep + return AFTER that.
 
-            # --- Embed -------------------------------------------------
-            emb_start = time.perf_counter()
-            try:
-                query_embedding = await encode(rewrite_result.query)
-            except ValueError as exc:
-                # Shape mismatch or corrupt encoder state. Treat as
-                # infra outage so the caller fails closed to refusal.
-                logger.warning(
-                    "retrieve.embedder_value_error message={message}",
-                    message=str(exc),
-                )
-                raise EmbedderUnavailable() from exc
-            finally:
-                stage_timings["embed"] = _ms_since(emb_start)
+            else:
+                # --- In-scope: embed + sql + trace ---------------------
+                emb_start = time.perf_counter()
+                try:
+                    query_embedding = await encode(rewrite_result.query)
+                except ValueError as exc:
+                    # Shape mismatch or corrupt encoder state. Treat as
+                    # infra outage so the caller fails closed to refusal.
+                    logger.warning(
+                        "retrieve.embedder_value_error message={message}",
+                        message=str(exc),
+                    )
+                    raise EmbedderUnavailable() from exc
+                finally:
+                    stage_timings["embed"] = _ms_since(emb_start)
 
-            # --- Hybrid search -----------------------------------------
-            sql_start = time.perf_counter()
-            try:
-                chunks = await hybrid_search(
+                # --- Hybrid search ---------------------------------------
+                sql_start = time.perf_counter()
+                try:
+                    chunks = await hybrid_search(
+                        session,
+                        tenant.id,
+                        rewrite_result.query,
+                        query_embedding,
+                        top_k=req.top_k,
+                    )
+                except SQLAlchemyError as exc:
+                    # DB outage, pool timeout, schema drift. Exception
+                    # message may contain DSN fragments so we log only
+                    # the class name.
+                    logger.warning("retrieve.sql_error kind={kind}", kind=type(exc).__name__)
+                    raise DbUnavailable() from exc
+                finally:
+                    stage_timings["sql"] = _ms_since(sql_start)
+
+                # --- Success trace ---------------------------------------
+                trace_id = await _emit_trace(
                     session,
-                    tenant.id,
-                    rewrite_result.query,
-                    query_embedding,
-                    top_k=req.top_k,
+                    req,
+                    tenant,
+                    stage_timings,
+                    rewrite_result,
+                    chunks,
+                    error_class=None,
                 )
-            except SQLAlchemyError as exc:
-                # DB outage, pool timeout, schema drift. Exception
-                # message may contain DSN fragments so we log only
-                # the class name.
-                logger.warning("retrieve.sql_error kind={kind}", kind=type(exc).__name__)
-                raise DbUnavailable() from exc
-            finally:
-                stage_timings["sql"] = _ms_since(sql_start)
 
-            # Record this in-scope round-trip's embed+sql cost so the
-            # next refusal turn for this tenant can pad to its median.
-            # Excludes rewrite (shared between branches) so the pad
-            # mirrors only the work the refusal branch SKIPS.
-            record_p50(tenant.id, stage_timings["embed"] + stage_timings["sql"])
-
-            # --- Success trace + response ------------------------------
-            trace_id = await _emit_trace(
-                session,
-                req,
-                tenant,
-                stage_timings,
-                rewrite_result,
-                chunks,
-                error_class=None,
-            )
+                # Record the in-scope round-trip's embed+sql cost AFTER
+                # the trace has been written. Reordered from before —
+                # recording first risked self-poisoning the latency
+                # window with a turn whose trace-write later raised
+                # SQLAlchemyError, biasing future refusal pads upward
+                # (review finding rel-006). Excludes rewrite (shared
+                # between branches) so the pad mirrors only the work
+                # the refusal branch SKIPS.
+                record_p50(tenant.id, stage_timings["embed"] + stage_timings["sql"])
 
         except RetrieverError as exc:
             # Write a failure trace row before letting the exception
@@ -294,6 +307,13 @@ async def retrieve(req: RetrieveRequest) -> RetrieveResponse:
                     trace_kind=type(trace_exc).__name__,
                 )
             raise
+
+    # Refusal branch: session is now committed + released. Pad here so
+    # the connection slot isn't held during the sleep (rel-004).
+    if refusal_response is not None:
+        if refusal_pad_ms and refusal_pad_ms > 0:
+            await asyncio.sleep(refusal_pad_ms / 1000.0)
+        return refusal_response
 
     stage_timings_with_total = {
         **stage_timings,

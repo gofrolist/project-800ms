@@ -400,7 +400,13 @@ services:
       # defaults to 500 ms per issue #49 so the retriever leg fits
       # inside the constitution's 800 ms p95 SLO.
       - RETRIEVER_URL=${RETRIEVER_URL:-}
-      - RETRIEVER_INTERNAL_TOKEN=${RETRIEVER_INTERNAL_TOKEN:-}
+      # Symmetric `:?` with the retriever side below — both agents and
+      # retriever fail to start without the secret, so a partial deploy
+      # cannot leave the agent silently 401-cascading into refusal-only
+      # mode. Local dev that doesn't run /retrieve at all should leave
+      # RETRIEVER_URL empty (KBRetrievalProcessor skips when URL is
+      # empty regardless of token state).
+      - RETRIEVER_INTERNAL_TOKEN=${RETRIEVER_INTERNAL_TOKEN:?RETRIEVER_INTERNAL_TOKEN is required}
       - AGENT_RETRIEVER_TIMEOUT_MS=${AGENT_RETRIEVER_TIMEOUT_MS:-500}
       # INFO by default — DEBUG logs full STT transcripts and LLM
       # prompts/completions, which is a privacy issue if exposed via

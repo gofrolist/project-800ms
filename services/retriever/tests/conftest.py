@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import secrets
 import subprocess
+import sys
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
@@ -38,22 +39,34 @@ def _retriever_env_baseline() -> Iterator[None]:
     """Session-level baseline env so any test that imports the
     embedder + Settings doesn't blow up on missing config.
 
-    Uses ``os.environ.setdefault`` so a real value passed in by the
-    operator (e.g. via direnv or an interactive shell) wins. The
-    function-scoped ``retriever_app`` fixture later overrides DB_URL
-    with the testcontainer DSN via monkeypatch — this baseline only
-    keeps the FIRST ``preload()`` call from raising while the
-    container is still booting.
+    Uses direct assignment (NOT ``setdefault``) so an operator value
+    passed via direnv or an interactive shell does NOT silently leak
+    into test runs (review finding TEST-006 / MAINT-005). Tests SHOULD
+    shadow operator env so the suite is reproducible across
+    environments. Original values are restored on session exit.
     """
-    os.environ.setdefault("DB_URL", "postgresql+asyncpg://placeholder/placeholder")
-    os.environ.setdefault("LLM_BASE_URL", "http://llm-test.local")
-    os.environ.setdefault("LLM_API_KEY", "test-key")
-    os.environ.setdefault("REWRITER_MODEL", "test-rewriter-model")
-    os.environ.setdefault("EMBEDDER_DEVICE", "cpu")
-    # Issue #40 / #47: the auth dep returns 503 when this is empty so
-    # /retrieve refuses traffic — set a non-secret default for tests.
-    os.environ.setdefault("RETRIEVER_INTERNAL_TOKEN", "test-internal-token")
-    yield
+    snapshot = {}
+    overrides = {
+        "DB_URL": "postgresql+asyncpg://placeholder/placeholder",
+        "LLM_BASE_URL": "http://llm-test.local",
+        "LLM_API_KEY": "test-key",
+        "REWRITER_MODEL": "test-rewriter-model",
+        "EMBEDDER_DEVICE": "cpu",
+        # Issue #40 / #47: the auth dep returns 503 when this is empty
+        # so /retrieve refuses traffic — set a non-secret default.
+        "RETRIEVER_INTERNAL_TOKEN": "test-internal-token",
+    }
+    for key, value in overrides.items():
+        snapshot[key] = os.environ.get(key)
+        os.environ[key] = value
+    try:
+        yield
+    finally:
+        for key, prior in snapshot.items():
+            if prior is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prior
 
 
 @pytest.fixture(scope="session")
@@ -165,7 +178,7 @@ def _vector_literal(v: list[float]) -> str:
 
 
 @pytest_asyncio.fixture
-async def retriever_app(pgvector_postgres, monkeypatch) -> dict[str, Any]:
+async def retriever_app(pgvector_postgres, monkeypatch) -> AsyncIterator[dict[str, Any]]:
     """Build a fresh FastAPI app pointed at the session-scoped pgvector
     container, and seed one tenant + session + KB entry + 3 chunks.
 
@@ -305,8 +318,6 @@ async def retriever_app(pgvector_postgres, monkeypatch) -> dict[str, Any]:
     # tests so a prior test's recorded p50 doesn't bleed into the next.
     if hasattr(hs, "_reset_latency_stats"):
         hs._reset_latency_stats()
-
-    import sys
 
     sys.modules.pop("main", None)
     sys.modules.pop("retrieve", None)

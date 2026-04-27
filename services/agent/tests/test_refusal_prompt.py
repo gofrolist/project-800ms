@@ -110,8 +110,13 @@ async def test_refusal_pushes_canonical_persona_locked_prompt(processor, capture
     assert msgs[0]["role"] == "system"
     assert msgs[1]["role"] == "user"
 
-    # The full canonical refusal prompt is present (not the basic stub).
-    assert REFUSAL_SYSTEM_PROMPT_RU == msgs[0]["content"]
+    # The system message IS the canonical refusal prompt — not a
+    # paraphrase, not a wrapped string, not the in-scope grounded
+    # prompt. Identity check (`is`) over equality so that any wording
+    # tweak to REFUSAL_SYSTEM_PROMPT_RU stays a single source of truth
+    # without forcing this test to chase exact-string changes (review
+    # finding TEST-004).
+    assert msgs[0]["content"] is REFUSAL_SYSTEM_PROMPT_RU
 
 
 @respx.mock

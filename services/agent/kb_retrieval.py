@@ -124,9 +124,29 @@ class KBRetrievalProcessor(FrameProcessor):
                 token_set=bool(self._internal_token),
             )
         else:
+            # Misconfiguration alarm: enabled (tenant + session + url) but
+            # token empty means every /retrieve will return 401 → refusal.
+            # Silent in earlier versions because is_enabled doesn't gate
+            # on the token (deliberate — a future deploy can run without
+            # auth on a closed network). Surface it once at construction
+            # so on-call sees the cause, not just the per-turn 401 noise.
+            # See review findings sec-002 / adv-005 / correctness-005.
+            if not self._internal_token:
+                logger.warning(
+                    "kb_retrieval.token_missing reason="
+                    "retriever_url and tenant/session set but RETRIEVER_INTERNAL_TOKEN empty; "
+                    "every /retrieve will return 401 and route to refusal"
+                )
             headers = {"X-Internal-Token": self._internal_token} if self._internal_token else None
+            # Issue #49 SLO is 800 ms p95 first-audio. Earlier this
+            # carried `connect=1.0` while the read timeout was 0.5 s,
+            # so DNS-slow / TCP-slow could spend the whole read budget
+            # and another second on top — total 1.5 s, blowing past the
+            # SLO. Bound connect by the same budget; a slow connect
+            # routes to refusal at the same boundary as a slow read.
+            timeout_s = self._timeout_ms / 1000
             self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(self._timeout_ms / 1000, connect=1.0),
+                timeout=httpx.Timeout(timeout_s, connect=timeout_s),
                 headers=headers,
             )
 
@@ -244,11 +264,33 @@ class KBRetrievalProcessor(FrameProcessor):
         )
 
         if resp.status_code != 200:
-            logger.warning(
-                "kb_retrieval.non_200 turn={turn} status={status}",
-                turn=turn_id,
-                status=resp.status_code,
-            )
+            # Distinct log levels per failure class so on-call can
+            # triage rotation drift (401) vs upstream outage (503) vs
+            # other:
+            #   401 — auth drift, almost always operator action
+            #         (rotate / re-deploy with matching tokens).
+            #   503 — retriever side down or DB/embedder/rewriter
+            #         transient; refusal cascade is expected & self-
+            #         healing once the dep recovers.
+            #   other — surprising; logged at WARNING with status code.
+            if resp.status_code == 401:
+                logger.error(
+                    "kb_retrieval.auth_failed turn={turn} reason="
+                    "401 from /retrieve; check RETRIEVER_INTERNAL_TOKEN "
+                    "matches between agent and retriever",
+                    turn=turn_id,
+                )
+            elif resp.status_code == 503:
+                logger.warning(
+                    "kb_retrieval.dep_unavailable turn={turn} status=503",
+                    turn=turn_id,
+                )
+            else:
+                logger.warning(
+                    "kb_retrieval.non_200 turn={turn} status={status}",
+                    turn=turn_id,
+                    status=resp.status_code,
+                )
             return build_refusal_messages(transcript)
 
         body = resp.json()

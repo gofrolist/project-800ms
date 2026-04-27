@@ -136,6 +136,43 @@ async def test_out_of_scope_returns_empty_chunks_and_pad(
 
 
 @respx.mock
+async def test_refusal_pad_is_zero_for_cold_tenant(
+    retriever_app: dict[str, Any],
+) -> None:
+    """A tenant with no recorded in-scope latency yields ``pad == 0`` —
+    the documented degradation path. Without this test the cold-start
+    branch in retrieve.py is uncovered and a regression that, e.g.,
+    short-circuits ``pad_target_ms > 0`` would slip through.
+    """
+    # Reset the rolling window so this tenant is "cold" even though
+    # the same retriever_app fixture has been used by prior tests in
+    # the session. The reset hook is also called on fixture entry —
+    # this asserts the contract again at the test boundary.
+    import hybrid_search
+
+    hybrid_search._reset_latency_stats()
+
+    _mock_rewriter(query="погода в Москве", in_scope=False)
+    async with await _client(retriever_app["app"], retriever_app["auth_headers"]) as client:
+        resp = await client.post(
+            "/retrieve",
+            json={
+                "tenant_id": str(retriever_app["tenant_id"]),
+                "session_id": str(retriever_app["session_id"]),
+                "turn_id": "cold-oos",
+                "transcript": "что-то вне темы",
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["in_scope"] is False
+    assert body["chunks"] == []
+    st = body["stage_timings_ms"]
+    assert st.get("pad") == 0, st
+
+
+@respx.mock
 async def test_refusal_trace_row_persists_in_scope_false_and_pad(
     retriever_app: dict[str, Any], pgvector_postgres
 ) -> None:

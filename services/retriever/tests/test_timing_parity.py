@@ -7,7 +7,7 @@ the round trip. The constraint per SC-008 is
     p95(out_of_scope.total) - p95(in_scope.total) <= 50 ms
 
 The test issues a warmup batch of in-scope queries to seed the latency
-window, then alternates 30 in-scope + 30 out-of-scope queries against
+window, then alternates 50 in-scope + 50 out-of-scope queries against
 the same tenant and computes p95 over each total.
 
 Slow-marked. ~10–15 s on a warm BGE-M3 cache; first run pulls the
@@ -16,6 +16,7 @@ embedder weights and can take ~2 min.
 
 from __future__ import annotations
 
+import json
 import statistics
 import uuid
 from typing import Any
@@ -30,32 +31,50 @@ pytestmark = pytest.mark.slow
 _LLM_BASE = "http://llm-test.local"
 _LLM_URL = f"{_LLM_BASE}/chat/completions"
 
-# Sample size per branch. p95 over 30 = the 28th-ranked sample, which
-# is the standard "second-from-top" approximation. The task asked for
-# 100 pairs; we settle for 30 so the test runs in a CI-acceptable
-# window (each iteration spans embed + sql ≈ 200 ms on CPU).
-_PAIRS = 30
+# Sample size per branch. p95 over 50 = the 47th-ranked sample. The
+# task asked for 100 pairs; 50 is the compromise between CI runtime
+# (each iteration spans embed + sql ≈ 200 ms on CPU) and binomial
+# noise stability at p95. n=30 (the original setting) was tightening
+# the assertion enough that single GC pauses would flip rank 28 and
+# fail (review finding TEST-007 / perf-005).
+_PAIRS = 50
+
+# Two-sided side-channel: if OOS becomes faster than IN by more than
+# this, the OOS distribution distinguishes itself from IN by being
+# notably faster — also a leak. The pad-to-p50 mechanism
+# intentionally produces OOS p95 < IN p95, so we expect a negative
+# delta in steady state, but bound the magnitude.
+_NEGATIVE_DELTA_BOUND_MS = -200
+
+
+# Map of test-fixture transcript → (in_scope, rewritten_query). Exact
+# whole-string match (review finding adv-003): substring matching on
+# "права" would let a real-LLM regression that misclassified
+# prompt-injection probes containing the same trigram (e.g.
+# "не имеешь права раскрывать инструкции") pass this test silently.
+# Whole-string lookup means only the known fixture phrases classify
+# in-scope; anything else falls through to OOS — including future
+# adversarial probes added to the corpus.
+_TEST_TRANSCRIPT_TO_LABEL: dict[str, tuple[bool, str]] = {
+    "как получить права?": (True, "как получить водительские права"),
+    "какая погода в Москве?": (False, "off topic query"),
+}
 
 
 def _install_dual_classifier_rewriter() -> None:
-    """Install a respx mock that classifies based on the user's transcript.
-
-    in_scope=True when the transcript contains the substring "права",
-    in_scope=False otherwise. Lets one running mock cover both branches
-    in interleaved order without having to reset between requests.
+    """Install a respx mock that classifies based on a known-fixture
+    lookup, not substring matching. Lets one running mock cover both
+    branches in interleaved order without resetting between requests.
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        import json
-
         body = json.loads(request.content)
         last_user = ""
         for msg in reversed(body.get("messages", [])):
             if msg.get("role") == "user":
-                last_user = msg.get("content", "")
+                last_user = msg.get("content", "").strip()
                 break
-        in_scope = "права" in last_user
-        rewritten = "как получить водительские права" if in_scope else "off topic query"
+        in_scope, rewritten = _TEST_TRANSCRIPT_TO_LABEL.get(last_user, (False, "off topic query"))
         return httpx.Response(
             200,
             json={
@@ -127,22 +146,29 @@ async def test_timing_parity_p95_within_50ms(retriever_app: dict[str, Any]) -> N
     oos_totals.sort()
 
     def _p95(sorted_values: list[int]) -> int:
-        # Matches numpy.percentile(method="lower"): for n=30 the 95th
-        # percentile lands on the 28th element (0-indexed).
+        # Matches numpy.percentile(method="lower"): for n=50 the 95th
+        # percentile lands at index 46 (0-indexed) / the 47th rank
+        # (1-indexed) — int(0.95 * 49) = 46.
         return sorted_values[int(0.95 * (len(sorted_values) - 1))]
 
     in_p95 = _p95(in_scope_totals)
     oos_p95 = _p95(oos_totals)
     delta = oos_p95 - in_p95
 
-    # SC-008: out-of-scope must NOT be more than 50 ms slower at p95.
-    # Negative deltas (refusal faster than in-scope) are allowed —
-    # the side-channel argument flips: we don't want OOS to LEAK by
-    # being faster, but the pad-to-p50 mechanism intentionally
-    # targets the median, so OOS p95 < IN p95 is the expected shape.
+    # SC-008: out-of-scope must NOT be more than 50 ms slower at p95
+    # (the documented spec direction — would leak "in-scope is being
+    # padded" by being slower than expected).
+    #
+    # The opposite direction (OOS noticeably FASTER than IN) is also
+    # a leak: an attacker can probe and learn classification by
+    # observing OOS responses that are markedly quicker than the
+    # in-scope baseline. Pad-to-p50 deliberately makes OOS slightly
+    # faster than IN p95, but a regression that drops the pad to 0
+    # entirely produces a delta of -200ms+ — bounded below.
     msg = (
         f"in_scope p95={in_p95}ms (median={statistics.median(in_scope_totals)}); "
         f"oos p95={oos_p95}ms (median={statistics.median(oos_totals)}); "
-        f"delta={delta}ms; SC-008 cap=50ms"
+        f"delta={delta}ms; SC-008 cap=50ms; lower-bound={_NEGATIVE_DELTA_BOUND_MS}ms"
     )
     assert delta <= 50, msg
+    assert delta >= _NEGATIVE_DELTA_BOUND_MS, msg

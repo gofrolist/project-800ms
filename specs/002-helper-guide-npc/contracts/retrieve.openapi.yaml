@@ -5,10 +5,19 @@ info:
   description: |
     Internal HTTP surface exposed by `services/retriever` on port 8002.
     Called from `services/agent` (Pipecat KBRetrievalProcessor). NOT exposed
-    to the public internet. No caller authentication in v1 — the retriever
-    binds to the internal Docker network; Compose does not publish :8002
-    to the host. Defense-in-depth: every request MUST carry `tenant_id`,
-    and the retriever refuses if the tenant id is missing or malformed.
+    to the public internet. Compose does not publish :8002 to the host;
+    defense-in-depth network isolation.
+
+    Auth (issue #47/#40): every `/retrieve` call MUST carry
+    `X-Internal-Token: <RETRIEVER_INTERNAL_TOKEN>`. Missing/wrong header
+    returns 401 `unauthenticated`; unset server-side token returns 503
+    `retriever_unconfigured`. The probe endpoints (/healthz, /ready) are
+    intentionally unauthenticated so compose / k8s liveness checks work.
+
+    Tenancy: every request MUST carry `tenant_id`. v1 caveat — `tenant_id`
+    is body-supplied; the bearer secret authorizes the agent process,
+    not a specific tenant. Token-bound tenant claim (signed JWT) is a
+    v2 follow-up filed against #47.
 
 servers:
   - url: http://retriever:8002
@@ -81,6 +90,9 @@ paths:
       operationId: healthz
       summary: Liveness probe
       description: Returns 200 iff the process is up; does not check dependencies.
+      # No auth — compose / k8s liveness probes hit this without the
+      # internal-token secret. Override the global `security` block.
+      security: []
       responses:
         '200':
           description: Process up
@@ -98,6 +110,9 @@ paths:
         reachable, and the rewriter LLM endpoint answered a hello ping within
         the last 30 s. Used by Compose healthcheck with `start_period: 600s`
         (BGE-M3 weight download on cold start).
+      # No auth — compose readiness probe hits this without the
+      # internal-token secret. Override the global `security` block.
+      security: []
       responses:
         '200':
           description: Fully ready to serve /retrieve

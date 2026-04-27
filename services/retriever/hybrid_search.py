@@ -32,7 +32,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,7 +53,13 @@ _CTE_LIMIT = 20
 # can change the eviction behaviour of the other).
 #
 # Implementation:
-#   * One deque per tenant, capped at `_LATENCY_WINDOW_MAX` samples.
+#   * One deque per tenant, capped at `_LATENCY_WINDOW_MAX` samples
+#     OR `_LATENCY_WINDOW_SECONDS`, whichever evicts first. For
+#     tenants below ~3.3 RPS sustained the time bound dominates; for
+#     busier tenants the count cap dominates and the effective
+#     window shrinks proportionally with load. Pad still tracks
+#     recent latency under both regimes — only the documented
+#     "rolling 60-s" window is approximate (review finding perf-003).
 #   * Each sample is `(timestamp_seconds, latency_ms)`. The window is
 #     trimmed to the most recent `_LATENCY_WINDOW_SECONDS` on every
 #     read so a quiet tenant doesn't return stale data.
@@ -66,9 +72,12 @@ _CTE_LIMIT = 20
 #     for the simplicity of not standing up a Redis dependency.
 
 _LATENCY_WINDOW_SECONDS = 60.0
-_LATENCY_WINDOW_MAX = 200  # hard cap per tenant — bounds memory under load
+# Hard cap per tenant — bounds memory under load. Caps the effective
+# window at 200/QPS seconds; for sustained QPS > 3.3 the count cap
+# wins and the window shrinks below the nominal 60s.
+_LATENCY_WINDOW_MAX = 200
 
-_latency_windows: dict[uuid.UUID, Deque[tuple[float, int]]] = {}
+_latency_windows: dict[uuid.UUID, deque[tuple[float, int]]] = {}
 
 
 def _reset_latency_stats() -> None:
