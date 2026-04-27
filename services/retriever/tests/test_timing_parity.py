@@ -101,6 +101,7 @@ async def test_timing_parity_p95_within_50ms(retriever_app: dict[str, Any]) -> N
         transport=ASGITransport(app=retriever_app["app"]),
         base_url="http://retriever.test",
         timeout=30.0,
+        headers=retriever_app["auth_headers"],
     ) as client:
         # Warmup: seed the in-scope latency window so the refusal pad
         # has a non-zero target. Warmup samples are NOT included in the

@@ -14,11 +14,16 @@ servers:
   - url: http://retriever:8002
     description: Internal Docker Compose network
 
+security:
+  - InternalToken: []
+
 paths:
   /retrieve:
     post:
       operationId: retrieve
       summary: Rewrite, classify scope, and retrieve KB context for one turn
+      security:
+        - InternalToken: []
       description: |
         Called once per final TranscriptionFrame. Does three things in order:
           1. LLM call: rewrite raw transcript into a standalone Russian query;
@@ -51,11 +56,21 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '401':
+          description: |
+            Missing or invalid `X-Internal-Token`. Issue #40 / #47:
+            shared-secret bearer required on every internal call.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '503':
           description: |
             Dependency unavailable (DB down, embedder failed, rewriter LLM
-            timed out). Agent's KBRetrievalProcessor interprets this as
-            fail-closed → refusal path (FR-008 / FR-022).
+            timed out) OR the retriever's `RETRIEVER_INTERNAL_TOKEN` is
+            unset (`error: retriever_unconfigured`). Agent's
+            KBRetrievalProcessor interprets this as fail-closed →
+            refusal path (FR-008 / FR-022).
           content:
             application/json:
               schema:
@@ -98,6 +113,16 @@ paths:
                 $ref: '#/components/schemas/ReadyResponse'
 
 components:
+  securitySchemes:
+    InternalToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Token
+      description: |
+        Shared-secret bearer for internal callers (agent → retriever).
+        Empty server-side config returns 503 `retriever_unconfigured`;
+        wrong / missing header returns 401 `unauthenticated`. Issue #40 / #47.
+
   schemas:
     RetrieveRequest:
       type: object
@@ -271,6 +296,7 @@ components:
           description: Short machine-readable error code.
           enum:
             - invalid_request
+            - unauthenticated
             - unknown_tenant
             - unsupported_npc
             - unsupported_language
@@ -278,6 +304,7 @@ components:
             - rewriter_malformed_output
             - embedder_unavailable
             - db_unavailable
+            - retriever_unconfigured
             - internal_error
         message:
           type: string

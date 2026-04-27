@@ -21,6 +21,7 @@ class ErrorCode(str, Enum):
     """Machine-readable error codes."""
 
     INVALID_REQUEST = "invalid_request"
+    UNAUTHENTICATED = "unauthenticated"
     UNKNOWN_TENANT = "unknown_tenant"
     UNSUPPORTED_NPC = "unsupported_npc"
     UNSUPPORTED_LANGUAGE = "unsupported_language"
@@ -28,6 +29,7 @@ class ErrorCode(str, Enum):
     REWRITER_MALFORMED_OUTPUT = "rewriter_malformed_output"
     EMBEDDER_UNAVAILABLE = "embedder_unavailable"
     DB_UNAVAILABLE = "db_unavailable"
+    RETRIEVER_UNCONFIGURED = "retriever_unconfigured"
     INTERNAL_ERROR = "internal_error"
 
 
@@ -35,6 +37,7 @@ class ErrorCode(str, Enum):
 # reviewer can audit "which errors surface as 400 vs 503" at a glance.
 _STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.INVALID_REQUEST: 400,
+    ErrorCode.UNAUTHENTICATED: 401,
     ErrorCode.UNKNOWN_TENANT: 400,
     ErrorCode.UNSUPPORTED_NPC: 400,
     ErrorCode.UNSUPPORTED_LANGUAGE: 400,
@@ -42,6 +45,7 @@ _STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.REWRITER_MALFORMED_OUTPUT: 503,
     ErrorCode.EMBEDDER_UNAVAILABLE: 503,
     ErrorCode.DB_UNAVAILABLE: 503,
+    ErrorCode.RETRIEVER_UNCONFIGURED: 503,
     ErrorCode.INTERNAL_ERROR: 500,
 }
 
@@ -135,6 +139,26 @@ class EmbedderUnavailable(RetrieverError):
 class DbUnavailable(RetrieverError):
     def __init__(self, message: str = "db unavailable", *, trace_id: UUID | None = None) -> None:
         super().__init__(ErrorCode.DB_UNAVAILABLE, message, trace_id=trace_id)
+
+
+class Unauthenticated(RetrieverError):
+    def __init__(
+        self,
+        message: str = "invalid or missing X-Internal-Token",
+        *,
+        trace_id: UUID | None = None,
+    ) -> None:
+        super().__init__(ErrorCode.UNAUTHENTICATED, message, trace_id=trace_id)
+
+
+class RetrieverUnconfigured(RetrieverError):
+    def __init__(
+        self,
+        message: str = "retriever internal token is not configured",
+        *,
+        trace_id: UUID | None = None,
+    ) -> None:
+        super().__init__(ErrorCode.RETRIEVER_UNCONFIGURED, message, trace_id=trace_id)
 
 
 class InternalError(RetrieverError):

@@ -200,6 +200,7 @@ async def _run_queries(
         transport=ASGITransport(app=app),
         base_url="http://eval.retriever.test",
         timeout=30.0,
+        headers={"X-Internal-Token": os.environ["RETRIEVER_INTERNAL_TOKEN"]},
     ) as client:
         for q in questions:
             resp = await client.post(
@@ -264,6 +265,8 @@ async def _main(args: argparse.Namespace) -> int:
     os.environ["LLM_API_KEY"] = "eval-key"
     os.environ["REWRITER_MODEL"] = "eval-model"
     os.environ.setdefault("EMBEDDER_DEVICE", "cpu")
+    # auth header for the in-process /retrieve calls below
+    os.environ.setdefault("RETRIEVER_INTERNAL_TOKEN", "eval-internal-token")
 
     print("[eval] starting pgvector container...", flush=True)
     container = PostgresContainer(

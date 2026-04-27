@@ -393,6 +393,15 @@ services:
       # STT/LLM utterances to the api's /internal/transcripts endpoint.
       - API_BASE_URL=${API_BASE_URL:-http://api:8000}
       - AGENT_INTERNAL_TOKEN=${AGENT_INTERNAL_TOKEN:-}
+      # Retriever (Helper/Guide NPC RAG). Empty RETRIEVER_URL disables
+      # the KB path entirely — KBRetrievalProcessor falls into
+      # pass-through mode. Set both RETRIEVER_URL and
+      # RETRIEVER_INTERNAL_TOKEN to enable. AGENT_RETRIEVER_TIMEOUT_MS
+      # defaults to 500 ms per issue #49 so the retriever leg fits
+      # inside the constitution's 800 ms p95 SLO.
+      - RETRIEVER_URL=${RETRIEVER_URL:-}
+      - RETRIEVER_INTERNAL_TOKEN=${RETRIEVER_INTERNAL_TOKEN:-}
+      - AGENT_RETRIEVER_TIMEOUT_MS=${AGENT_RETRIEVER_TIMEOUT_MS:-500}
       # INFO by default — DEBUG logs full STT transcripts and LLM
       # prompts/completions, which is a privacy issue if exposed via
       # docker logs. Set LOG_LEVEL=DEBUG in .env when actively debugging.
@@ -484,6 +493,9 @@ services:
       - REWRITER_TIMEOUT_MS=${REWRITER_TIMEOUT_MS:-1500}
       - EMBEDDER_DEVICE=${EMBEDDER_DEVICE:-cpu}
       - LOG_LEVEL=${RETRIEVER_LOG_LEVEL:-INFO}
+      # Issue #40 / #47: shared-secret bearer for /retrieve. Required
+      # in production — empty disables the endpoint (returns 503).
+      - RETRIEVER_INTERNAL_TOKEN=${RETRIEVER_INTERNAL_TOKEN:?RETRIEVER_INTERNAL_TOKEN is required}
       - HF_HOME=/home/appuser/.cache/huggingface
       - HF_HUB_DOWNLOAD_TIMEOUT=600
     volumes:

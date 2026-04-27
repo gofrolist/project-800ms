@@ -31,6 +31,7 @@ forget would race the aggregator's VAD-driven flush).
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from typing import Any
 
@@ -45,11 +46,15 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from kb_prompts import build_grounded_messages, build_refusal_messages
 
-# Default request timeout. Matches the AGENT_RETRIEVER_TIMEOUT_MS env
-# the operator sets. Larger than the retriever's own rewriter_timeout_ms
-# so the retriever can still fail-closed to refusal and return a
-# structured 200 before the agent side gives up.
-_DEFAULT_TIMEOUT_MS = 2000
+# Default request timeout. Issue #49: lowered from 2000 ms to 500 ms so
+# the constitution's p95 ≤ 800 ms end-to-end SLO has actual room for
+# the LLM + TTS legs after retrieval. The retriever's own
+# `rewriter_timeout_ms` (default 1500 ms) is now larger than this on
+# purpose — the retriever fails-closed to refusal internally on
+# rewriter timeout, returning a structured 200 well before the agent
+# side gives up. If the retriever is itself slow (DB pause, container
+# restart), the agent stops waiting at 500 ms and routes to refusal.
+_DEFAULT_TIMEOUT_MS = 500
 
 
 class KBRetrievalProcessor(FrameProcessor):
@@ -75,6 +80,7 @@ class KBRetrievalProcessor(FrameProcessor):
         retriever_url: str,
         tenant_id: uuid.UUID | None,
         session_id: uuid.UUID | None,
+        internal_token: str = "",
         timeout_ms: int = _DEFAULT_TIMEOUT_MS,
         **kwargs: Any,
     ) -> None:
@@ -82,7 +88,18 @@ class KBRetrievalProcessor(FrameProcessor):
         self._retriever_url = retriever_url.rstrip("/")
         self._tenant_id = tenant_id
         self._session_id = session_id
+        self._internal_token = internal_token
         self._timeout_ms = timeout_ms
+        # Issue #48: per-instance salt prefixed onto the monotonic
+        # turn counter. Without it, an agent restart inside the same
+        # session resets `_turn_counter = 0` and replays `t-00001`,
+        # which collides with the already-written
+        # UNIQUE(session_id, turn_id) row in retrieval_traces and
+        # silently outage RAG for the rest of the session.
+        # 4 hex chars = ~16-bit collision resistance per restart, which
+        # is plenty for "two restarts in the same session" (vanishingly
+        # rare).
+        self._instance_salt = secrets.token_hex(2)
         self._turn_counter = 0
         # Shared httpx client reused across every turn — one DNS +
         # TCP + TLS setup for the whole session instead of per turn.
@@ -99,15 +116,18 @@ class KBRetrievalProcessor(FrameProcessor):
             logger.warning(
                 "kb_retrieval.passthrough_mode reason={reason} "
                 "tenant_set={tenant_set} session_set={session_set} "
-                "retriever_url_set={url_set}",
+                "retriever_url_set={url_set} token_set={token_set}",
                 reason=reason,
                 tenant_set=tenant_id is not None,
                 session_set=session_id is not None,
                 url_set=bool(self._retriever_url),
+                token_set=bool(self._internal_token),
             )
         else:
+            headers = {"X-Internal-Token": self._internal_token} if self._internal_token else None
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(self._timeout_ms / 1000, connect=1.0),
+                headers=headers,
             )
 
     async def cleanup(self) -> None:
@@ -167,7 +187,7 @@ class KBRetrievalProcessor(FrameProcessor):
             return
 
         self._turn_counter += 1
-        turn_id = f"t-{self._turn_counter:05d}"
+        turn_id = f"{self._instance_salt}-{self._turn_counter:05d}"
 
         try:
             messages = await self._retrieve_and_compose(transcript, turn_id)

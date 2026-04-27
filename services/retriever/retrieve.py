@@ -37,10 +37,11 @@ from __future__ import annotations
 import asyncio
 import time
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from loguru import logger
 from sqlalchemy.exc import SQLAlchemyError
 
+from auth import require_internal_token
 from config import get_settings
 from db import get_session
 from embedder import encode
@@ -131,7 +132,11 @@ async def _emit_trace(
     return await write_trace(session, trace_data)
 
 
-@router.post("/retrieve", response_model=RetrieveResponse)
+@router.post(
+    "/retrieve",
+    response_model=RetrieveResponse,
+    dependencies=[Depends(require_internal_token)],
+)
 async def retrieve(req: RetrieveRequest) -> RetrieveResponse:
     # Fast rejections on scope violations before touching the DB.
     if req.npc_id != _SUPPORTED_NPC:

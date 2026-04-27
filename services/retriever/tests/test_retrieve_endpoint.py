@@ -73,11 +73,17 @@ def _mock_rewriter(
     )
 
 
-async def _client(app) -> httpx.AsyncClient:
+async def _client(app, headers: dict[str, str] | None = None) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://retriever.test",
+        headers=headers,
     )
+
+
+def _headers(retriever_app: dict[str, Any]) -> dict[str, str]:
+    """Pull the X-Internal-Token header out of the fixture for callers."""
+    return retriever_app["auth_headers"]
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -91,7 +97,7 @@ async def test_in_scope_request_returns_chunks_rewritten_and_trace(
 ) -> None:
     _mock_rewriter(query="как получить водительские права", in_scope=True)
 
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -133,7 +139,7 @@ async def test_unknown_tenant_returns_400_unknown_tenant(
     retriever_app: dict[str, Any],
 ) -> None:
     _mock_rewriter()
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -153,7 +159,7 @@ async def test_unsupported_npc_returns_400_unsupported_npc(
     retriever_app: dict[str, Any],
 ) -> None:
     _mock_rewriter()
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -173,7 +179,7 @@ async def test_unsupported_language_returns_400_unsupported_language(
     retriever_app: dict[str, Any],
 ) -> None:
     _mock_rewriter()
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -198,7 +204,7 @@ async def test_out_of_scope_returns_empty_chunks(
     retriever_app: dict[str, Any],
 ) -> None:
     _mock_rewriter(query="погода в Москве", in_scope=False)
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -242,7 +248,7 @@ async def test_pydantic_validation_failure_returns_400_invalid_request(
     required field.
     """
     _mock_rewriter()
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -263,7 +269,7 @@ async def test_empty_transcript_returns_400_invalid_request(
     retriever_app: dict[str, Any],
 ) -> None:
     _mock_rewriter()
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -282,7 +288,7 @@ async def test_top_k_out_of_bounds_returns_400_invalid_request(
     retriever_app: dict[str, Any],
 ) -> None:
     _mock_rewriter()
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -332,7 +338,7 @@ async def test_rewriter_timeout_returns_503_and_writes_error_trace(
     converted to the 503 envelope.
     """
     respx.post(_LLM_URL).mock(side_effect=httpx.ReadTimeout("slow"))
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -376,7 +382,7 @@ async def test_embedder_failure_returns_503_embedder_unavailable(
 
     monkeypatch.setattr(retrieve, "encode", _bad_encode)
 
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -391,12 +397,86 @@ async def test_embedder_failure_returns_503_embedder_unavailable(
     assert resp.json()["error"] == "embedder_unavailable"
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Internal-caller auth (issue #40 / #47)
+# ─────────────────────────────────────────────────────────────────────
+
+
+@respx.mock
+async def test_retrieve_without_internal_token_returns_401(
+    retriever_app: dict[str, Any],
+) -> None:
+    """Caller without ``X-Internal-Token`` is rejected before any
+    DB / LLM work happens. Closes issue #40."""
+    _mock_rewriter()
+    async with await _client(retriever_app["app"]) as client:
+        resp = await client.post(
+            "/retrieve",
+            json={
+                "tenant_id": str(retriever_app["tenant_id"]),
+                "session_id": str(retriever_app["session_id"]),
+                "turn_id": "t-noauth",
+                "transcript": "как получить права?",
+            },
+        )
+    assert resp.status_code == 401, resp.text
+    assert resp.json()["error"] == "unauthenticated"
+
+
+@respx.mock
+async def test_retrieve_with_wrong_internal_token_returns_401(
+    retriever_app: dict[str, Any],
+) -> None:
+    """Wrong token value (e.g. stale rotation) is rejected. The
+    `secrets.compare_digest` comparison short-circuits in constant
+    time so the response carries no length-leak signal."""
+    _mock_rewriter()
+    async with await _client(retriever_app["app"], {"X-Internal-Token": "wrong-token"}) as client:
+        resp = await client.post(
+            "/retrieve",
+            json={
+                "tenant_id": str(retriever_app["tenant_id"]),
+                "session_id": str(retriever_app["session_id"]),
+                "turn_id": "t-wrongauth",
+                "transcript": "как получить права?",
+            },
+        )
+    assert resp.status_code == 401, resp.text
+    assert resp.json()["error"] == "unauthenticated"
+
+
+@respx.mock
+async def test_retrieve_returns_503_when_internal_token_unset(
+    retriever_app: dict[str, Any], monkeypatch
+) -> None:
+    """Empty ``RETRIEVER_INTERNAL_TOKEN`` env disables the endpoint
+    entirely — production deploys MUST set the secret. Issue #47."""
+    monkeypatch.setenv("RETRIEVER_INTERNAL_TOKEN", "")
+    import config
+
+    config.get_settings.cache_clear()
+
+    _mock_rewriter()
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
+        resp = await client.post(
+            "/retrieve",
+            json={
+                "tenant_id": str(retriever_app["tenant_id"]),
+                "session_id": str(retriever_app["session_id"]),
+                "turn_id": "t-unconfig",
+                "transcript": "как получить права?",
+            },
+        )
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["error"] == "retriever_unconfigured"
+
+
 @respx.mock
 async def test_response_shape_conforms_to_openapi_contract(
     retriever_app: dict[str, Any],
 ) -> None:
     _mock_rewriter(query="как получить водительские права", in_scope=True)
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={

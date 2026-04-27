@@ -108,7 +108,10 @@ async def test_transcription_triggers_retrieve_call_with_expected_payload(
     assert body["tenant_id"] == str(processor._test_tenant_id)
     assert body["session_id"] == str(processor._test_session_id)
     assert body["transcript"] == "как получить ПРАВА"
-    assert body["turn_id"].startswith("t-")
+    # Format is `<4-hex-salt>-<5-digit-counter>` per issue #48.
+    import re
+
+    assert re.match(r"^[0-9a-f]{4}-\d{5}$", body["turn_id"])
 
 
 @respx.mock
@@ -189,6 +192,12 @@ async def test_out_of_scope_response_falls_back_to_refusal(processor, captured) 
 
 @respx.mock
 async def test_turn_id_monotonic_within_session(processor, captured) -> None:
+    """Issue #48: turn_id format is `<instance-salt>-<NNNNN>`. The
+    counter is monotonic per processor; the salt is randomized in
+    __init__ so a restart inside the same session can't replay
+    earlier turn_ids and collide with UNIQUE(session_id, turn_id)."""
+    import re
+
     route = respx.post(f"{_RETRIEVER_BASE}/retrieve").mock(
         return_value=httpx.Response(200, json=_response_body())
     )
@@ -197,7 +206,30 @@ async def test_turn_id_monotonic_within_session(processor, captured) -> None:
 
     assert route.call_count == 3
     turn_ids = [json.loads(call.request.content)["turn_id"] for call in route.calls]
-    assert turn_ids == ["t-00001", "t-00002", "t-00003"]
+    pattern = re.compile(r"^[0-9a-f]{4}-\d{5}$")
+    for tid in turn_ids:
+        assert pattern.match(tid), tid
+    # The numeric suffix is monotonic 1..3.
+    suffixes = [int(t.split("-", 1)[1]) for t in turn_ids]
+    assert suffixes == [1, 2, 3]
+    # All three share the same instance salt — same processor instance.
+    salts = {t.split("-", 1)[0] for t in turn_ids}
+    assert len(salts) == 1
+
+
+def test_turn_id_salt_differs_across_processor_instances() -> None:
+    """Two processors built in the same session MUST get distinct
+    salts so one's counter can never alias onto the other's. This
+    is the post-restart collision guard from issue #48."""
+    p1 = KBRetrievalProcessor(
+        retriever_url=_RETRIEVER_BASE, tenant_id=uuid.uuid4(), session_id=uuid.uuid4()
+    )
+    p2 = KBRetrievalProcessor(
+        retriever_url=_RETRIEVER_BASE, tenant_id=uuid.uuid4(), session_id=uuid.uuid4()
+    )
+    # 16-bit salt collision is ~1/65536 — astronomically unlikely
+    # given test count, so we can assert flat inequality.
+    assert p1._instance_salt != p2._instance_salt
 
 
 async def test_empty_transcript_is_forwarded_untouched(captured, monkeypatch) -> None:

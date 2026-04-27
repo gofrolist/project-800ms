@@ -50,6 +50,9 @@ def _retriever_env_baseline() -> Iterator[None]:
     os.environ.setdefault("LLM_API_KEY", "test-key")
     os.environ.setdefault("REWRITER_MODEL", "test-rewriter-model")
     os.environ.setdefault("EMBEDDER_DEVICE", "cpu")
+    # Issue #40 / #47: the auth dep returns 503 when this is empty so
+    # /retrieve refuses traffic — set a non-secret default for tests.
+    os.environ.setdefault("RETRIEVER_INTERNAL_TOKEN", "test-internal-token")
     yield
 
 
@@ -120,12 +123,23 @@ async def db_session(pgvector_dsn: str) -> AsyncIterator[AsyncSession]:
     Each test gets a fresh transactional session against the session-
     scoped container. Rollback on exit keeps tests isolated — no DELETEs
     or TRUNCATEs needed between tests.
+
+    Issue #44: ``join_transaction_mode='create_savepoint'`` makes the
+    AsyncSession's own ``commit()`` translate to a SAVEPOINT release
+    rather than committing the outer transaction. Without it, a test
+    that explicitly commits would defeat the rollback isolation —
+    fine today (no test commits) but a lurking trap for any Phase 3
+    code that grows real upsert flows.
     """
     engine = create_async_engine(pgvector_dsn, pool_pre_ping=True, future=True)
     try:
         async with engine.connect() as conn:
             async with conn.begin() as outer_txn:
-                session = AsyncSession(bind=conn, expire_on_commit=False)
+                session = AsyncSession(
+                    bind=conn,
+                    expire_on_commit=False,
+                    join_transaction_mode="create_savepoint",
+                )
                 try:
                     yield session
                 finally:
@@ -178,6 +192,7 @@ async def retriever_app(pgvector_postgres, monkeypatch) -> dict[str, Any]:
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("REWRITER_MODEL", "test-rewriter-model")
     monkeypatch.setenv("EMBEDDER_DEVICE", "cpu")
+    monkeypatch.setenv("RETRIEVER_INTERNAL_TOKEN", "test-internal-token")
 
     import config
 
@@ -305,4 +320,6 @@ async def retriever_app(pgvector_postgres, monkeypatch) -> dict[str, Any]:
         "session_id": session_id,
         "kb_entry_id": kb_entry_id,
         "llm_base": _FIXTURE_LLM_BASE,
+        "internal_token": "test-internal-token",
+        "auth_headers": {"X-Internal-Token": "test-internal-token"},
     }

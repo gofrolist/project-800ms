@@ -125,6 +125,7 @@ async def _run_probes(app, tenant_id, session_id, probes: list[dict]) -> list[di
         transport=ASGITransport(app=app),
         base_url="http://refusal-eval.test",
         timeout=60.0,
+        headers={"X-Internal-Token": os.environ["RETRIEVER_INTERNAL_TOKEN"]},
     ) as client:
         for probe in probes:
             resp = await client.post(
@@ -178,6 +179,7 @@ async def _main(args: argparse.Namespace) -> int:
 
     os.environ.setdefault("DB_URL", "postgresql+asyncpg://placeholder/placeholder")
     os.environ.setdefault("EMBEDDER_DEVICE", "cpu")
+    os.environ.setdefault("RETRIEVER_INTERNAL_TOKEN", "refusal-eval-internal-token")
 
     print("[refusal-eval] starting pgvector container...", flush=True)
     container = PostgresContainer(
