@@ -14,18 +14,20 @@ the five T020 assertions:
 
 Slow-marked (testcontainer + BGE-M3 download). CI runs it; devs skip
 with `-m "not slow"`.
+
+The `retriever_app` fixture (one container + one app + one tenant +
+3 KB chunks) lives in conftest.py and is shared with the US2 refusal
++ timing-parity tests so the test suite stays at one container.
 """
 
 from __future__ import annotations
 
-import secrets
 import uuid
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
-import pytest_asyncio
 import respx
 import yaml
 from httpx import ASGITransport
@@ -34,12 +36,10 @@ from openapi_spec_validator.readers import read_from_filename
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from embedder import encode, preload
-
 pytestmark = pytest.mark.slow
 
-# Match the LLM the rewriter is configured against — must align with
-# the monkeypatched LLM_BASE_URL env.
+# Must match `_FIXTURE_LLM_BASE` in conftest.py — that fixture wires
+# LLM_BASE_URL to this host so respx can intercept the rewriter call.
 _LLM_BASE = "http://llm-test.local"
 _LLM_URL = f"{_LLM_BASE}/chat/completions"
 
@@ -50,10 +50,6 @@ _CONTRACT_PATH = (
     / "contracts"
     / "retrieve.openapi.yaml"
 )
-
-
-def _vector_literal(v: list[float]) -> str:
-    return "[" + ",".join(f"{x:.10g}" for x in v) + "]"
 
 
 def _mock_rewriter(
@@ -75,147 +71,6 @@ def _mock_rewriter(
             },
         )
     )
-
-
-@pytest_asyncio.fixture
-async def retriever_app(pgvector_postgres, monkeypatch) -> dict[str, Any]:
-    """Build a fresh FastAPI app pointed at the session-scoped pgvector
-    container, and seed one tenant + session + KB entry + 3 chunks.
-
-    Seed is COMMITTED on a dedicated engine so the app's own engine
-    (opened by `db.get_engine()`) sees the data. The shared container
-    tears down at session end — each test uses unique UUIDs to avoid
-    collisions with other tests that touch the same tables.
-    """
-    preload()
-
-    dsn = pgvector_postgres.get_connection_url().replace("+psycopg2", "+asyncpg")
-
-    tenant_id = uuid.uuid4()
-    session_id = uuid.uuid4()
-    api_key_id = uuid.uuid4()
-    kb_entry_id = uuid.uuid4()
-
-    # Pre-embed the chunk contents OUTSIDE the COMMIT transaction.
-    chunk_specs = [
-        {
-            "section": "Получение прав",
-            "content": (
-                "Чтобы получить водительские права, посетите автошколу "
-                "и сдайте экзамены. Стоимость обучения 5 000 долларов."
-            ),
-        },
-        {
-            "section": "Цены на транспорт",
-            "content": (
-                "Грузовик Mule стоит 15 000 долларов. "
-                "Легковой автомобиль Premier стоит 12 500 долларов."
-            ),
-        },
-        {
-            "section": "Покупка оружия",
-            "content": (
-                "Оружие можно купить в магазине после получения лицензии. "
-                "Лицензия стоит 10 000 долларов."
-            ),
-        },
-    ]
-    for spec in chunk_specs:
-        spec["embedding"] = _vector_literal(await encode(spec["content"]))
-
-    engine = create_async_engine(dsn)
-    async with engine.begin() as conn:
-        await conn.execute(
-            text("INSERT INTO tenants (id, name, slug) VALUES (:i, :n, :s)"),
-            {"i": tenant_id, "n": "Test Tenant", "s": f"t-{tenant_id.hex[:8]}"},
-        )
-        # Random 32-byte key_hash per test — the column has a UNIQUE
-        # index, and pgvector_postgres is session-scoped so rows
-        # accumulate across tests.
-        await conn.execute(
-            text(
-                "INSERT INTO api_keys (id, tenant_id, key_hash, key_prefix) "
-                "VALUES (:i, :t, decode(:h, 'hex'), :p)"
-            ),
-            {
-                "i": api_key_id,
-                "t": tenant_id,
-                "h": secrets.token_hex(32),
-                "p": f"pfx{tenant_id.hex[:5]}",
-            },
-        )
-        await conn.execute(
-            text(
-                "INSERT INTO sessions (id, tenant_id, api_key_id, room, identity) "
-                "VALUES (:si, :t, :ai, :room, 'test-user')"
-            ),
-            {
-                "si": session_id,
-                "t": tenant_id,
-                "ai": api_key_id,
-                "room": f"room-{session_id.hex[:8]}",
-            },
-        )
-        await conn.execute(
-            text(
-                "INSERT INTO kb_entries "
-                "(id, tenant_id, kb_entry_key, title, content_sha256) "
-                "VALUES (:i, :t, 'main', 'Main', :sha)"
-            ),
-            {"i": kb_entry_id, "t": tenant_id, "sha": "shadeadbeef"},
-        )
-        for idx, spec in enumerate(chunk_specs):
-            await conn.execute(
-                text(
-                    "INSERT INTO kb_chunks "
-                    "(tenant_id, kb_entry_id, section, title, content, "
-                    " content_sha256, embedding) "
-                    "VALUES (:t, :e, :sec, :title, :content, :sha, "
-                    "        CAST(:emb AS vector))"
-                ),
-                {
-                    "t": tenant_id,
-                    "e": kb_entry_id,
-                    "sec": spec["section"],
-                    "title": f"Главный раздел — {spec['section']}",
-                    "content": spec["content"],
-                    "sha": f"sha-chunk-{idx}",
-                    "emb": spec["embedding"],
-                },
-            )
-    await engine.dispose()
-
-    # Point the app at the testcontainer + stub LLM. Cached factories
-    # must be invalidated so the new env takes effect.
-    monkeypatch.setenv("DB_URL", dsn)
-    monkeypatch.setenv("LLM_BASE_URL", _LLM_BASE)
-    monkeypatch.setenv("LLM_API_KEY", "test-key")
-    monkeypatch.setenv("REWRITER_MODEL", "test-rewriter-model")
-    monkeypatch.setenv("EMBEDDER_DEVICE", "cpu")
-
-    import config
-    import db
-
-    config.get_settings.cache_clear()
-    db.get_engine.cache_clear()
-    db._session_factory.cache_clear()
-
-    # Import AFTER the env patch so module-level `app = create_app()`
-    # reads the correct settings. Purge any cached module import first.
-    import sys
-
-    sys.modules.pop("main", None)
-    sys.modules.pop("retrieve", None)
-    from main import create_app
-
-    app = create_app()
-
-    yield {
-        "app": app,
-        "tenant_id": tenant_id,
-        "session_id": session_id,
-        "kb_entry_id": kb_entry_id,
-    }
 
 
 async def _client(app) -> httpx.AsyncClient:

@@ -27,9 +27,12 @@ Research R4 notes:
 
 from __future__ import annotations
 
+import statistics
+import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Deque
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +40,77 @@ from sqlalchemy.ext.asyncio import AsyncSession
 _SEMANTIC_WEIGHT = 0.7
 _LEXICAL_WEIGHT = 0.3
 _CTE_LIMIT = 20
+
+# ---------------------------------------------------------------------------
+# Per-tenant latency stats — drives the US2 timing-parity pad (T038/T039).
+# ---------------------------------------------------------------------------
+#
+# Constitution Principle IV: every observable side channel must respect
+# tenant isolation. This means the rolling window MUST be keyed by
+# tenant_id and MUST live in a namespace separate from
+# `apps/api/rate_limit.py` (the xff-spoof learning: when two unrelated
+# bucketing systems share the same dict, an unrelated regression in one
+# can change the eviction behaviour of the other).
+#
+# Implementation:
+#   * One deque per tenant, capped at `_LATENCY_WINDOW_MAX` samples.
+#   * Each sample is `(timestamp_seconds, latency_ms)`. The window is
+#     trimmed to the most recent `_LATENCY_WINDOW_SECONDS` on every
+#     read so a quiet tenant doesn't return stale data.
+#   * `p50_for(tenant_id)` returns 0 on an empty / too-stale window —
+#     which is the correct degradation: a brand-new tenant with no
+#     in-scope traffic gets pad=0 ms (matching the equally-fast
+#     rewrite-only outcome).
+#   * The state is process-local. Multiple retriever replicas each
+#     compute their own p50; we accept the slight per-replica variance
+#     for the simplicity of not standing up a Redis dependency.
+
+_LATENCY_WINDOW_SECONDS = 60.0
+_LATENCY_WINDOW_MAX = 200  # hard cap per tenant — bounds memory under load
+
+_latency_windows: dict[uuid.UUID, Deque[tuple[float, int]]] = {}
+
+
+def _reset_latency_stats() -> None:
+    """Wipe every tenant's latency window — used by tests so a prior
+    test's recorded p50 doesn't bleed into the next one."""
+    _latency_windows.clear()
+
+
+def record_p50(tenant_id: uuid.UUID, latency_ms: int) -> None:
+    """Record one in-scope latency sample for a tenant.
+
+    Caller (the in-scope success branch in retrieve.py) passes the
+    embed+sql wall-time so the refusal pad can mirror the cost the
+    rewriter-only branch SKIPS. Rewrite is shared between branches
+    and so excluded.
+
+    Negative or zero latencies are ignored — a 0-ms sample would
+    unconditionally pull p50 toward 0 and defeat the purpose.
+    """
+    if latency_ms <= 0:
+        return
+    window = _latency_windows.setdefault(tenant_id, deque(maxlen=_LATENCY_WINDOW_MAX))
+    window.append((time.monotonic(), latency_ms))
+
+
+def p50_for(tenant_id: uuid.UUID) -> int:
+    """Return the median in-scope latency for `tenant_id` over the
+    rolling 60-s window. Returns 0 when no qualifying samples exist.
+
+    Stale samples (older than `_LATENCY_WINDOW_SECONDS`) are dropped
+    eagerly here so a tenant that had a burst and went quiet doesn't
+    keep padding refusals against minute-old data.
+    """
+    window = _latency_windows.get(tenant_id)
+    if not window:
+        return 0
+    cutoff = time.monotonic() - _LATENCY_WINDOW_SECONDS
+    while window and window[0][0] < cutoff:
+        window.popleft()
+    if not window:
+        return 0
+    return int(statistics.median(latency for _, latency in window))
 
 
 @dataclass(frozen=True)

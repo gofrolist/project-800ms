@@ -29,7 +29,7 @@ from pipecat.frames.frames import LLMMessagesAppendFrame, TranscriptionFrame
 from pipecat.processors.frame_processor import FrameDirection
 
 from kb_prompts import (
-    BASIC_REFUSAL_SYSTEM_PROMPT_RU,
+    REFUSAL_SYSTEM_PROMPT_RU,
     GROUNDED_SYSTEM_PROMPT_RU,
 )
 from kb_retrieval import KBRetrievalProcessor
@@ -155,7 +155,7 @@ async def test_retriever_503_falls_back_to_refusal_without_crashing(processor, c
     assert isinstance(pushed_frames[0], LLMMessagesAppendFrame)
     # Refusal prompt, not grounded.
     msgs = pushed_frames[0].messages
-    assert BASIC_REFUSAL_SYSTEM_PROMPT_RU.split(".")[0] in msgs[0]["content"]
+    assert REFUSAL_SYSTEM_PROMPT_RU.split(".")[0] in msgs[0]["content"]
     # Refusal path must also trigger the LLM — otherwise the user hears
     # nothing after an out-of-scope/error turn.
     assert pushed_frames[0].run_llm is True
@@ -170,7 +170,7 @@ async def test_retriever_timeout_falls_back_to_refusal(processor, captured) -> N
     assert len(pushed_frames) == 1
     assert isinstance(pushed_frames[0], LLMMessagesAppendFrame)
     msgs = pushed_frames[0].messages
-    assert BASIC_REFUSAL_SYSTEM_PROMPT_RU.split(".")[0] in msgs[0]["content"]
+    assert REFUSAL_SYSTEM_PROMPT_RU.split(".")[0] in msgs[0]["content"]
 
 
 @respx.mock
@@ -184,7 +184,7 @@ async def test_out_of_scope_response_falls_back_to_refusal(processor, captured) 
     assert len(pushed_frames) == 1
     assert isinstance(pushed_frames[0], LLMMessagesAppendFrame)
     msgs = pushed_frames[0].messages
-    assert BASIC_REFUSAL_SYSTEM_PROMPT_RU.split(".")[0] in msgs[0]["content"]
+    assert REFUSAL_SYSTEM_PROMPT_RU.split(".")[0] in msgs[0]["content"]
 
 
 @respx.mock

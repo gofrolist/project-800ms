@@ -34,6 +34,7 @@ than shadowing it with a trace-write exception.
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from fastapi import APIRouter
@@ -50,7 +51,7 @@ from errors import (
     UnsupportedLanguage,
     UnsupportedNpc,
 )
-from hybrid_search import hybrid_search
+from hybrid_search import hybrid_search, p50_for, record_p50
 from rewriter import REWRITER_VERSION, RewriterResult, rewrite_and_classify
 from schemas import (
     FusionComponentsOut,
@@ -175,12 +176,20 @@ async def retrieve(req: RetrieveRequest) -> RetrieveResponse:
                 # need it populated.
                 stage_timings["rewrite"] = _ms_since(rw_start)
 
-            # --- Out-of-scope stub -------------------------------------
-            # US2 extends this branch with the timing-parity pad +
-            # refusal plumbing. In US1 we just persist the trace and
-            # return an empty chunks list so the agent can route to
-            # refusal.
+            # --- Out-of-scope refusal branch (US2) ----------------------
+            # Skip embed+sql but pad the wall-time so the round trip
+            # mirrors the warm in-scope p50, preventing a side-channel
+            # leak of scope classification (SC-008). The pad target is
+            # 0 ms when this tenant has no recorded in-scope latency
+            # yet — that's the correct degradation (a brand-new tenant
+            # has no leak surface to measure against).
             if not rewrite_result.in_scope:
+                pad_target_ms = p50_for(tenant.id)
+                pad_start = time.perf_counter()
+                if pad_target_ms > 0:
+                    await asyncio.sleep(pad_target_ms / 1000.0)
+                stage_timings["pad"] = _ms_since(pad_start)
+
                 trace_id = await _emit_trace(
                     session,
                     req,
@@ -235,6 +244,12 @@ async def retrieve(req: RetrieveRequest) -> RetrieveResponse:
                 raise DbUnavailable() from exc
             finally:
                 stage_timings["sql"] = _ms_since(sql_start)
+
+            # Record this in-scope round-trip's embed+sql cost so the
+            # next refusal turn for this tenant can pad to its median.
+            # Excludes rewrite (shared between branches) so the pad
+            # mirrors only the work the refusal branch SKIPS.
+            record_p50(tenant.id, stage_timings["embed"] + stage_timings["sql"])
 
             # --- Success trace + response ------------------------------
             trace_id = await _emit_trace(
