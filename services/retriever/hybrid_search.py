@@ -1,0 +1,177 @@
+"""Hybrid search — weighted-sum fusion of pgvector semantic + Russian tsvector lexical.
+
+A single SQL statement with two CTEs (top-20 each) fused by weighted
+sum: `0.7 * semantic + 0.3 * lexical`. Both CTEs already filter to one
+tenant, so the final outer join cannot mix tenants. Returns the top-k
+`RetrievedChunk` records ordered by fused score DESC.
+
+Constitution Principle IV: every query layer carries `WHERE tenant_id =
+:tid`. The test `TestTenantIsolation::test_no_cross_tenant_leakage`
+(services/retriever/tests/test_hybrid_search.py) is the enforcing
+boundary — removing any of the tenant_id predicates would make that
+test fail by design.
+
+Research R4 notes:
+  * HNSW index parameters (m=16, ef_construction=200) live in migration
+    0004_kb_chunks. ef_search is the default (40); we rely on that.
+  * Fusion weights (0.7 / 0.3) are hard-coded here because any change
+    requires a paired update in research.md (R2) and an eval re-run.
+  * Semantic similarity is `1 - cosine_distance`. For normalized
+    BGE-M3 vectors (the embedder normalizes by default) this lies in
+    [0, 1]; the `<=>` operator returns cosine distance in the same range.
+  * `plainto_tsquery('russian', ...)` handles empty / whitespace input
+    by returning an empty tsquery that matches nothing — the lexical
+    leg silently drops and fusion reduces to pure semantic, which is
+    the right degradation for a noisy STT fragment.
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+from typing import Any
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+_SEMANTIC_WEIGHT = 0.7
+_LEXICAL_WEIGHT = 0.3
+_CTE_LIMIT = 20
+
+
+@dataclass(frozen=True)
+class FusionComponents:
+    """Exposed so callers can reproduce the fusion math or log components."""
+
+    semantic: float
+    lexical: float
+
+
+@dataclass(frozen=True)
+class RetrievedChunk:
+    """Single hybrid-search result. Matches the `RetrievedChunk` schema
+    in `specs/002-helper-guide-npc/contracts/retrieve.openapi.yaml`.
+    """
+
+    id: int
+    title: str
+    content: str
+    score: float
+    fusion_components: FusionComponents
+    metadata: dict[str, Any]
+
+
+# ---------------------------------------------------------------------------
+# SQL
+# ---------------------------------------------------------------------------
+#
+# Two CTEs → full outer join → weighted sum → top-k. The outer `JOIN
+# kb_chunks kc ON kc.id = fused.id AND kc.tenant_id = :tid` is belt-and-
+# -braces tenant isolation — the CTEs already enforce it, but the extra
+# predicate means a future refactor that removes one CTE filter still
+# leaves the tenant guard in place at the outer layer.
+_HYBRID_SQL = text(
+    """
+    WITH sem AS (
+        SELECT id,
+               1 - (embedding <=> CAST(:emb AS vector)) AS semantic_score
+        FROM kb_chunks
+        WHERE tenant_id = :tid
+        ORDER BY embedding <=> CAST(:emb AS vector)
+        LIMIT :cte_limit
+    ),
+    lex AS (
+        SELECT id,
+               ts_rank_cd(content_tsv, plainto_tsquery('russian', :q))
+                   AS lexical_score
+        FROM kb_chunks
+        WHERE tenant_id = :tid
+          AND content_tsv @@ plainto_tsquery('russian', :q)
+        ORDER BY lexical_score DESC
+        LIMIT :cte_limit
+    ),
+    fused AS (
+        SELECT
+            COALESCE(sem.id, lex.id) AS id,
+            COALESCE(sem.semantic_score, 0)::float AS sem_score,
+            COALESCE(lex.lexical_score, 0)::float AS lex_score,
+            :w_sem * COALESCE(sem.semantic_score, 0)::float
+              + :w_lex * COALESCE(lex.lexical_score, 0)::float
+                AS fused_score
+        FROM sem
+        FULL OUTER JOIN lex ON sem.id = lex.id
+    )
+    SELECT kc.id, kc.title, kc.content, kc.metadata,
+           fused.sem_score, fused.lex_score, fused.fused_score
+    FROM fused
+    JOIN kb_chunks kc ON kc.id = fused.id AND kc.tenant_id = :tid
+    ORDER BY fused.fused_score DESC
+    LIMIT :k
+    """
+)
+
+
+def _embedding_to_vector_literal(embedding: list[float]) -> str:
+    """Serialize a Python float list as a pgvector text literal.
+
+    pgvector accepts `[1.0, 2.0, 3.0]` as a cast-able text form. A text
+    literal avoids having to register a per-connection type adapter on
+    the pool, which is fiddly to do reliably across async sessions and
+    buys us nothing for a single-call-per-retrieval workload.
+    """
+    return "[" + ",".join(f"{x:.10g}" for x in embedding) + "]"
+
+
+async def hybrid_search(
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    query_text: str,
+    query_embedding: list[float],
+    top_k: int = 5,
+) -> list[RetrievedChunk]:
+    """Run the two-CTE hybrid search for one tenant.
+
+    Args:
+        session: Async session; caller owns its lifecycle + rollback.
+        tenant_id: MANDATORY. Every CTE plus the outer select filters
+            on this predicate. A cross-tenant leak here is a CRITICAL
+            constitution Principle IV violation.
+        query_text: The rewriter's output (or the raw transcript if the
+            rewriter failed closed). Passed to `plainto_tsquery` — an
+            empty/whitespace query silently drops the lexical leg.
+        query_embedding: 1024-dim dense vector from BGE-M3, normalized.
+        top_k: Post-fusion cap on returned chunks.
+
+    Returns:
+        List of `RetrievedChunk` ordered by fused score DESC. Empty if
+        the tenant has no chunks, neither CTE matched, or `top_k <= 0`.
+    """
+    result = await session.execute(
+        _HYBRID_SQL,
+        {
+            "emb": _embedding_to_vector_literal(query_embedding),
+            "tid": tenant_id,
+            "q": query_text,
+            "k": top_k,
+            "cte_limit": _CTE_LIMIT,
+            "w_sem": _SEMANTIC_WEIGHT,
+            "w_lex": _LEXICAL_WEIGHT,
+        },
+    )
+
+    chunks: list[RetrievedChunk] = []
+    for row in result.mappings():
+        chunks.append(
+            RetrievedChunk(
+                id=row["id"],
+                title=row["title"],
+                content=row["content"],
+                score=float(row["fused_score"]),
+                fusion_components=FusionComponents(
+                    semantic=float(row["sem_score"]),
+                    lexical=float(row["lex_score"]),
+                ),
+                metadata=dict(row["metadata"]) if row["metadata"] else {},
+            )
+        )
+    return chunks

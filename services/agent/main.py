@@ -361,6 +361,13 @@ def main() -> None:
             # empty rather than raising).
             "api_base_url": os.environ.get("API_BASE_URL", ""),
             "agent_internal_token": os.environ.get("AGENT_INTERNAL_TOKEN", ""),
+            # Retriever (Helper/Guide NPC RAG). Empty RETRIEVER_URL
+            # disables the KB path — KBRetrievalProcessor runs in
+            # pass-through mode and the pipeline behaves like pre-RAG
+            # sessions. Present deploys set RETRIEVER_URL=http://retriever:8002
+            # via infra/.env. See specs/002-helper-guide-npc/.
+            "retriever_url": os.environ.get("RETRIEVER_URL", ""),
+            "retriever_timeout_ms": int(os.environ.get("AGENT_RETRIEVER_TIMEOUT_MS", "2000")),
         }
     except MissingEnvError as exc:
         logger.error(str(exc))
