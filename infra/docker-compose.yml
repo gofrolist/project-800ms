@@ -496,12 +496,16 @@ services:
       - LLM_BASE_URL=${LLM_BASE_URL:?LLM_BASE_URL is required}
       - LLM_API_KEY=${LLM_API_KEY:?LLM_API_KEY is required}
       - REWRITER_MODEL=${REWRITER_MODEL:-${LLM_MODEL:-qwen-7b}}
-      - REWRITER_TIMEOUT_MS=${REWRITER_TIMEOUT_MS:-1500}
+      - REWRITER_TIMEOUT_MS=${REWRITER_TIMEOUT_MS:-400}
       - EMBEDDER_DEVICE=${EMBEDDER_DEVICE:-cpu}
       - LOG_LEVEL=${RETRIEVER_LOG_LEVEL:-INFO}
       # Issue #40 / #47: shared-secret bearer for /retrieve. Required
       # in production — empty disables the endpoint (returns 503).
       - RETRIEVER_INTERNAL_TOKEN=${RETRIEVER_INTERNAL_TOKEN:?RETRIEVER_INTERNAL_TOKEN is required}
+      # Rotation grace token (issue #55) — empty in steady state; set
+      # during a rotation rollout so the retriever accepts both new
+      # and old secrets until every caller has rotated.
+      - RETRIEVER_INTERNAL_TOKEN_PREVIOUS=${RETRIEVER_INTERNAL_TOKEN_PREVIOUS:-}
       - HF_HOME=/home/appuser/.cache/huggingface
       - HF_HUB_DOWNLOAD_TIMEOUT=600
     volumes:

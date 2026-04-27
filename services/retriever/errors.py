@@ -22,6 +22,7 @@ class ErrorCode(str, Enum):
 
     INVALID_REQUEST = "invalid_request"
     UNAUTHENTICATED = "unauthenticated"
+    PAYLOAD_TOO_LARGE = "payload_too_large"
     UNKNOWN_TENANT = "unknown_tenant"
     UNSUPPORTED_NPC = "unsupported_npc"
     UNSUPPORTED_LANGUAGE = "unsupported_language"
@@ -38,6 +39,7 @@ class ErrorCode(str, Enum):
 _STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.INVALID_REQUEST: 400,
     ErrorCode.UNAUTHENTICATED: 401,
+    ErrorCode.PAYLOAD_TOO_LARGE: 413,
     ErrorCode.UNKNOWN_TENANT: 400,
     ErrorCode.UNSUPPORTED_NPC: 400,
     ErrorCode.UNSUPPORTED_LANGUAGE: 400,
@@ -75,13 +77,19 @@ class RetrieverError(Exception):
         return _STATUS_BY_CODE[self.code]
 
     def to_envelope(self) -> dict[str, Any]:
-        envelope: dict[str, Any] = {
-            "error": self.code.value,
+        # Nested shape, matching apps/api's convention (issue #39):
+        #   {"error": {"code": "...", "message": "...", "trace_id": "..."}}
+        # request_id is omitted here — apps/api includes it because it
+        # has a request-id middleware producing one per request; the
+        # retriever does not (yet). When that middleware lands, this
+        # envelope's `request_id` slot drops in non-breakingly.
+        inner: dict[str, Any] = {
+            "code": self.code.value,
             "message": self.message,
         }
         if self.trace_id is not None:
-            envelope["trace_id"] = str(self.trace_id)
-        return envelope
+            inner["trace_id"] = str(self.trace_id)
+        return {"error": inner}
 
 
 # Convenience subclasses so call sites read cleanly:
@@ -187,11 +195,12 @@ def register_exception_handlers(app: FastAPI) -> None:
         Without this handler FastAPI returns its default
         ``422 {"detail": [...]}`` shape, which violates the OpenAPI
         contract (only 200/400/503 are documented and the caller is
-        promised ``{error, message}``). We squash the pydantic detail
-        list into a compact message — the structure differs too much
-        from the contract to surface verbatim, and the message stays
-        PII-safe because pydantic echoes only the field path + rule
-        name, not the rejected value.
+        promised the nested ``{error: {code, message}}`` envelope).
+        We squash the pydantic detail list into a compact message —
+        the structure differs too much from the contract to surface
+        verbatim, and the message stays PII-safe because pydantic
+        echoes only the field path + rule name, not the rejected
+        value.
         """
         first = exc.errors()[0] if exc.errors() else None
         if first is not None:
@@ -201,5 +210,10 @@ def register_exception_handlers(app: FastAPI) -> None:
             message = "invalid_request"
         return JSONResponse(
             status_code=400,
-            content={"error": ErrorCode.INVALID_REQUEST.value, "message": message},
+            content={
+                "error": {
+                    "code": ErrorCode.INVALID_REQUEST.value,
+                    "message": message,
+                }
+            },
         )

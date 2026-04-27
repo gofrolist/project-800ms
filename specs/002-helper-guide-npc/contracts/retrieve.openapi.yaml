@@ -73,6 +73,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '413':
+          description: |
+            Request body exceeds the per-request size cap (issue #56).
+            The middleware fires before the auth dep so an
+            unauthenticated caller can't OOM the retriever via
+            `Content-Length` probes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '503':
           description: |
             Dependency unavailable (DB down, embedder failed, rewriter LLM
@@ -304,30 +314,41 @@ components:
 
     Error:
       type: object
-      required: [error, message]
+      required: [error]
+      description: |
+        Issue #39: nested envelope matching apps/api's convention. Same
+        shape as `apps/api`'s `{error: {code, message, request_id}}` so
+        shared client code can parse one shape, not two. `request_id`
+        is omitted today — added when retriever gains a request-id
+        middleware.
       properties:
         error:
-          type: string
-          description: Short machine-readable error code.
-          enum:
-            - invalid_request
-            - unauthenticated
-            - unknown_tenant
-            - unsupported_npc
-            - unsupported_language
-            - rewriter_timeout
-            - rewriter_malformed_output
-            - embedder_unavailable
-            - db_unavailable
-            - retriever_unconfigured
-            - internal_error
-        message:
-          type: string
-          description: Short human-readable summary. MUST NOT include KB content, transcript, or internal prompts.
-        trace_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: |
-            Present if a retrieval_traces row was written before failure. Lets
-            the agent correlate the error with a persisted record.
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Short machine-readable error code.
+              enum:
+                - invalid_request
+                - unauthenticated
+                - payload_too_large
+                - unknown_tenant
+                - unsupported_npc
+                - unsupported_language
+                - rewriter_timeout
+                - rewriter_malformed_output
+                - embedder_unavailable
+                - db_unavailable
+                - retriever_unconfigured
+                - internal_error
+            message:
+              type: string
+              description: Short human-readable summary. MUST NOT include KB content, transcript, or internal prompts.
+            trace_id:
+              type: string
+              format: uuid
+              nullable: true
+              description: |
+                Present if a retrieval_traces row was written before failure.
+                Lets the agent correlate the error with a persisted record.

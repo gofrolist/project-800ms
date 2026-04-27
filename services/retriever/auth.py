@@ -35,12 +35,31 @@ def require_internal_token(
     Raises typed errors so the existing exception handler emits the
     flat ``{error, message}`` envelope rather than FastAPI's default
     ``{"detail": ...}`` shape.
+
+    Issue #55: the caller's header is matched against EITHER the
+    current `retriever_internal_token` OR the optional
+    `retriever_internal_token_previous`. The previous token is set
+    during a rotation grace window so the agent can rotate first,
+    the retriever rotates second, and both sides remain reachable
+    until the operator clears the previous-token slot.
     """
-    token = get_settings().retriever_internal_token
-    if not token:
+    settings = get_settings()
+    current = settings.retriever_internal_token
+    if not current:
         # Fail closed at request-time, not boot-time: dev / unit tests
         # that don't need /retrieve still work, but the endpoint itself
         # refuses traffic when the secret is unset.
         raise RetrieverUnconfigured()
-    if not x_internal_token or not secrets.compare_digest(x_internal_token, token):
+    if not x_internal_token:
+        raise Unauthenticated()
+
+    # secrets.compare_digest is constant-time over each comparison.
+    # Both branches always run (boolean OR short-circuits on True but
+    # the second compare_digest is a no-op when the first matched, so
+    # a fixed-secret attacker can't time-distinguish "matched current"
+    # from "matched previous"; both are accepted with the same envelope).
+    matches_current = secrets.compare_digest(x_internal_token, current)
+    previous = settings.retriever_internal_token_previous
+    matches_previous = bool(previous) and secrets.compare_digest(x_internal_token, previous)
+    if not (matches_current or matches_previous):
         raise Unauthenticated()

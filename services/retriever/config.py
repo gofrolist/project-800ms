@@ -37,8 +37,15 @@ class Settings(BaseSettings):
     llm_base_url: AnyHttpUrl
     llm_api_key: str = Field(min_length=1)
     rewriter_model: str = Field(min_length=1)
-    # Hard timeout for the rewriter call; beyond this we fail-closed (refusal).
-    rewriter_timeout_ms: int = Field(default=1500, ge=100, le=10_000)
+    # Hard timeout for the rewriter call; beyond this we fail-closed
+    # (refusal). Issue #53: must be SMALLER than the agent's
+    # AGENT_RETRIEVER_TIMEOUT_MS (default 500 ms) so the retriever's
+    # own refusal branch fires + writes its trace row before the agent
+    # gives up waiting and routes to refusal on its own. Default 400 ms
+    # leaves ~50 ms slack on top of the typical rewriter p95 against a
+    # warm Groq / vLLM endpoint, with the agent's 500 ms read budget
+    # absorbing network jitter.
+    rewriter_timeout_ms: int = Field(default=400, ge=100, le=10_000)
 
     # ── Embedder ─────────────────────────────────────────────────────────
     # "cpu" | "cuda" | "cuda:0" — passed through to sentence-transformers.
@@ -66,6 +73,14 @@ class Settings(BaseSettings):
     # Production deploys MUST set it (compose's `${...:?}` enforces this
     # at boot; see issue #47/#40).
     retriever_internal_token: str = ""
+
+    # Optional grace-window token for rotation (issue #55). When set,
+    # `auth.require_internal_token` accepts EITHER the current token
+    # OR this previous one — the agent rotates first, the retriever
+    # rotates second, and both sides are reachable during the window.
+    # After all callers have rotated the operator clears this value
+    # and the previous token stops working. Empty by default.
+    retriever_internal_token_previous: str = ""
 
 
 @lru_cache(maxsize=1)

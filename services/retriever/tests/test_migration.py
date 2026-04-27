@@ -543,3 +543,95 @@ async def test_partial_unique_treats_null_section_as_equal(
                 )
     finally:
         await engine.dispose()
+
+
+async def test_rls_policies_enforce_tenant_isolation_for_non_owner_role(
+    fresh_pgvector: PostgresContainer,
+) -> None:
+    """Issue #41: the RLS migration creates `tenant_isolation_*`
+    policies on kb_entries / kb_chunks / retrieval_traces.
+
+    For RLS to actually fire, the connecting role must be NEITHER
+    the table owner NOR a superuser (Postgres bypasses RLS for both
+    unless FORCE is set, which we deliberately don't use — see
+    migration 0006 docstring). This test creates a non-superuser
+    role, switches into it via SET ROLE, then confirms:
+
+      (a) SELECT against kb_entries with no GUC returns 0 rows
+          (policy denies fail-closed via the COALESCE → zero UUID).
+      (b) SELECT with `app.current_tenant_id` set to a tenant
+          returns that tenant's rows.
+      (c) SELECT with `app.current_tenant_id` set to a DIFFERENT
+          tenant returns zero rows from the first tenant.
+
+    Verifies the policy is correctly shaped, not just that the
+    migration applied.
+    """
+    import uuid
+
+    _alembic(fresh_pgvector, "upgrade", "head")
+
+    engine = create_async_engine(_asyncpg_dsn(fresh_pgvector), future=True)
+    tenant_a = uuid.uuid4()
+    tenant_b = uuid.uuid4()
+
+    try:
+        # Seed two tenants + one kb_entry per tenant under the superuser
+        # session (RLS bypassed for owner here — that's the point of NOT
+        # FORCEing it).
+        async with engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "INSERT INTO tenants (id, name, slug) VALUES "
+                    "(:a, 'TenantA', 'a'), (:b, 'TenantB', 'b')"
+                ),
+                {"a": tenant_a, "b": tenant_b},
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO kb_entries "
+                    "(id, tenant_id, kb_entry_key, title, content_sha256) "
+                    "VALUES (:i1, :a, 'main', 'A', 'sha-a'), "
+                    "       (:i2, :b, 'main', 'B', 'sha-b')"
+                ),
+                {"i1": uuid.uuid4(), "i2": uuid.uuid4(), "a": tenant_a, "b": tenant_b},
+            )
+            # Create a non-superuser role to test the policy under.
+            # asyncpg's prepared-statement protocol can't run two SQL
+            # commands in one execute(), so issue them separately.
+            await conn.execute(text("CREATE ROLE rls_test_user NOLOGIN"))
+            await conn.execute(text("GRANT SELECT ON kb_entries TO rls_test_user"))
+
+        # Switch into the non-superuser role and verify policy behavior.
+        async with engine.begin() as conn:
+            await conn.execute(text("SET ROLE rls_test_user"))
+
+            # (a) GUC unset → 0 rows visible (fail-closed).
+            result = await conn.execute(text("SELECT COUNT(*) FROM kb_entries"))
+            count = result.scalar_one()
+            assert count == 0, (
+                f"RLS denied-by-default failed: expected 0 rows, got {count}. "
+                f"Policy is likely missing or the role is RLS-bypass."
+            )
+
+            # (b) GUC set to tenant_a → tenant_a's row visible.
+            await conn.execute(
+                text("SELECT set_config('app.current_tenant_id', :tid, true)"),
+                {"tid": str(tenant_a)},
+            )
+            result = await conn.execute(text("SELECT tenant_id FROM kb_entries"))
+            visible = {row[0] for row in result.all()}
+            assert visible == {tenant_a}, f"RLS scope failed: expected {{tenant_a}}, got {visible}"
+
+            # (c) GUC set to tenant_b → ONLY tenant_b's row visible.
+            await conn.execute(
+                text("SELECT set_config('app.current_tenant_id', :tid, true)"),
+                {"tid": str(tenant_b)},
+            )
+            result = await conn.execute(text("SELECT tenant_id FROM kb_entries"))
+            visible = {row[0] for row in result.all()}
+            assert visible == {tenant_b}, (
+                f"RLS cross-tenant leak: expected {{tenant_b}}, got {visible}"
+            )
+    finally:
+        await engine.dispose()

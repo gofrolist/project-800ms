@@ -72,7 +72,12 @@ async def get_session() -> AsyncIterator[AsyncSession]:
 
     Commits on success, rolls back on exception. Every call site that
     queries tenant data MUST include `WHERE tenant_id = :tenant_id` in
-    its SQL — there is no type-level enforcement today.
+    its SQL AND must call ``set_tenant_scope(session, tenant_id)``
+    before any SELECT/INSERT against the RLS-protected tables
+    (``kb_entries``, ``kb_chunks``, ``retrieval_traces``). The
+    application-layer predicate is the fast path; the RLS policy
+    (migration 0006) is the data-layer backstop that blocks rows the
+    predicate forgot to filter.
     """
     factory = _session_factory()
     async with factory() as session:
@@ -82,3 +87,25 @@ async def get_session() -> AsyncIterator[AsyncSession]:
         except Exception:
             await session.rollback()
             raise
+
+
+async def set_tenant_scope(session: AsyncSession, tenant_id: object) -> None:
+    """Set the per-transaction ``app.current_tenant_id`` GUC that the
+    RLS policy on ``kb_entries`` / ``kb_chunks`` / ``retrieval_traces``
+    consults (issue #41 / migration 0006).
+
+    Uses ``set_config(name, value, is_local=true)`` so the GUC
+    auto-resets when the current transaction commits — a connection
+    returned to the pool cannot leak its scope to the next request.
+    Forgetting this call makes every RLS-protected query return zero
+    rows (fail-closed).
+
+    ``tenant_id`` accepts ``str`` or ``uuid.UUID``; both stringify to
+    the canonical hex form Postgres accepts in the policy's COALESCE.
+    """
+    from sqlalchemy import text
+
+    await session.execute(
+        text("SELECT set_config('app.current_tenant_id', :tid, true)"),
+        {"tid": str(tenant_id)},
+    )

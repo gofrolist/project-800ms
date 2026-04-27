@@ -22,6 +22,7 @@ from db import get_engine
 from errors import register_exception_handlers
 from health import router as health_router
 from logging_setup import configure_logging
+from middleware import BodySizeLimitMiddleware
 from retrieve import router as retrieve_router
 
 # Guard for `configure_logging` so repeat calls from `create_app()` in
@@ -89,6 +90,11 @@ def create_app() -> FastAPI:
         redoc_url=None,
         lifespan=_lifespan,
     )
+
+    # Body-size cap (issue #56) runs BEFORE the auth dep so an
+    # unauthenticated DoS attempt can't still buffer arbitrary bytes
+    # into memory by virtue of being able to send the request at all.
+    app.add_middleware(BodySizeLimitMiddleware)
 
     app.include_router(health_router)
     app.include_router(retrieve_router)

@@ -151,7 +151,7 @@ async def test_unknown_tenant_returns_400_unknown_tenant(
         )
     assert resp.status_code == 400, resp.text
     body = resp.json()
-    assert body["error"] == "unknown_tenant"
+    assert body["error"]["code"] == "unknown_tenant"
 
 
 @respx.mock
@@ -171,7 +171,7 @@ async def test_unsupported_npc_returns_400_unsupported_npc(
             },
         )
     assert resp.status_code == 400, resp.text
-    assert resp.json()["error"] == "unsupported_npc"
+    assert resp.json()["error"]["code"] == "unsupported_npc"
 
 
 @respx.mock
@@ -191,7 +191,7 @@ async def test_unsupported_language_returns_400_unsupported_language(
             },
         )
     assert resp.status_code == 400, resp.text
-    assert resp.json()["error"] == "unsupported_language"
+    assert resp.json()["error"]["code"] == "unsupported_language"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -260,8 +260,8 @@ async def test_pydantic_validation_failure_returns_400_invalid_request(
         )
     assert resp.status_code == 400, resp.text
     body = resp.json()
-    assert body["error"] == "invalid_request"
-    assert "tenant_id" in body["message"]
+    assert body["error"]["code"] == "invalid_request"
+    assert "tenant_id" in body["error"]["message"]
 
 
 @respx.mock
@@ -280,7 +280,7 @@ async def test_empty_transcript_returns_400_invalid_request(
             },
         )
     assert resp.status_code == 400, resp.text
-    assert resp.json()["error"] == "invalid_request"
+    assert resp.json()["error"]["code"] == "invalid_request"
 
 
 @respx.mock
@@ -300,7 +300,7 @@ async def test_top_k_out_of_bounds_returns_400_invalid_request(
             },
         )
     assert resp.status_code == 400, resp.text
-    assert resp.json()["error"] == "invalid_request"
+    assert resp.json()["error"]["code"] == "invalid_request"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -350,7 +350,7 @@ async def test_rewriter_timeout_returns_503_and_writes_error_trace(
         )
 
     assert resp.status_code == 503, resp.text
-    assert resp.json()["error"] == "rewriter_timeout"
+    assert resp.json()["error"]["code"] == "rewriter_timeout"
 
     # Forensics row must exist for this turn with error_class populated.
     dsn = pgvector_postgres.get_connection_url().replace("+psycopg2", "+asyncpg")
@@ -394,7 +394,7 @@ async def test_embedder_failure_returns_503_embedder_unavailable(
         )
 
     assert resp.status_code == 503, resp.text
-    assert resp.json()["error"] == "embedder_unavailable"
+    assert resp.json()["error"]["code"] == "embedder_unavailable"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -420,7 +420,7 @@ async def test_retrieve_without_internal_token_returns_401(
             },
         )
     assert resp.status_code == 401, resp.text
-    assert resp.json()["error"] == "unauthenticated"
+    assert resp.json()["error"]["code"] == "unauthenticated"
 
 
 @respx.mock
@@ -442,7 +442,7 @@ async def test_retrieve_with_wrong_internal_token_returns_401(
             },
         )
     assert resp.status_code == 401, resp.text
-    assert resp.json()["error"] == "unauthenticated"
+    assert resp.json()["error"]["code"] == "unauthenticated"
 
 
 @respx.mock
@@ -469,10 +469,78 @@ async def test_retrieve_returns_503_when_internal_token_unset(
                 },
             )
         assert resp.status_code == 503, resp.text
-        assert resp.json()["error"] == "retriever_unconfigured"
+        assert resp.json()["error"]["code"] == "retriever_unconfigured"
     finally:
         # Restore the cached Settings so subsequent tests don't see
         # the empty token (review finding correctness-006 / adv-006).
+        config.get_settings.cache_clear()
+
+
+@respx.mock
+async def test_retrieve_accepts_previous_token_during_rotation_grace(
+    retriever_app: dict[str, Any], monkeypatch
+) -> None:
+    """Issue #55: when ``RETRIEVER_INTERNAL_TOKEN_PREVIOUS`` is set,
+    the retriever accepts EITHER the current OR the previous token.
+    Lets agents rotate first and retriever rotate second without a
+    401-cascade window during the rollout.
+    """
+    # Current (rotated-to) value is the fixture's; set _PREVIOUS to
+    # an "old" value the agent might still be presenting mid-rollout.
+    old_token = "old-rotated-out-secret"
+    monkeypatch.setenv("RETRIEVER_INTERNAL_TOKEN_PREVIOUS", old_token)
+    import config
+
+    config.get_settings.cache_clear()
+
+    try:
+        _mock_rewriter()
+        async with await _client(retriever_app["app"], {"X-Internal-Token": old_token}) as client:
+            resp = await client.post(
+                "/retrieve",
+                json={
+                    "tenant_id": str(retriever_app["tenant_id"]),
+                    "session_id": str(retriever_app["session_id"]),
+                    "turn_id": "t-rotation-grace",
+                    "transcript": "как получить права?",
+                },
+            )
+        # Old token accepted during grace — successful retrieval.
+        assert resp.status_code == 200, resp.text
+    finally:
+        config.get_settings.cache_clear()
+
+
+@respx.mock
+async def test_retrieve_rejects_truly_invalid_token_even_with_previous_set(
+    retriever_app: dict[str, Any], monkeypatch
+) -> None:
+    """A token that matches NEITHER current NOR previous still 401s.
+    The grace window expands the accepted set; it does not weaken
+    the constant-time comparison.
+    """
+    monkeypatch.setenv("RETRIEVER_INTERNAL_TOKEN_PREVIOUS", "old-rotated-out-secret")
+    import config
+
+    config.get_settings.cache_clear()
+
+    try:
+        _mock_rewriter()
+        async with await _client(
+            retriever_app["app"], {"X-Internal-Token": "neither-current-nor-previous"}
+        ) as client:
+            resp = await client.post(
+                "/retrieve",
+                json={
+                    "tenant_id": str(retriever_app["tenant_id"]),
+                    "session_id": str(retriever_app["session_id"]),
+                    "turn_id": "t-rotation-bad",
+                    "transcript": "вопрос",
+                },
+            )
+        assert resp.status_code == 401, resp.text
+        assert resp.json()["error"]["code"] == "unauthenticated"
+    finally:
         config.get_settings.cache_clear()
 
 
@@ -506,7 +574,7 @@ async def test_retrieve_503_takes_priority_over_401_when_unconfigured(
                 },
             )
         assert resp.status_code == 503, resp.text
-        assert resp.json()["error"] == "retriever_unconfigured"
+        assert resp.json()["error"]["code"] == "retriever_unconfigured"
     finally:
         config.get_settings.cache_clear()
 

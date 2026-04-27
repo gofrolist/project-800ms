@@ -43,7 +43,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from auth import require_internal_token
 from config import get_settings
-from db import get_session
+from db import get_session, set_tenant_scope
 from embedder import encode
 from errors import (
     DbUnavailable,
@@ -162,10 +162,20 @@ async def retrieve(req: RetrieveRequest) -> RetrieveResponse:
     refusal_response: RetrieveResponse | None = None
 
     async with get_session() as session:
-        # resolve_tenant can raise UnknownTenant → no trace row (no
-        # valid tenant scope to write under, which would otherwise
-        # require a "system tenant" row the schema doesn't have).
+        # resolve_tenant queries the `tenants` table, which is NOT
+        # RLS-protected — happens BEFORE the GUC is set. raises
+        # UnknownTenant → no trace row written (no valid tenant
+        # scope to write under, which would otherwise require a
+        # "system tenant" row the schema doesn't have).
         tenant = await resolve_tenant(session, req.tenant_id)
+
+        # Issue #41: set the per-transaction GUC that
+        # kb_entries / kb_chunks / retrieval_traces RLS policies
+        # consult. Every subsequent SELECT / INSERT in this session
+        # is now scoped at the data layer; a forgotten
+        # `WHERE tenant_id = ...` predicate returns zero rows
+        # rather than leaking another tenant's data.
+        await set_tenant_scope(session, tenant.id)
 
         try:
             # --- Rewrite ----------------------------------------------

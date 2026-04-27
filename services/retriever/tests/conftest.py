@@ -276,6 +276,13 @@ async def retriever_app(pgvector_postgres, monkeypatch) -> AsyncIterator[dict[st
                 "room": f"room-{session_id.hex[:8]}",
             },
         )
+        # Issue #41: set the per-transaction GUC the RLS policy
+        # checks before INSERTing into kb_entries / kb_chunks. The
+        # `with_check` clause of the policy denies inserts otherwise.
+        await conn.execute(
+            text("SELECT set_config('app.current_tenant_id', :tid, true)"),
+            {"tid": str(tenant_id)},
+        )
         await conn.execute(
             text(
                 "INSERT INTO kb_entries "
