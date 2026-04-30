@@ -126,6 +126,15 @@ seed_demo_api_key = ""  # e.g. "tk_0123...abcd"
 retriever_internal_token = ""  # auto-generated when empty
 
 # -----------------------------------------------------------------------------
+# Chatwoot help-base ingestion (optional)
+#
+# Bearer token for GET https://chatwoot.arizona-rp.com/api-help-base/get.
+# Consumed by tools/fetch_chatwoot_kb.py (one-shot or scheduled fetch into
+# data/kb/<project>/). Empty = disabled.
+# -----------------------------------------------------------------------------
+chatwoot_help_base_token = ""
+
+# -----------------------------------------------------------------------------
 # Access
 # -----------------------------------------------------------------------------
 allowed_app_cidr = "0.0.0.0/0"

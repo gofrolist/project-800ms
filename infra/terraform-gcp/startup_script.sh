@@ -186,6 +186,11 @@ if [ "$ADMIN_API_KEY" = "__UNSET__" ]; then
   ADMIN_API_KEY=""
 fi
 
+CHATWOOT_HELP_BASE_TOKEN=$(secret_get chatwoot_help_base_token)
+if [ "$CHATWOOT_HELP_BASE_TOKEN" = "__UNSET__" ]; then
+  CHATWOOT_HELP_BASE_TOKEN=""
+fi
+
 # -----------------------------------------------------------------------------
 # 3. Clone the app repo.
 # -----------------------------------------------------------------------------
@@ -248,6 +253,9 @@ umask 077
   printf 'RETRIEVER_URL=http://retriever:8002\n'
   # Master admin key — empty disables the /v1/admin/* surface.
   printf 'ADMIN_API_KEY=%s\n' "$ADMIN_API_KEY"
+  # Chatwoot help-base bearer token — consumed by tools/fetch_chatwoot_kb.py
+  # at ingest time. Empty leaves Chatwoot ingestion disabled.
+  printf 'CHATWOOT_HELP_BASE_TOKEN=%s\n' "$CHATWOOT_HELP_BASE_TOKEN"
   # The demo SPA embeds this key. Default to the seeded 'demo' tenant
   # key so a fresh terraform apply gives a working SPA out of the box.
   # Rotate by editing the tenant's api_keys rows via SQL.

@@ -14,6 +14,7 @@ all reuse it to avoid spinning up multiple containers.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 import subprocess
@@ -175,6 +176,46 @@ _FIXTURE_LLM_BASE = "http://llm-test.local"
 
 def _vector_literal(v: list[float]) -> str:
     return "[" + ",".join(f"{x:.10g}" for x in v) + "]"
+
+
+# ─── Stub embedder helpers (shared by ingest + synth tests) ─────────────────
+#
+# Both test_ingest.py and test_synthetic_questions.py need to inject a
+# deterministic embedder that doesn't pay BGE-M3's load cost. The
+# determinism is the contract — same input → same vector across runs and
+# across test files — so it lives here as a single source of truth.
+#
+# Exposed as plain helpers (NOT pytest fixtures) because callers pass
+# the function reference into ``encode_fn`` parameters directly; a
+# fixture would mean wrapping every call site in an extra indirection
+# without buying anything.
+
+
+def stub_vector_for(text_input: str) -> list[float]:
+    """Deterministic 1024-dim stub embedding seeded by the input text.
+
+    Different inputs produce different vectors so cosine ranking still
+    behaves sensibly in tests; identical inputs always produce the same
+    vector so rerun assertions hold.
+    """
+    digest = hashlib.sha256(text_input.encode("utf-8")).digest()
+    # Vectors are NOT unit-normalised — pgvector's hnsw with cosine_ops
+    # handles any magnitude, and the determinism contract is what tests
+    # actually depend on.
+    raw = [b / 255.0 for b in digest]
+    while len(raw) < 1024:
+        raw.extend(b / 255.0 for b in digest)
+    return raw[:1024]
+
+
+async def stub_encode(text_input: str) -> list[float]:
+    """Async wrapper around ``stub_vector_for``.
+
+    Matches the signature of ``embedder.encode`` so the ``encode_fn``
+    injection seam in ``ingest.run`` / ``synthetic_questions.run`` can
+    take this directly.
+    """
+    return stub_vector_for(text_input)
 
 
 @pytest_asyncio.fixture

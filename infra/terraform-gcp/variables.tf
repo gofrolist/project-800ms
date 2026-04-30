@@ -350,3 +350,26 @@ variable "admin_api_key" {
   sensitive   = true
   default     = ""
 }
+
+# -----------------------------------------------------------------------------
+# Chatwoot help-base ingestion (optional)
+#
+# Bearer token for `GET https://chatwoot.arizona-rp.com/api-help-base/get`,
+# consumed by `tools/fetch_chatwoot_kb.py` (one-shot or scheduled fetch
+# that dumps articles under `data/kb/<project>/`). Stored in Secret Manager
+# alongside the other app secrets and projected into infra/.env as
+# `CHATWOOT_HELP_BASE_TOKEN`. Empty disables the integration — fetch script
+# refuses to run without the token.
+# -----------------------------------------------------------------------------
+
+variable "chatwoot_help_base_token" {
+  description = "Bearer token for the Chatwoot help-base API. Empty = disable Chatwoot KB ingestion."
+  type        = string
+  sensitive   = true
+  default     = ""
+
+  validation {
+    condition     = length(var.chatwoot_help_base_token) == 0 || length(var.chatwoot_help_base_token) >= 32
+    error_message = "chatwoot_help_base_token must be either empty (disabled) or at least 32 characters. Mirrors the strength bar applied to postgres_password and livekit_api_secret."
+  }
+}

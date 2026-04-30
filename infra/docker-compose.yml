@@ -519,6 +519,12 @@ services:
       # hf_cache_agent (GigaAM) or hf_cache_vllm: different UIDs would
       # leave cache files unwritable for the neighboring service.
       - hf_cache_retriever:/home/appuser/.cache/huggingface
+      # KB ingestion source dir. Populated on the host by
+      # `tools/fetch_chatwoot_kb.py` (and similar future fetchers);
+      # consumed by `python -m ingest --source /app/data/kb/<source>/`
+      # inside this container. Read-only: the ingest CLI never writes
+      # back, fetchers run from the host.
+      - ../data:/app/data:ro
     # NOT publishing any host port. The retriever is for internal consumption
     # only. Operators needing to curl it from the host can use
     # `docker compose exec retriever curl http://localhost:8002/ready`.

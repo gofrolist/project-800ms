@@ -200,10 +200,13 @@ locals {
     llm_api_key            = var.llm_api_key == "" ? "__UNSET__" : var.llm_api_key
     # Optional API seed key. Sentinel + startup script treat __UNSET__ as
     # empty so downstream compose falls back to defaults.
-    seed_demo_api_key    = var.seed_demo_api_key == "" ? "__UNSET__" : var.seed_demo_api_key
+    seed_demo_api_key        = var.seed_demo_api_key == "" ? "__UNSET__" : var.seed_demo_api_key
     agent_internal_token     = var.agent_internal_token == "" ? "__UNSET__" : var.agent_internal_token
     retriever_internal_token = var.retriever_internal_token == "" ? "__UNSET__" : var.retriever_internal_token
     admin_api_key            = var.admin_api_key == "" ? "__UNSET__" : var.admin_api_key
+    # Optional Chatwoot ingestion bearer token — sentinel + startup script
+    # write empty into .env when unset so the fetch tool stays opt-in.
+    chatwoot_help_base_token = var.chatwoot_help_base_token == "" ? "__UNSET__" : var.chatwoot_help_base_token
   }
 }
 
@@ -253,19 +256,19 @@ data "google_compute_image" "dlvm" {
 
 locals {
   startup_script = templatefile("${path.module}/startup_script.sh", {
-    git_repo           = var.git_repo
-    git_ref            = var.git_ref
+    git_repo            = var.git_repo
+    git_ref             = var.git_ref
     image_tag           = var.image_tag
     tts_preload_engines = var.tts_preload_engines
-    project_name       = var.project_name
-    region             = var.region
-    livekit_public_url = local.livekit_public_url
-    tls_enabled        = local.tls_enabled
-    domain             = var.domain
-    tls_email          = var.tls_email
-    secret_prefix      = "${var.project_name}-"
-    llm_base_url       = var.llm_base_url
-    llm_model          = var.llm_model
+    project_name        = var.project_name
+    region              = var.region
+    livekit_public_url  = local.livekit_public_url
+    tls_enabled         = local.tls_enabled
+    domain              = var.domain
+    tls_email           = var.tls_email
+    secret_prefix       = "${var.project_name}-"
+    llm_base_url        = var.llm_base_url
+    llm_model           = var.llm_model
   })
 }
 
