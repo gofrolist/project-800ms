@@ -13,6 +13,25 @@ git_ref  = "main"
 image_tag = "latest"
 
 # -----------------------------------------------------------------------------
+# Multi-engine TTS
+#
+# Comma-separated list of engines the agent will preload at boot and accept
+# at dispatch. Sessions targeting an engine NOT in this list get 409 from the
+# agent → the API surfaces `agent_unavailable`. Default `piper` keeps the
+# single-engine operator workflow.
+#
+# Including `qwen3` automatically activates the `tts-qwen3` compose profile
+# (starts the qwen3-tts sidecar) and writes QWEN3_TTS_BASE_URL to infra/.env.
+#
+# Including `xtts` requires populated voice_library/profiles/ on disk — the
+# agent hard-fails at boot otherwise.
+#
+# Demo deployments that expose the three-button engine selector should use:
+#   tts_preload_engines = "piper,silero,qwen3"
+# -----------------------------------------------------------------------------
+tts_preload_engines = "piper"
+
+# -----------------------------------------------------------------------------
 # Spot vs on-demand
 #
 # GCP Spot VMs: ~60-70%% off on-demand. Preempted with 30s notice, boot disk

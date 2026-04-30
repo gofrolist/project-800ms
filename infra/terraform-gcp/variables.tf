@@ -173,6 +173,20 @@ variable "image_tag" {
   default     = "latest"
 }
 
+variable "tts_preload_engines" {
+  description = <<-EOT
+    Comma-separated list of TTS engines the agent should preload and accept
+    at dispatch. Valid values: piper, silero, qwen3, xtts. Including `qwen3`
+    automatically activates the `tts-qwen3` compose profile and writes
+    `QWEN3_TTS_BASE_URL=http://qwen3-tts:8000/v1` to infra/.env. Including
+    `xtts` requires populated voice_library/profiles/ on disk — the agent
+    hard-fails at boot otherwise. Default `piper` preserves the
+    single-engine operator workflow.
+  EOT
+  type        = string
+  default     = "piper"
+}
+
 variable "livekit_public_url" {
   description = "Public LiveKit URL the browser will connect to. Empty = derive from EIP."
   type        = string

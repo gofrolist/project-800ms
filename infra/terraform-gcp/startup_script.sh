@@ -27,6 +27,7 @@ TLS_EMAIL="${tls_email}"
 SECRET_PREFIX="${secret_prefix}"
 LLM_BASE_URL_TF="${llm_base_url}"
 LLM_MODEL_TF="${llm_model}"
+TTS_PRELOAD_ENGINES_TF="${tts_preload_engines}"
 
 # Compose files depend on whether TLS is enabled.
 if [ "$TLS_ENABLED" = "true" ]; then
@@ -237,6 +238,18 @@ umask 077
     printf 'DOMAIN=%s\n' "$DOMAIN"
     printf 'TLS_EMAIL=%s\n' "$TLS_EMAIL"
   fi
+  # Multi-engine TTS. The agent rejects any tts_engine not in this list
+  # with 409 — the API surfaces that as `agent_unavailable`. Default
+  # `piper` keeps the single-engine operator workflow.
+  if [ -n "$TTS_PRELOAD_ENGINES_TF" ]; then
+    printf 'TTS_PRELOAD_ENGINES=%s\n' "$TTS_PRELOAD_ENGINES_TF"
+  fi
+  # Qwen3 sidecar URL — only meaningful when the `tts-qwen3` compose
+  # profile is activated below. Writing it unconditionally is harmless:
+  # the agent only dials it when a session selects tts_engine=qwen3.
+  if printf '%s' "$TTS_PRELOAD_ENGINES_TF" | grep -qw qwen3; then
+    printf 'QWEN3_TTS_BASE_URL=http://qwen3-tts:8000/v1\n'
+  fi
 } > infra/.env
 chmod 600 infra/.env
 umask 022
@@ -259,7 +272,14 @@ umask 022
 # -----------------------------------------------------------------------------
 COMPOSE_PROFILE_FLAGS=()
 if [ -z "$LLM_BASE_URL_TF" ]; then
-  COMPOSE_PROFILE_FLAGS=(--profile local-llm)
+  COMPOSE_PROFILE_FLAGS+=(--profile local-llm)
+fi
+# Activate the qwen3-tts sidecar when the operator opted into Qwen3 via
+# `tts_preload_engines`. Without this profile the qwen3-tts service is
+# defined-but-not-running, and the agent's HTTPX call to qwen3-tts:8000
+# at session dispatch fails closed.
+if printf '%s' "$TTS_PRELOAD_ENGINES_TF" | grep -qw qwen3; then
+  COMPOSE_PROFILE_FLAGS+=(--profile tts-qwen3)
 fi
 
 docker compose --env-file infra/.env "$${COMPOSE_PROFILE_FLAGS[@]}" "$${COMPOSE_FILES[@]}" pull --ignore-pull-failures
