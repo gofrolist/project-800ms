@@ -336,9 +336,17 @@ resource "google_compute_instance" "main" {
     enable-oslogin = "TRUE"
     # Block legacy V1 metadata access — only V2 (header-based) is allowed.
     block-project-ssh-keys = "TRUE"
+    # The script body lives in the regular metadata map (in-place updatable)
+    # rather than the dedicated metadata_startup_script field (ForceNew on
+    # change). This means a `terraform apply` that only edits the bootstrap
+    # logic patches the running VM's metadata instead of destroying and
+    # recreating the instance — critical for spot deploys, where a stockout
+    # at recreate time leaves the service down with no rollback path.
+    # The instance picks up the new script on next boot (manual stop/start
+    # or spot preempt). To force an immediate refresh:
+    #   gcloud compute instances reset <name> --zone <zone> --project <p>
+    startup-script = local.startup_script
   }
-
-  metadata_startup_script = local.startup_script
 
   depends_on = [
     google_project_iam_member.logs_writer,
@@ -346,6 +354,21 @@ resource "google_compute_instance" "main" {
     google_secret_manager_secret_iam_member.instance_accessor,
     google_secret_manager_secret_version.app,
   ]
+
+  lifecycle {
+    # The Deep Learning VM image family rolls forward continuously
+    # (v20260427 → v20260430 → …). Without this, every `terraform apply`
+    # picks up the latest tag and forces VM replacement — which is
+    # exactly the spot-stockout-at-recreate failure mode that just bit
+    # us in production. Pinning the image attribute means routine
+    # applies (variable edits, metadata patches) leave the boot disk
+    # alone. To deliberately roll the image, taint and recreate:
+    #   terraform taint google_compute_instance.main
+    #   terraform apply
+    ignore_changes = [
+      boot_disk[0].initialize_params[0].image,
+    ]
+  }
 }
 
 # =============================================================================
