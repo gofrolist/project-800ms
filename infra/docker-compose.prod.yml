@@ -33,3 +33,8 @@ services:
     image: ghcr.io/gofrolist/project-800ms-agent:${IMAGE_TAG:-latest}
     build: !reset null
     pull_policy: always
+
+  retriever:
+    image: ghcr.io/gofrolist/project-800ms-retriever:${IMAGE_TAG:-latest}
+    build: !reset null
+    pull_policy: always

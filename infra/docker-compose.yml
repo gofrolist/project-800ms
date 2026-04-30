@@ -474,7 +474,9 @@ services:
     build:
       context: ../services/retriever
       args:
-        BASE_IMAGE: project-800ms-retriever-base:local
+        # Override RETRIEVER_BASE_IMAGE in infra/.env to pin a registry
+        # digest in prod (e.g. ghcr.io/<owner>/project-800ms-retriever-base@sha256:…).
+        BASE_IMAGE: ${RETRIEVER_BASE_IMAGE:-project-800ms-retriever-base:local}
     restart: unless-stopped
     environment:
       - DB_URL=postgresql+asyncpg://${POSTGRES_USER:-voice}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-voice}
