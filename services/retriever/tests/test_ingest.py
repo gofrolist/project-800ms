@@ -496,3 +496,185 @@ def test_diff_categorises_correctly() -> None:
     assert [e.kb_entry_key for e in plan.update] == ["chatwoot:change"]
     assert [e.kb_entry_key for e in plan.unchanged] == ["chatwoot:keep"]
     assert plan.delete == ["chatwoot:gone"]
+
+
+# ─── Review-feedback regression tests (PR #64 ce-code-review fixes) ─────────
+
+
+def test_namespace_with_like_wildcard_rejected_at_parse_time(tmp_path) -> None:
+    """A kb_entry_key whose namespace contains ``%`` or ``_`` would
+    otherwise smuggle SQL LIKE wildcards into the diff predicate and
+    match cross-namespace entries. ``_load_source_dir`` rejects these
+    at parse time."""
+    import ingest
+
+    out = tmp_path / "kb"
+    out.mkdir()
+    (out / "evil.json").write_text(
+        json.dumps({"kb_entry_key": "%:x", "title": "t", "content": "c"}),
+        encoding="utf-8",
+    )
+    (out / "evil2.json").write_text(
+        json.dumps({"kb_entry_key": "ws ns:x", "title": "t", "content": "c"}),
+        encoding="utf-8",
+    )
+    (out / "good.json").write_text(
+        json.dumps(_article("chatwoot:1"), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    entries, errors = ingest._load_source_dir(out)
+    assert len(entries) == 1
+    assert entries[0].kb_entry_key == "chatwoot:1"
+    assert len(errors) == 2
+    assert any("%" in e for e in errors) or any("disallowed" in e for e in errors)
+
+
+def test_nul_byte_in_content_is_stripped() -> None:
+    """``_normalise_content`` strips ``\\x00``; Postgres TEXT would
+    otherwise reject the INSERT and roll back the entire run."""
+    import ingest
+
+    raw = "before\x00after\x00\x00more"
+    normalised = ingest._normalise_content(raw)
+    assert "\x00" not in normalised
+    assert "before" in normalised
+    assert "after" in normalised
+    assert "more" in normalised
+
+
+@pytest.mark.slow
+async def test_empty_source_with_only_parse_errors_short_circuits(ingest_env, tmp_path) -> None:
+    """All-files-fail-parse must NOT fall through to the diff. The
+    earlier guard required ``not source_entries and not parse_errors``;
+    a parse-only failure would slip past it, namespace would be ``""``,
+    and ``LIKE "%"`` would queue every existing entry for deletion.
+    Tiny KBs (≤4 entries) would lose them all silently because the
+    mass-deletion floor wouldn't fire."""
+    import ingest
+
+    # Pre-seed two entries.
+    src = _write_articles(tmp_path, [_article("chatwoot:1"), _article("chatwoot:2")])
+    await ingest.run(
+        tenant_slug=ingest_env["tenant_slug"],
+        source=src,
+        encode_fn=_stub_encode,
+    )
+
+    # New source with nothing but invalid files.
+    bad_dir = tmp_path / "bad-kb"
+    bad_dir.mkdir()
+    (bad_dir / "broken.json").write_text("{this is not json", encoding="utf-8")
+    (bad_dir / "missing.json").write_text(
+        json.dumps({"kb_entry_key": "nosep", "title": "x", "content": "y"}),
+        encoding="utf-8",
+    )
+
+    summary = await ingest.run(
+        tenant_slug=ingest_env["tenant_slug"],
+        source=bad_dir,
+        encode_fn=_stub_encode,
+    )
+    assert summary["entries"]["seen"] == 0
+    assert summary["entries"]["deleted"] == 0
+    assert len(summary["parse_errors"]) == 2
+
+    # Existing entries untouched.
+    n_entries = await _count(
+        ingest_env["dsn"],
+        "SELECT count(*) FROM kb_entries WHERE tenant_id = :t",
+        {"t": ingest_env["tenant_id"]},
+    )
+    assert n_entries == 2
+
+
+@pytest.mark.slow
+async def test_mass_deletion_safeguard_fires_at_floor_boundary(ingest_env, tmp_path) -> None:
+    """A 5-entry KB with 4 deletes (80%) used to slip past the floor
+    because the safeguard checked ``> MASS_DELETION_FLOOR`` (4 not
+    being strictly greater than 4). After the fix, ``>= 4`` triggers
+    it."""
+    import ingest
+
+    # Seed 5.
+    full = _write_articles(tmp_path, [_article(f"chatwoot:{i}") for i in range(5)])
+    await ingest.run(tenant_slug=ingest_env["tenant_slug"], source=full, encode_fn=_stub_encode)
+
+    # Smaller source: 1 entry. Would delete 4 of 5 (80%).
+    smaller = _write_articles(tmp_path / "smaller", [_article("chatwoot:0")])
+    with pytest.raises(SystemExit) as exc:
+        await ingest.run(
+            tenant_slug=ingest_env["tenant_slug"],
+            source=smaller,
+            encode_fn=_stub_encode,
+        )
+    assert exc.value.code == ingest.EXIT_PARTIAL_SUCCESS
+
+    # No writes happened.
+    n_entries = await _count(
+        ingest_env["dsn"],
+        "SELECT count(*) FROM kb_entries WHERE tenant_id = :t",
+        {"t": ingest_env["tenant_id"]},
+    )
+    assert n_entries == 5
+
+
+@pytest.mark.slow
+async def test_skip_synthetic_questions_false_runs_synth_phase(
+    ingest_env, tmp_path, monkeypatch
+) -> None:
+    """``skip_synthetic_questions=False`` actually runs the synth phase
+    end-to-end and propagates its summary into the ingest summary. This
+    integration seam was previously untested — every test passed
+    ``True`` or used the default."""
+    import respx
+    import ingest
+    import synthetic_questions as sq
+
+    src = _write_articles(tmp_path, [_article("chatwoot:1")])
+
+    chat_url = "http://llm-test.local/chat/completions"
+    questions = ["q1?", "q2?", "q3?", "q4?"]
+    llm_body = json.dumps({"questions": questions}, ensure_ascii=False)
+
+    # Patch synth to use the same stub embedder as ingest. The LLM
+    # transport is its own AsyncClient inside synth.run, so respx
+    # matches by URL regardless of which client made the call.
+    real_synth_run = sq.run
+
+    async def stubbed_synth_run(*, tenant_slug, namespace, encode_fn=None, http_client=None):
+        return await real_synth_run(
+            tenant_slug=tenant_slug,
+            namespace=namespace,
+            encode_fn=_stub_encode,
+            http_client=http_client,
+        )
+
+    monkeypatch.setattr(sq, "run", stubbed_synth_run)
+
+    with respx.mock(assert_all_called=False) as mock:
+        mock.post(chat_url).respond(
+            200,
+            json={"choices": [{"message": {"content": llm_body}}]},
+        )
+
+        summary = await ingest.run(
+            tenant_slug=ingest_env["tenant_slug"],
+            source=src,
+            encode_fn=_stub_encode,
+            skip_synthetic_questions=False,
+        )
+
+    # Content phase landed at least one chunk, synth phase generated
+    # questions for it.
+    assert summary["entries"]["added"] == 1
+    assert summary["chunks"]["added"] >= 1
+    assert summary["synthetic_questions"]["added"] >= 4
+    assert summary["rewriter_calls"] >= 1
+
+    n_synth = await _count(
+        ingest_env["dsn"],
+        "SELECT count(*) FROM kb_chunks WHERE tenant_id = :t   AND is_synthetic_question = TRUE",
+        {"t": ingest_env["tenant_id"]},
+    )
+    assert n_synth >= 4

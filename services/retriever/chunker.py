@@ -55,8 +55,6 @@ MIN_CHARS = 20
 # treated as a section break. We deliberately do NOT match H4+ — deeper
 # nesting in Chatwoot articles is rare and treating it as a leaf section
 # blows up chunk count without recall benefit.
-_H2_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
-_H3_RE = re.compile(r"^###\s+(.+?)\s*$", re.MULTILINE)
 _HEADING_RE = re.compile(r"^(#{2,3})\s+(.+?)\s*$", re.MULTILINE)
 
 # Image / blob noise filter. Chatwoot exports rails active_storage redirect
@@ -163,7 +161,15 @@ def _split_long(content: str, *, section: str | None) -> Iterable[Chunk]:
             ws = tail.find(" ")
             if 0 < ws < OVERLAP_CHARS // 2:
                 tail = tail[ws + 1 :]
-            current = (tail + "\n\n" + para) if tail else para
+            # Only seed with overlap if the combined length stays within
+            # MAX_CHARS. Otherwise drop the overlap — preserving the
+            # MAX_CHARS bound matters more than overlap continuity, and
+            # tail+\n\n+para could otherwise produce a chunk up to
+            # OVERLAP_CHARS + 2 + MAX_CHARS chars, busting the bound.
+            if tail and len(tail) + 2 + len(para) <= MAX_CHARS:
+                current = tail + "\n\n" + para
+            else:
+                current = para
         else:
             current = para
 

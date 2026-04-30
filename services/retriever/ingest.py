@@ -50,17 +50,21 @@ import argparse
 import asyncio
 import hashlib
 import json
+import re
 import sys
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from loguru import logger
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from chunker import chunk_article
 
 # Exit codes per ``contracts/ingest.cli.md``.
 EXIT_OK = 0
@@ -77,6 +81,17 @@ EXIT_PARTIAL_SUCCESS = 75
 # tiny KBs (<= 4 entries) aren't blocked by random-looking ratios.
 MASS_DELETION_THRESHOLD = 0.25
 MASS_DELETION_FLOOR = 4
+
+# Namespace prefix sanity guard. A namespace is the segment before the
+# first ``:`` in ``kb_entry_key`` and flows verbatim into ``LIKE
+# :prefix`` against ``kb_entries.kb_entry_key``. Postgres treats ``%``
+# and ``_`` in the bound value as LIKE wildcards even though SQL
+# parameter binding protects against syntactic injection — a hostile
+# (or accidentally exotic) namespace like ``"%"`` would expand
+# ``LIKE "%:%"`` to match every kb_entry_key with ``:`` in it across
+# unrelated namespaces. Clamp the alphabet to letters/digits/dot/dash
+# at parse time so a single feed can never reach across namespaces.
+_NAMESPACE_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 
 
 @dataclass(frozen=True)
@@ -107,13 +122,21 @@ class Plan:
 def _normalise_content(content: str) -> str:
     """Apply the ``content_sha256`` normalisation contract.
 
-    Strips trailing whitespace per line, normalises Windows line endings
-    to Unix, collapses 3+ consecutive newlines, and trims the result.
-    Any richer normalisation (punctuation, diacritics, image stripping)
-    would make trivial edits invisible — see contract section
-    "Idempotency guarantees".
+    Strips NUL bytes (Postgres TEXT rejects them and would otherwise
+    wedge the entire transaction on rollback), normalises Windows line
+    endings to Unix, and trims trailing whitespace per line. Any richer
+    normalisation (punctuation, diacritics, image stripping) would make
+    trivial edits invisible — see contract section "Idempotency
+    guarantees".
     """
     text_stripped = content.replace("\r\n", "\n")
+    if "\x00" in text_stripped:
+        # Postgres TEXT rejects ``\x00``. Stripping silently would hide
+        # an upstream data-quality issue; warn so the operator sees it
+        # in retriever logs and can chase the offending source row.
+        nul_count = text_stripped.count("\x00")
+        text_stripped = text_stripped.replace("\x00", "")
+        logger.warning("ingest.nul_bytes_stripped count={n}", n=nul_count)
     lines = [ln.rstrip() for ln in text_stripped.split("\n")]
     return "\n".join(lines).strip()
 
@@ -163,6 +186,15 @@ def _load_source_dir(source: Path) -> tuple[list[SourceEntry], list[str]]:
             continue
 
         namespace = kb_entry_key.split(":", 1)[0]
+        if not _NAMESPACE_RE.match(namespace):
+            # Reject namespaces that would smuggle SQL LIKE wildcards
+            # (``%``, ``_``) or whitespace into ``_load_db_entries``'s
+            # diff predicate. See _NAMESPACE_RE docstring.
+            errors.append(
+                f"{path.name}: namespace {namespace!r} contains disallowed "
+                "characters — must match [A-Za-z0-9.-]"
+            )
+            continue
         norm_content = _normalise_content(content_raw)
         entries.append(
             SourceEntry(
@@ -287,8 +319,6 @@ async def _upsert_entry_and_chunks(
 
     Returns the number of chunks written (also = embed calls made).
     """
-    from chunker import chunk_article
-
     chunks = chunk_article(title=entry.title, content=entry.content)
 
     # Upsert kb_entry. ON CONFLICT keeps the row id stable across runs
@@ -368,12 +398,16 @@ async def _upsert_entry_and_chunks(
 
 async def _delete_entry(session: AsyncSession, *, tenant_id: UUID, kb_entry_key: str) -> int:
     """Cascade-delete a kb_entry. Returns chunks deleted."""
+    # Both ``c.tenant_id`` and ``e.tenant_id`` are predicated explicitly
+    # — Principle IV defense-in-depth (the JOIN side alone leaves the
+    # tenant scoping implicit through the FK relationship).
     chunks_deleted = (
         await session.execute(
             text(
                 "SELECT count(*) FROM kb_chunks c "
                 "JOIN kb_entries e ON c.kb_entry_id = e.id "
-                "WHERE e.tenant_id = :t AND e.kb_entry_key = :k"
+                "WHERE c.tenant_id = :t AND e.tenant_id = :t "
+                "  AND e.kb_entry_key = :k"
             ),
             {"t": str(tenant_id), "k": kb_entry_key},
         )
@@ -396,7 +430,8 @@ async def _count_chunks_for_entries(
         text(
             "SELECT count(*) FROM kb_chunks c "
             "JOIN kb_entries e ON c.kb_entry_id = e.id "
-            "WHERE e.tenant_id = :t AND e.kb_entry_key = ANY(:keys) "
+            "WHERE c.tenant_id = :t AND e.tenant_id = :t "
+            "  AND e.kb_entry_key = ANY(:keys) "
             "  AND c.is_synthetic_question = FALSE"
         ),
         {"t": str(tenant_id), "keys": kb_entry_keys},
@@ -408,7 +443,7 @@ async def run(
     *,
     tenant_slug: str,
     source: Path,
-    mode: str = "incremental",
+    mode: Literal["incremental", "full"] = "incremental",
     dry_run: bool = False,
     allow_mass_deletion: bool = False,
     skip_synthetic_questions: bool = True,  # synth phase wired up separately
@@ -463,12 +498,21 @@ async def run(
         "parse_errors": parse_errors,
     }
 
-    if not source_entries and not parse_errors:
-        # Empty but valid source dir — nothing to do. The mass-deletion
-        # safeguard would catch this if it tried to delete the existing
-        # KB; we surface it here as a no-op so the operator gets a
-        # consistent summary instead of a SystemExit.
-        logger.warning("source dir is empty: {p}", p=source_path)
+    if not source_entries:
+        # Zero valid source entries — nothing to ingest. Could be an
+        # empty directory (no parse errors) or one where every file
+        # failed validation (parse errors recorded). Either way we
+        # MUST short-circuit before the diff: with no entries, the
+        # plan would compute ``namespace = ""`` and ``LIKE "%"`` would
+        # match every kb_entry across namespaces → mass-delete via
+        # the diff. The mass-deletion safeguard catches that only
+        # when ``len(plan.delete) >= MASS_DELETION_FLOOR``; a tenant
+        # with <= 4 entries would lose them all silently.
+        logger.warning(
+            "source has no valid entries: path={p} parse_errors={n}",
+            p=source_path,
+            n=len(parse_errors),
+        )
         summary["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
         return summary
 
@@ -492,8 +536,10 @@ async def run(
 
         # Mass-deletion safeguard — fires only when there's a meaningful
         # baseline (avoids "I had 2 entries, deleted 1, that's >25%!").
+        # ``>=`` (not ``>``) so a 5-entry KB with 4 deletes (80%)
+        # triggers the guard rather than slipping through the floor.
         if (
-            len(plan.delete) > MASS_DELETION_FLOOR
+            len(plan.delete) >= MASS_DELETION_FLOOR
             and len(db_entries) > 0
             and len(plan.delete) / len(db_entries) > MASS_DELETION_THRESHOLD
             and not allow_mass_deletion
@@ -616,16 +662,38 @@ def main(argv: list[str] | None = None) -> int:
     if args.verbose:
         logger.remove()
         logger.add(sys.stderr, level="DEBUG")
-    summary = asyncio.run(
-        run(
-            tenant_slug=args.tenant,
-            source=Path(args.source),
-            mode=args.mode,
-            dry_run=args.dry_run,
-            allow_mass_deletion=args.allow_mass_deletion,
-            skip_synthetic_questions=args.skip_synthetic_questions,
+    try:
+        summary = asyncio.run(
+            run(
+                tenant_slug=args.tenant,
+                source=Path(args.source),
+                mode=args.mode,
+                dry_run=args.dry_run,
+                allow_mass_deletion=args.allow_mass_deletion,
+                skip_synthetic_questions=args.skip_synthetic_questions,
+            )
         )
-    )
+    except SQLAlchemyError as exc:
+        # DB connectivity / driver / migration-state failures. Per
+        # contract: exit 74, no partial writes (transactions roll back
+        # on the way up). Operator can re-run --mode incremental safely.
+        logger.error(
+            "ingest.upstream_db_failure kind={k} msg={m}",
+            k=type(exc).__name__,
+            m=str(exc)[:200],
+        )
+        return EXIT_UPSTREAM_FAILURE
+    except (RuntimeError, OSError, MemoryError) as exc:
+        # Embedder OOM / CUDA OOM / model-load OS errors all surface as
+        # one of these. Same exit-code semantics as DB failures: it's
+        # an upstream resource problem, not a logic error in this run's
+        # input. The contract calls these out as exit 74.
+        logger.error(
+            "ingest.upstream_resource_failure kind={k} msg={m}",
+            k=type(exc).__name__,
+            m=str(exc)[:200],
+        )
+        return EXIT_UPSTREAM_FAILURE
     print(json.dumps(summary, ensure_ascii=False))
     return EXIT_PARTIAL_SUCCESS if summary.get("parse_errors") else EXIT_OK
 

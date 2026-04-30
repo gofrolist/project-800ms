@@ -41,7 +41,11 @@ Exit codes
 
 The script intentionally uses only the stdlib so it can run on any
 Python 3.10+ host without a venv (e.g. on the VM directly when running
-the fetch out-of-band).
+the fetch out-of-band). This is a deliberate exception to the project's
+loguru-everywhere convention (CLAUDE.md): loguru is a third-party
+dependency and would break the stdlib-only constraint. The
+``logging.getLogger`` calls below use stdlib ``%``-style lazy
+formatting, which is the equivalent discipline for the stdlib logger.
 """
 
 from __future__ import annotations
@@ -204,12 +208,23 @@ def fetch(config: FetchConfig) -> dict[str, Any]:
 
     written: list[str] = []
     seen_ids: list[str] = []
+    seen_set: set[str] = set()  # dedup so duplicate upstream IDs don't
+    # inflate manifest count.
     for article in articles:
         if "id" not in article:
             log.warning("skipping article without id: %r", article.get("title"))
             continue
-        normalised = _normalise(article, config.project, config.base_url, fetched_at)
         safe = _safe_id(str(article["id"]))
+        if safe in seen_set:
+            # Duplicate id from upstream — the second copy would
+            # overwrite the first via tmp+rename, leaving exactly one
+            # file on disk. Reflect that on the manifest by NOT
+            # double-counting; warn so the operator can chase the
+            # upstream data-quality issue.
+            log.warning("duplicate article id from upstream: %r", safe)
+            continue
+        seen_set.add(safe)
+        normalised = _normalise(article, config.project, config.base_url, fetched_at)
         seen_ids.append(safe)
         target = config.out_dir / f"{safe}.json"
         if config.dry_run:

@@ -32,6 +32,21 @@ set -euo pipefail
 TENANT="${1:-demo}"
 PROJECT="${2:-arizona}"
 
+# Validate the positional args before they flow into filesystem paths
+# and python3 invocations. The strict alphabet (letters/digits/dot/dash/
+# underscore) blocks shell metacharacters, single-quotes (which would
+# break out of the python3 -c string literal below), path separators,
+# and whitespace. Cron entries on the VM use fixed args; this guard
+# protects ad-hoc operator invocations + future automation.
+if [[ ! "${TENANT}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "refresh_kb: invalid TENANT ${TENANT@Q} — must match [A-Za-z0-9._-]+" >&2
+    exit 2
+fi
+if [[ ! "${PROJECT}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "refresh_kb: invalid PROJECT ${PROJECT@Q} — must match [A-Za-z0-9._-]+" >&2
+    exit 2
+fi
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${REPO_ROOT}/infra/.env"
 DATA_DIR="${REPO_ROOT}/data/kb/${PROJECT}"
@@ -56,7 +71,7 @@ if [[ -z "${CHATWOOT_HELP_BASE_TOKEN:-}" ]]; then
     exit 2
 fi
 
-echo "refresh_kb: phase=fetch project=${PROJECT}"
+echo "refresh_kb: phase=fetch project=${PROJECT}" >&2
 if ! python3 "${REPO_ROOT}/tools/fetch_chatwoot_kb.py" \
         --project "${PROJECT}" \
         --out-dir "${DATA_DIR}"; then
@@ -73,18 +88,33 @@ if [[ ! -f "${MANIFEST}" ]]; then
     echo "refresh_kb: manifest absent at ${MANIFEST} — fetch produced no output" >&2
     exit 2
 fi
-COUNT="$(python3 -c "import json; print(json.load(open('${MANIFEST}'))['count'])")"
-if [[ "${COUNT}" == "0" ]]; then
+# Pass MANIFEST as argv[1] rather than embedding it into the python -c
+# source string. Inline interpolation would expose the script to shell-
+# to-Python injection if PROJECT ever contained a single-quote (now
+# impossible thanks to the regex guard above, but the argv form removes
+# the risk class entirely and survives future regex edits). Capturing
+# the exit status separately keeps ``set -e`` honest — bash does NOT
+# propagate non-zero exits from command-substitution-into-assignment
+# even with -e + -o pipefail.
+if ! COUNT="$(python3 -c '
+import json
+import sys
+print(json.load(open(sys.argv[1]))["count"])
+' "${MANIFEST}")"; then
+    echo "refresh_kb: failed to read count from ${MANIFEST}" >&2
+    exit 2
+fi
+if [[ -z "${COUNT}" || "${COUNT}" == "0" ]]; then
     echo "refresh_kb: upstream returned 0 articles — refusing to run ingest" >&2
     exit 2
 fi
-echo "refresh_kb: phase=fetch ok count=${COUNT}"
+echo "refresh_kb: phase=fetch ok count=${COUNT}" >&2
 
 # The ingest step runs INSIDE the retriever container so it reuses the
 # already-loaded BGE-M3 embedder (saves ~6s of cold load per run) and
 # inherits DB credentials from the container env. The data dir is
 # bind-mounted at /app/data (see infra/docker-compose.yml).
-echo "refresh_kb: phase=ingest tenant=${TENANT} namespace=chatwoot"
+echo "refresh_kb: phase=ingest tenant=${TENANT} namespace=chatwoot" >&2
 INGEST_CMD=(
     docker compose
     --env-file "${ENV_FILE}"
@@ -121,4 +151,4 @@ if ! "${INGEST_CMD[@]}"; then
     exit 3
 fi
 
-echo "refresh_kb: phase=ingest ok"
+echo "refresh_kb: phase=ingest ok" >&2

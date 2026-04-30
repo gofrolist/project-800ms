@@ -367,4 +367,9 @@ variable "chatwoot_help_base_token" {
   type        = string
   sensitive   = true
   default     = ""
+
+  validation {
+    condition     = length(var.chatwoot_help_base_token) == 0 || length(var.chatwoot_help_base_token) >= 32
+    error_message = "chatwoot_help_base_token must be either empty (disabled) or at least 32 characters. Mirrors the strength bar applied to postgres_password and livekit_api_secret."
+  }
 }

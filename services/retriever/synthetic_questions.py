@@ -66,6 +66,7 @@ from uuid import UUID
 import httpx
 from loguru import logger
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 QUESTIONS_PER_CHUNK = 4
@@ -74,6 +75,12 @@ LLM_MAX_TOKENS = 400
 LLM_MAX_ATTEMPTS = 3
 LLM_BACKOFF_SECONDS = (0.5, 1.0, 2.0)
 LLM_RETRY_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
+# Abort the synth phase once this many content chunks in a row have
+# returned no usable questions. Five gives operators a clear "the LLM
+# is genuinely down or the daily quota is exhausted" signal without
+# burning attempts indefinitely; remaining naked chunks resume on
+# the next run via the NOT EXISTS filter.
+LLM_CONSECUTIVE_FAILURE_ABORT = 5
 
 _SYSTEM_PROMPT = (
     "Ты — генератор поисковых запросов для русскоязычного голосового "
@@ -243,7 +250,8 @@ async def _select_naked_chunks(
                     "  AND e.kb_entry_key LIKE :prefix "
                     "  AND NOT EXISTS ("
                     "    SELECT 1 FROM kb_chunks sq "
-                    "    WHERE sq.parent_chunk_id = c.id"
+                    "    WHERE sq.parent_chunk_id = c.id "
+                    "      AND sq.tenant_id = c.tenant_id"
                     "  ) "
                     "ORDER BY c.id"
                 ),
@@ -306,12 +314,18 @@ async def run(
         timeout=httpx.Timeout(LLM_TIMEOUT_S, connect=2.0),
     )
     try:
-        async with get_session() as session:
-            # Resolve tenant inline rather than reusing tenants.resolve_tenant
-            # (which takes a UUID, not a slug). Keeps the synth phase callable
-            # standalone from the CLI without an extra lookup.
+        # Setup phase: resolve tenant + select naked chunks in one short
+        # session, then close it. We deliberately do NOT keep this
+        # session open across the per-chunk loop: a single transaction
+        # spanning all N chunks means a mid-loop exception (embedder
+        # OOM, transient asyncpg disconnect) rolls back every synth
+        # row already inserted. With one transaction per chunk, a
+        # failure on chunk K only loses chunk K's questions; chunks
+        # 0..K-1 are durably committed and chunk K stays naked for the
+        # next run (NOT EXISTS filter picks it up automatically).
+        async with get_session() as setup_session:
             row = (
-                await session.execute(
+                await setup_session.execute(
                     text("SELECT id FROM tenants WHERE slug = :slug AND status = 'active'"),
                     {"slug": tenant_slug},
                 )
@@ -321,68 +335,83 @@ async def run(
                 return summary
             tenant_id: UUID = row[0]
 
-            await set_tenant_scope(session, tenant_id)
-            naked = await _select_naked_chunks(session, tenant_id=tenant_id, namespace=namespace)
-            logger.info(
-                "synth.start tenant={t} namespace={ns} chunks_naked={n}",
-                t=tenant_slug,
-                ns=namespace,
-                n=len(naked),
+            await set_tenant_scope(setup_session, tenant_id)
+            naked = await _select_naked_chunks(
+                setup_session, tenant_id=tenant_id, namespace=namespace
             )
+        logger.info(
+            "synth.start tenant={t} namespace={ns} chunks_naked={n}",
+            t=tenant_slug,
+            ns=namespace,
+            n=len(naked),
+        )
+
+        consecutive_failures = 0
+        for chunk in naked:
+            summary["chunks_touched"] += 1
+            summary["rewriter_calls"] += 1
+            questions = await _call_llm(
+                client,
+                base_url=str(settings.llm_base_url),
+                api_key=settings.llm_api_key,
+                model=settings.rewriter_model,
+                title=chunk.title,
+                section=chunk.section,
+                content=chunk.content,
+            )
+            if not questions:
+                consecutive_failures += 1
+                if consecutive_failures >= LLM_CONSECUTIVE_FAILURE_ABORT:
+                    logger.error(
+                        "synth.aborted_after_consecutive_failures remaining={r}",
+                        r=len(naked) - summary["chunks_touched"],
+                    )
+                    break
+                continue
 
             consecutive_failures = 0
-            for chunk in naked:
-                summary["chunks_touched"] += 1
-                summary["rewriter_calls"] += 1
-                questions = await _call_llm(
-                    client,
-                    base_url=str(settings.llm_base_url),
-                    api_key=settings.llm_api_key,
-                    model=settings.rewriter_model,
-                    title=chunk.title,
-                    section=chunk.section,
-                    content=chunk.content,
-                )
-                if not questions:
-                    consecutive_failures += 1
-                    # If 5 consecutive chunks fail, abort the phase —
-                    # likely the LLM is down or quota is exhausted, no
-                    # value in burning more attempts. Operator gets a
-                    # partial-success summary; next run resumes.
-                    if consecutive_failures >= 5:
-                        logger.error(
-                            "synth.aborted_after_consecutive_failures remaining={r}",
-                            r=len(naked) - summary["chunks_touched"],
-                        )
-                        break
-                    continue
 
-                consecutive_failures = 0
-                # Embed each question; insert as is_synthetic_question=TRUE
-                # with parent_chunk_id pointing at this content chunk.
-                for question in questions:
-                    embedding = await encode_fn(question)
-                    await session.execute(
-                        text(
-                            "INSERT INTO kb_chunks "
-                            "  (tenant_id, kb_entry_id, section, title, "
-                            "   content, content_sha256, embedding, "
-                            "   is_synthetic_question, parent_chunk_id) "
-                            "VALUES (:t, :eid, :section, :title, :content, "
-                            "        :sha, CAST(:emb AS vector), TRUE, :pid)"
-                        ),
-                        {
-                            "t": str(tenant_id),
-                            "eid": str(chunk.kb_entry_id),
-                            "section": chunk.section,
-                            "title": chunk.title,
-                            "content": question,
-                            "sha": _q_sha(question),
-                            "emb": _vector_literal(embedding),
-                            "pid": chunk.id,
-                        },
-                    )
-                    summary["added"] += 1
+            # Per-chunk transaction. If insert fails (FK violation from
+            # a concurrent ingest deleting the parent, transient DB
+            # error, etc.), the wrapping ``except`` swallows it after
+            # the session has rolled back, and we move on. The chunk
+            # remains naked for the next run via the NOT EXISTS filter.
+            try:
+                async with get_session() as session:
+                    await set_tenant_scope(session, tenant_id)
+                    for question in questions:
+                        embedding = await encode_fn(question)
+                        await session.execute(
+                            text(
+                                "INSERT INTO kb_chunks "
+                                "  (tenant_id, kb_entry_id, section, title, "
+                                "   content, content_sha256, embedding, "
+                                "   is_synthetic_question, parent_chunk_id) "
+                                "VALUES (:t, :eid, :section, :title, :content, "
+                                "        :sha, CAST(:emb AS vector), TRUE, :pid)"
+                            ),
+                            {
+                                "t": str(tenant_id),
+                                "eid": str(chunk.kb_entry_id),
+                                "section": chunk.section,
+                                "title": chunk.title,
+                                "content": question,
+                                "sha": _q_sha(question),
+                                "emb": _vector_literal(embedding),
+                                "pid": chunk.id,
+                            },
+                        )
+                # ``async with get_session()`` committed cleanly. Only
+                # now count the questions as added — pre-commit counting
+                # would lie if the transaction rolled back.
+                summary["added"] += len(questions)
+            except SQLAlchemyError as exc:
+                logger.warning(
+                    "synth.chunk_insert_failed chunk_id={cid} kind={k} msg={m}",
+                    cid=chunk.id,
+                    k=type(exc).__name__,
+                    m=str(exc)[:200],
+                )
     finally:
         if own_client:
             await client.aclose()

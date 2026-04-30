@@ -170,3 +170,27 @@ def test_min_chars_constant_is_below_max() -> None:
     # Sanity check on the tunables — guards against an accidental edit
     # that would make MIN >= MAX and produce zero-chunk output forever.
     assert 0 < MIN_CHARS < MAX_CHARS
+
+
+def test_paragraph_overlap_does_not_exceed_max_chars() -> None:
+    """Regression for an overflow path in `_split_long`. Earlier code
+    seeded the next chunk with `tail (≤OVERLAP_CHARS) + "\\n\\n" + para`,
+    where `para` could be up to MAX_CHARS-1. The combined size could
+    reach OVERLAP_CHARS + 2 + (MAX_CHARS - 1) chars, busting the cap.
+
+    Reproduces the bound violation by sequencing paragraphs of size
+    ~800/1400/100 chars: first flush emits 800-char chunk, leaves an
+    overlap tail; second paragraph (~1400) joined with the tail would
+    produce ~1550 chars, exceeding MAX_CHARS=1500. After the fix, the
+    overlap is dropped when it would push past the cap.
+    """
+    para_a = "а" * 800  # short of MAX_CHARS — will pack into chunk 1
+    para_b = "б" * 1400  # large enough that overlap+para overflows
+    para_c = "в" * 100  # tail content
+    body = f"## Раздел\n\n{para_a}\n\n{para_b}\n\n{para_c}\n"
+    chunks = chunk_article(title="Тест", content=body)
+    assert len(chunks) >= 2
+    for c in chunks:
+        assert len(c.content) <= MAX_CHARS, (
+            f"chunk exceeds MAX_CHARS={MAX_CHARS}: {len(c.content)} chars"
+        )

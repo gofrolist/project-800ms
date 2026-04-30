@@ -14,6 +14,7 @@ all reuse it to avoid spinning up multiple containers.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import secrets
 import subprocess
@@ -197,8 +198,6 @@ def stub_vector_for(text_input: str) -> list[float]:
     behaves sensibly in tests; identical inputs always produce the same
     vector so rerun assertions hold.
     """
-    import hashlib
-
     digest = hashlib.sha256(text_input.encode("utf-8")).digest()
     # Vectors are NOT unit-normalised — pgvector's hnsw with cosine_ops
     # handles any magnitude, and the determinism contract is what tests
