@@ -52,6 +52,7 @@ import hashlib
 import json
 import sys
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -280,7 +281,7 @@ async def _upsert_entry_and_chunks(
     *,
     tenant_id: UUID,
     entry: SourceEntry,
-    encode_fn: Any,  # async callable str -> list[float]
+    encode_fn: Callable[[str], Awaitable[list[float]]],
 ) -> int:
     """Insert/update a kb_entry and atomically replace its kb_chunks.
 
@@ -411,7 +412,7 @@ async def run(
     dry_run: bool = False,
     allow_mass_deletion: bool = False,
     skip_synthetic_questions: bool = True,  # synth phase wired up separately
-    encode_fn: Any = None,  # injection seam for tests
+    encode_fn: Callable[[str], Awaitable[list[float]]] | None = None,
 ) -> dict[str, Any]:
     """Run an ingest. Returns the summary dict (also used by the CLI
     main() to format stdout).

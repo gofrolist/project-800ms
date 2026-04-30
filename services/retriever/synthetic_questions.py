@@ -55,8 +55,10 @@ hybrid score; eight oversaturates the index without proportional gain.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -154,11 +156,18 @@ async def _call_llm(
             resp = await client.post(url, headers=headers, json=payload)
         except httpx.TimeoutException:
             last_error = "timeout"
-            await asyncio.sleep(LLM_BACKOFF_SECONDS[attempt])
+            # Mirror the guard the retry-status branch below uses — never
+            # sleep after the LAST attempt; the loop is about to exit
+            # anyway and the caller is waiting on us. Without this, a
+            # 5-consecutive-failure phase abort wastes ~10s of cumulative
+            # tail-sleeps with no chance of another retry.
+            if attempt < LLM_MAX_ATTEMPTS - 1:
+                await asyncio.sleep(LLM_BACKOFF_SECONDS[attempt])
             continue
         except httpx.HTTPError as exc:
             last_error = type(exc).__name__
-            await asyncio.sleep(LLM_BACKOFF_SECONDS[attempt])
+            if attempt < LLM_MAX_ATTEMPTS - 1:
+                await asyncio.sleep(LLM_BACKOFF_SECONDS[attempt])
             continue
 
         last_status = resp.status_code
@@ -260,7 +269,7 @@ async def run(
     *,
     tenant_slug: str,
     namespace: str,
-    encode_fn: Any | None = None,
+    encode_fn: Callable[[str], Awaitable[list[float]]] | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Run the synthetic-question phase for one tenant + namespace.
@@ -383,6 +392,4 @@ async def run(
 
 
 def _q_sha(question: str) -> str:
-    import hashlib
-
     return hashlib.sha256(question.encode("utf-8")).hexdigest()

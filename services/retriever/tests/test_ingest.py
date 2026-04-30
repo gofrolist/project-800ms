@@ -22,7 +22,6 @@ public API, until the synth phase lands).
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 import uuid
@@ -35,26 +34,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-
-def _vector_for(text_input: str) -> list[float]:
-    """Deterministic 1024-dim stub embedding seeded by the input text.
-
-    Different inputs produce different vectors so cosine ranking still
-    behaves sensibly in tests; identical inputs always produce the same
-    vector so rerun assertions hold.
-    """
-    digest = hashlib.sha256(text_input.encode("utf-8")).digest()
-    # Normalised to ~unit length — pgvector's hnsw index uses cosine
-    # distance, and unnormalised vectors of wildly different magnitudes
-    # produce confusing similarity scores in debug logs.
-    raw = [b / 255.0 for b in digest]
-    while len(raw) < 1024:
-        raw.extend(b / 255.0 for b in digest)
-    return raw[:1024]
-
-
-async def _stub_encode(text_input: str) -> list[float]:
-    return _vector_for(text_input)
+from tests.conftest import stub_encode as _stub_encode
 
 
 @pytest_asyncio.fixture

@@ -23,17 +23,7 @@ import respx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-
-def _vector_for(s: str) -> list[float]:
-    digest = hashlib.sha256(s.encode("utf-8")).digest()
-    raw = [b / 255.0 for b in digest]
-    while len(raw) < 1024:
-        raw.extend(b / 255.0 for b in digest)
-    return raw[:1024]
-
-
-async def _stub_encode(s: str) -> list[float]:
-    return _vector_for(s)
+from tests.conftest import stub_encode as _stub_encode
 
 
 @pytest_asyncio.fixture
