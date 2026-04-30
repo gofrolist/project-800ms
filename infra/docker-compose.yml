@@ -81,7 +81,11 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:-voice}
     volumes:
-      - pg_data:/var/lib/postgresql/data
+      # Postgres 18 stores data at PGDATA=/var/lib/postgresql/<major>/docker by
+      # default. Mount the parent dir so the per-major subdir lives inside the
+      # named volume. Mounting at /var/lib/postgresql/data (the pre-18 layout)
+      # makes the pg18 entrypoint refuse to start, calling our mount "unused".
+      - pg_data:/var/lib/postgresql
     ports:
       # Loopback only — postgres has a password but should never be exposed
       # to the public internet. The api/agent containers reach it via the
