@@ -6,7 +6,8 @@
 `/ready`   — the service is actually able to serve `/retrieve`. Verifies:
    (a) embedder singleton is loaded,
    (b) DB pool can execute `SELECT 1`,
-   (c) rewriter LLM answered a hello-ping within the last 30 s (cached).
+   (c) the rewriter LLM endpoint is reachable (cached probe — see
+       `_check_rewriter_cached`).
    Used by the docker-compose healthcheck (start_period: 600s — matches
    HF_HUB_DOWNLOAD_TIMEOUT so a slow cold download can't trigger a
    kill/re-download boot loop).
@@ -34,7 +35,24 @@ from embedder import is_loaded as embedder_is_loaded
 
 router = APIRouter(tags=["health"])
 
-_REWRITER_CACHE_TTL_SECONDS = 30.0
+# Two-tier cache for the rewriter probe. Successful probes are trusted for 5
+# minutes; failed probes for 1 minute. The asymmetry is deliberate:
+#
+# * 300 s on success keeps the docker healthcheck (10 s interval) below the
+#   provider's per-day request budget on free tiers — Groq's 1000 RPD on
+#   `/chat/completions` is the bound that bit us when this was 30 s and
+#   billable; switching to the unbilled `/models` GET (see
+#   `_check_rewriter_cached`) plus the 5-min cache puts us at 288/day.
+# * 60 s on failure prevents a single transient hiccup (network blip, brief
+#   per-minute rate-limit window, upstream 5xx) from poisoning the cache for
+#   the full 5-minute window. A revoked key still surfaces within one minute.
+_REWRITER_CACHE_TTL_OK = 300.0
+_REWRITER_CACHE_TTL_FAIL = 60.0
+# HTTP statuses that indicate the rewriter is NOT ready and the cached
+# negative result should page operators on the next /ready call. Auth
+# failures (401/403), wrong base URL (404), and quota exhaustion (429) are
+# operator-visible problems, not transient network issues.
+_REWRITER_NOT_READY_STATUSES = frozenset({401, 403, 404, 429})
 # The probe itself has a budget well inside the compose healthcheck
 # timeout (3 s). Keeping it at 2.5 s leaves 500 ms headroom.
 _REWRITER_PROBE_TIMEOUT = httpx.Timeout(2.5, connect=1.0)
@@ -48,14 +66,28 @@ class _RewriterCache:
 
 _rewriter_cache = _RewriterCache()
 # Serialises the in-flight probe so N concurrent /ready calls produce
-# one LLM POST, not N. Defeats the cold-start thundering-herd.
+# one LLM request, not N. Defeats the cold-start thundering-herd.
 _rewriter_lock = asyncio.Lock()
 
 
 def reset_rewriter_cache() -> None:
-    """Test seam — clear the cached rewriter-probe result."""
+    """Test seam — clear the cached rewriter-probe result and reset the lock.
+
+    The lock reset is defensive: a test that cancels a coroutine mid-probe
+    would otherwise leave `_rewriter_lock` permanently held in module state,
+    deadlocking every subsequent test that touches `_check_rewriter_cached`.
+    """
+    global _rewriter_lock
     _rewriter_cache.ok = False
     _rewriter_cache.ts = float("-inf")
+    _rewriter_lock = asyncio.Lock()
+
+
+def _is_cache_fresh(now: float) -> bool:
+    """Two-tier cache freshness. Reads `_rewriter_cache.ok` (no lock; safe
+    in single-threaded asyncio) and picks the matching TTL."""
+    ttl = _REWRITER_CACHE_TTL_OK if _rewriter_cache.ok else _REWRITER_CACHE_TTL_FAIL
+    return now - _rewriter_cache.ts < ttl
 
 
 @router.get("/healthz", include_in_schema=True)
@@ -92,39 +124,35 @@ async def ready(response: Response) -> dict[str, object]:
 
 
 async def _check_rewriter_cached() -> bool:
-    """Probe the rewriter LLM with a trivial call, cached for 30 s.
+    """Probe the rewriter LLM endpoint with a metadata GET, cached.
 
-    Serialised by `_rewriter_lock` so only one probe runs at a time — the
-    classic cold-start thundering-herd where N concurrent /ready calls
-    would otherwise fan out N real LLM POSTs.
+    Hits ``GET {llm_base_url}/models`` — part of the OpenAI-compatible
+    surface that Groq, vLLM, and OpenAI all implement, and (unlike
+    ``POST /chat/completions``) unbilled on every provider we target.
+    Cache TTLs are asymmetric (see module-level constants).
+
+    Serialised by `_rewriter_lock` so concurrent /ready calls produce
+    one in-flight request, not N.
     """
     now = time.monotonic()
-    if now - _rewriter_cache.ts < _REWRITER_CACHE_TTL_SECONDS:
+    if _is_cache_fresh(now):
         return _rewriter_cache.ok
 
     async with _rewriter_lock:
         # Another probe may have refreshed the cache while we were
         # waiting for the lock.
         now = time.monotonic()
-        if now - _rewriter_cache.ts < _REWRITER_CACHE_TTL_SECONDS:
+        if _is_cache_fresh(now):
             return _rewriter_cache.ok
 
         settings = get_settings()
-        url = f"{str(settings.llm_base_url).rstrip('/')}/chat/completions"
+        url = f"{str(settings.llm_base_url).rstrip('/')}/models"
         headers = {"Authorization": f"Bearer {settings.llm_api_key}"}
-        payload = {
-            "model": settings.rewriter_model,
-            "messages": [{"role": "user", "content": "ping"}],
-            "max_tokens": 1,
-            "temperature": 0.0,
-        }
         try:
             async with httpx.AsyncClient(timeout=_REWRITER_PROBE_TIMEOUT) as client:
-                resp = await client.post(url, headers=headers, json=payload)
-            # Treat auth / not-found / rate-limit as NOT ready — a revoked
-            # key should page, not silently green-light the probe.
+                resp = await client.get(url, headers=headers)
             status = resp.status_code
-            ok = 200 <= status < 500 and status not in (401, 403, 404, 429)
+            ok = 200 <= status < 500 and status not in _REWRITER_NOT_READY_STATUSES
             if not ok:
                 logger.warning("ready.rewriter_non_ok status={status}", status=status)
         except Exception as exc:  # noqa: BLE001
