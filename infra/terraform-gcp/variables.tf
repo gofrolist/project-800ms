@@ -319,6 +319,23 @@ variable "agent_internal_token" {
   default     = ""
 }
 
+variable "retriever_internal_token" {
+  description = <<-EOT
+    Shared secret the agent presents to the retriever's `/retrieve`
+    endpoint as `X-Internal-Token`, and the retriever validates against
+    its own copy. Both agent and retriever are wired to fail closed
+    when the token is missing -- empty here triggers the same auto-
+    generate-and-persist fallback used for `agent_internal_token`,
+    keeping the value stable across spot preemptions via
+    `/etc/project-800ms/retriever-token`. Set to a deliberate value
+    only when rotating per the playbook in
+    `docs/solutions/security-issues/retriever-internal-token-rotation-2026-04-27.md`.
+  EOT
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 # -----------------------------------------------------------------------------
 # Admin API key (optional)
 #

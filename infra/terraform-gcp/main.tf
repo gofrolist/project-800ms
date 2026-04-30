@@ -201,8 +201,9 @@ locals {
     # Optional API seed key. Sentinel + startup script treat __UNSET__ as
     # empty so downstream compose falls back to defaults.
     seed_demo_api_key    = var.seed_demo_api_key == "" ? "__UNSET__" : var.seed_demo_api_key
-    agent_internal_token = var.agent_internal_token == "" ? "__UNSET__" : var.agent_internal_token
-    admin_api_key        = var.admin_api_key == "" ? "__UNSET__" : var.admin_api_key
+    agent_internal_token     = var.agent_internal_token == "" ? "__UNSET__" : var.agent_internal_token
+    retriever_internal_token = var.retriever_internal_token == "" ? "__UNSET__" : var.retriever_internal_token
+    admin_api_key            = var.admin_api_key == "" ? "__UNSET__" : var.admin_api_key
   }
 }
 
