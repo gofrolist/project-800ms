@@ -598,8 +598,18 @@ jobs:
       # Import-smoke the app entrypoint. The base image already smokes
       # core deps; this catches any source-level import breakage (missing
       # module, circular import, syntax error in main.py).
+      #
+      # `import main` triggers `create_app()` → `get_settings()`, so we
+      # stub the required Settings env vars. The values are intentionally
+      # invalid-looking — the smoke exercises the import graph + Settings
+      # validation, not real connectivity.
       - name: Smoke-test retriever app import
         run: |
           IMAGE_TAG=$(echo "${{ steps.meta-retriever.outputs.tags }}" | head -n 1)
           echo "Smoke-testing ${IMAGE_TAG}"
-          docker run --rm --entrypoint python "${IMAGE_TAG}" -c "import main; print('retriever app import OK')"
+          docker run --rm \
+            -e DB_URL=postgresql+asyncpg://stub:stub@stub:5432/stub \
+            -e LLM_BASE_URL=http://stub.invalid \
+            -e LLM_API_KEY=stub \
+            -e REWRITER_MODEL=stub \
+            --entrypoint python "${IMAGE_TAG}" -c "import main; print('retriever app import OK')"
