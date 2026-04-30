@@ -1,3 +1,8 @@
+# KB fetch output (tools/fetch_chatwoot_kb.py and similar). Treated as a
+# runtime artifact — the source of truth lives upstream (Chatwoot, etc.).
+# Test fixtures live under services/*/tests/fixtures/ instead.
+data/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
