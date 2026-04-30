@@ -397,6 +397,21 @@ services:
       # STT/LLM utterances to the api's /internal/transcripts endpoint.
       - API_BASE_URL=${API_BASE_URL:-http://api:8000}
       - AGENT_INTERNAL_TOKEN=${AGENT_INTERNAL_TOKEN:-}
+      # Retriever (Helper/Guide NPC RAG). Empty RETRIEVER_URL disables
+      # the KB path entirely — KBRetrievalProcessor falls into
+      # pass-through mode. Set both RETRIEVER_URL and
+      # RETRIEVER_INTERNAL_TOKEN to enable. AGENT_RETRIEVER_TIMEOUT_MS
+      # defaults to 500 ms per issue #49 so the retriever leg fits
+      # inside the constitution's 800 ms p95 SLO.
+      - RETRIEVER_URL=${RETRIEVER_URL:-}
+      # Symmetric `:?` with the retriever side below — both agents and
+      # retriever fail to start without the secret, so a partial deploy
+      # cannot leave the agent silently 401-cascading into refusal-only
+      # mode. Local dev that doesn't run /retrieve at all should leave
+      # RETRIEVER_URL empty (KBRetrievalProcessor skips when URL is
+      # empty regardless of token state).
+      - RETRIEVER_INTERNAL_TOKEN=${RETRIEVER_INTERNAL_TOKEN:?RETRIEVER_INTERNAL_TOKEN is required}
+      - AGENT_RETRIEVER_TIMEOUT_MS=${AGENT_RETRIEVER_TIMEOUT_MS:-500}
       # INFO by default — DEBUG logs full STT transcripts and LLM
       # prompts/completions, which is a privacy issue if exposed via
       # docker logs. Set LOG_LEVEL=DEBUG in .env when actively debugging.
@@ -487,9 +502,16 @@ services:
       - LLM_BASE_URL=${LLM_BASE_URL:?LLM_BASE_URL is required}
       - LLM_API_KEY=${LLM_API_KEY:?LLM_API_KEY is required}
       - REWRITER_MODEL=${REWRITER_MODEL:-${LLM_MODEL:-qwen-7b}}
-      - REWRITER_TIMEOUT_MS=${REWRITER_TIMEOUT_MS:-1500}
+      - REWRITER_TIMEOUT_MS=${REWRITER_TIMEOUT_MS:-400}
       - EMBEDDER_DEVICE=${EMBEDDER_DEVICE:-cpu}
       - LOG_LEVEL=${RETRIEVER_LOG_LEVEL:-INFO}
+      # Issue #40 / #47: shared-secret bearer for /retrieve. Required
+      # in production — empty disables the endpoint (returns 503).
+      - RETRIEVER_INTERNAL_TOKEN=${RETRIEVER_INTERNAL_TOKEN:?RETRIEVER_INTERNAL_TOKEN is required}
+      # Rotation grace token (issue #55) — empty in steady state; set
+      # during a rotation rollout so the retriever accepts both new
+      # and old secrets until every caller has rotated.
+      - RETRIEVER_INTERNAL_TOKEN_PREVIOUS=${RETRIEVER_INTERNAL_TOKEN_PREVIOUS:-}
       - HF_HOME=/home/appuser/.cache/huggingface
       - HF_HUB_DOWNLOAD_TIMEOUT=600
     volumes:

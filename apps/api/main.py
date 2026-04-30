@@ -267,6 +267,13 @@ install_metrics(app)
 
 
 @app.get("/health", tags=["system"], summary="Liveness probe")
+@app.get("/healthz", tags=["system"], summary="Liveness probe (alias)", include_in_schema=False)
+@app.get(
+    "/ready",
+    tags=["system"],
+    summary="Readiness probe (alias of /health for k8s convention)",
+    include_in_schema=False,
+)
 @limiter.limit("60/minute")
 def health(request: Request) -> dict[str, str]:
     """Return `{"status": "ok"}` whenever the process is up.
@@ -274,6 +281,13 @@ def health(request: Request) -> dict[str, str]:
     Does not exercise the database or the downstream agent — use this for
     TCP-level health checks and the `/v1/sessions` create path for deep
     end-to-end validation.
+
+    Issue #42: ``/healthz`` and ``/ready`` are unlisted aliases (excluded
+    from OpenAPI) so k8s-style probes work against apps/api without
+    operators having to remember which service uses which convention.
+    The retriever exposes the canonical ``/healthz`` + ``/ready`` split;
+    here both alias to the same shallow check because apps/api has no
+    deeper readiness signal worth distinguishing from liveness.
     """
     return {"status": "ok"}
 

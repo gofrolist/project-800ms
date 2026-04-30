@@ -31,6 +31,7 @@ forget would race the aggregator's VAD-driven flush).
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from typing import Any
 
@@ -45,11 +46,17 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from kb_prompts import build_grounded_messages, build_refusal_messages
 
-# Default request timeout. Matches the AGENT_RETRIEVER_TIMEOUT_MS env
-# the operator sets. Larger than the retriever's own rewriter_timeout_ms
-# so the retriever can still fail-closed to refusal and return a
-# structured 200 before the agent side gives up.
-_DEFAULT_TIMEOUT_MS = 2000
+# Default request timeout. Issue #49: lowered from 2000 ms to 500 ms so
+# the constitution's p95 ≤ 800 ms end-to-end SLO has actual room for
+# the LLM + TTS legs after retrieval. Issue #53: the retriever's own
+# `rewriter_timeout_ms` (default 400 ms) is now SMALLER than this so
+# the retriever fails-closed to its refusal branch (writes a trace
+# row, returns 503 `rewriter_timeout`) BEFORE the agent's read budget
+# expires. If the retriever itself stalls (DB pause, container
+# restart), the agent stops waiting at 500 ms and routes to refusal —
+# losing the forensic trace row, but bounding the user-perceived
+# latency.
+_DEFAULT_TIMEOUT_MS = 500
 
 
 class KBRetrievalProcessor(FrameProcessor):
@@ -75,6 +82,7 @@ class KBRetrievalProcessor(FrameProcessor):
         retriever_url: str,
         tenant_id: uuid.UUID | None,
         session_id: uuid.UUID | None,
+        internal_token: str = "",
         timeout_ms: int = _DEFAULT_TIMEOUT_MS,
         **kwargs: Any,
     ) -> None:
@@ -82,7 +90,18 @@ class KBRetrievalProcessor(FrameProcessor):
         self._retriever_url = retriever_url.rstrip("/")
         self._tenant_id = tenant_id
         self._session_id = session_id
+        self._internal_token = internal_token
         self._timeout_ms = timeout_ms
+        # Issue #48: per-instance salt prefixed onto the monotonic
+        # turn counter. Without it, an agent restart inside the same
+        # session resets `_turn_counter = 0` and replays `t-00001`,
+        # which collides with the already-written
+        # UNIQUE(session_id, turn_id) row in retrieval_traces and
+        # silently outage RAG for the rest of the session.
+        # 4 hex chars = ~16-bit collision resistance per restart, which
+        # is plenty for "two restarts in the same session" (vanishingly
+        # rare).
+        self._instance_salt = secrets.token_hex(2)
         self._turn_counter = 0
         # Shared httpx client reused across every turn — one DNS +
         # TCP + TLS setup for the whole session instead of per turn.
@@ -99,15 +118,38 @@ class KBRetrievalProcessor(FrameProcessor):
             logger.warning(
                 "kb_retrieval.passthrough_mode reason={reason} "
                 "tenant_set={tenant_set} session_set={session_set} "
-                "retriever_url_set={url_set}",
+                "retriever_url_set={url_set} token_set={token_set}",
                 reason=reason,
                 tenant_set=tenant_id is not None,
                 session_set=session_id is not None,
                 url_set=bool(self._retriever_url),
+                token_set=bool(self._internal_token),
             )
         else:
+            # Misconfiguration alarm: enabled (tenant + session + url) but
+            # token empty means every /retrieve will return 401 → refusal.
+            # Silent in earlier versions because is_enabled doesn't gate
+            # on the token (deliberate — a future deploy can run without
+            # auth on a closed network). Surface it once at construction
+            # so on-call sees the cause, not just the per-turn 401 noise.
+            # See review findings sec-002 / adv-005 / correctness-005.
+            if not self._internal_token:
+                logger.warning(
+                    "kb_retrieval.token_missing reason="
+                    "retriever_url and tenant/session set but RETRIEVER_INTERNAL_TOKEN empty; "
+                    "every /retrieve will return 401 and route to refusal"
+                )
+            headers = {"X-Internal-Token": self._internal_token} if self._internal_token else None
+            # Issue #49 SLO is 800 ms p95 first-audio. Earlier this
+            # carried `connect=1.0` while the read timeout was 0.5 s,
+            # so DNS-slow / TCP-slow could spend the whole read budget
+            # and another second on top — total 1.5 s, blowing past the
+            # SLO. Bound connect by the same budget; a slow connect
+            # routes to refusal at the same boundary as a slow read.
+            timeout_s = self._timeout_ms / 1000
             self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(self._timeout_ms / 1000, connect=1.0),
+                timeout=httpx.Timeout(timeout_s, connect=timeout_s),
+                headers=headers,
             )
 
     async def cleanup(self) -> None:
@@ -167,7 +209,7 @@ class KBRetrievalProcessor(FrameProcessor):
             return
 
         self._turn_counter += 1
-        turn_id = f"t-{self._turn_counter:05d}"
+        turn_id = f"{self._instance_salt}-{self._turn_counter:05d}"
 
         try:
             messages = await self._retrieve_and_compose(transcript, turn_id)
@@ -224,11 +266,33 @@ class KBRetrievalProcessor(FrameProcessor):
         )
 
         if resp.status_code != 200:
-            logger.warning(
-                "kb_retrieval.non_200 turn={turn} status={status}",
-                turn=turn_id,
-                status=resp.status_code,
-            )
+            # Distinct log levels per failure class so on-call can
+            # triage rotation drift (401) vs upstream outage (503) vs
+            # other:
+            #   401 — auth drift, almost always operator action
+            #         (rotate / re-deploy with matching tokens).
+            #   503 — retriever side down or DB/embedder/rewriter
+            #         transient; refusal cascade is expected & self-
+            #         healing once the dep recovers.
+            #   other — surprising; logged at WARNING with status code.
+            if resp.status_code == 401:
+                logger.error(
+                    "kb_retrieval.auth_failed turn={turn} reason="
+                    "401 from /retrieve; check RETRIEVER_INTERNAL_TOKEN "
+                    "matches between agent and retriever",
+                    turn=turn_id,
+                )
+            elif resp.status_code == 503:
+                logger.warning(
+                    "kb_retrieval.dep_unavailable turn={turn} status=503",
+                    turn=turn_id,
+                )
+            else:
+                logger.warning(
+                    "kb_retrieval.non_200 turn={turn} status={status}",
+                    turn=turn_id,
+                    status=resp.status_code,
+                )
             return build_refusal_messages(transcript)
 
         body = resp.json()

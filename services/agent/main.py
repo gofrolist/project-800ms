@@ -367,7 +367,18 @@ def main() -> None:
             # sessions. Present deploys set RETRIEVER_URL=http://retriever:8002
             # via infra/.env. See specs/002-helper-guide-npc/.
             "retriever_url": os.environ.get("RETRIEVER_URL", ""),
-            "retriever_timeout_ms": int(os.environ.get("AGENT_RETRIEVER_TIMEOUT_MS", "2000")),
+            # Shared-secret bearer presented to the retriever on every
+            # /retrieve call. Issue #40 / #47. Empty here lets local
+            # dev / agent-only test runs work; the retriever side
+            # returns 503 unconditionally when its own copy is unset,
+            # so the production deploy must wire the same secret on
+            # both sides via infra/.env.
+            "retriever_internal_token": os.environ.get("RETRIEVER_INTERNAL_TOKEN", ""),
+            # Issue #49: 500 ms aligns the agent budget with the
+            # constitution's 800 ms p95 SLO. Operators can override
+            # via env if a slower retriever is acceptable in their
+            # deploy.
+            "retriever_timeout_ms": int(os.environ.get("AGENT_RETRIEVER_TIMEOUT_MS", "500")),
         }
     except MissingEnvError as exc:
         logger.error(str(exc))

@@ -690,6 +690,13 @@ class TestParticipantLeftTeardown:
             "xtts_voice_library_dir": Path("/tmp"),
             "api_base_url": "",
             "agent_internal_token": "",
+            # Retriever wiring (review-hardening sweep — issue #40/#47/#49).
+            # Empty URL keeps KBRetrievalProcessor in pass-through mode so
+            # the test pipeline doesn't try to reach a non-existent
+            # retriever during _run_pipeline assertions.
+            "retriever_url": "",
+            "retriever_internal_token": "",
+            "retriever_timeout_ms": 500,
         }
         main._active_rooms.add(room)
 

@@ -39,6 +39,31 @@ class TestHealth:
         assert res.status_code == 200
         assert res.json() == {"status": "ok"}
 
+    def test_healthz_alias_returns_ok(self, client: TestClient) -> None:
+        """Issue #42: /healthz is a k8s-style alias of /health."""
+        res = client.get("/healthz")
+        assert res.status_code == 200
+        assert res.json() == {"status": "ok"}
+
+    def test_ready_alias_returns_ok(self, client: TestClient) -> None:
+        """Issue #42: /ready is a k8s-style alias of /health.
+
+        apps/api has no deeper readiness signal than liveness, so it
+        aliases to the same handler. The retriever exposes a real
+        /healthz + /ready split (it has BGE-M3 preload state to gate on).
+        """
+        res = client.get("/ready")
+        assert res.status_code == 200
+        assert res.json() == {"status": "ok"}
+
+    def test_alias_routes_excluded_from_openapi_schema(self, client: TestClient) -> None:
+        """include_in_schema=False keeps the aliases off /openapi.json so
+        the public contract advertises only the canonical /health."""
+        spec = client.get("/openapi.json").json()
+        assert "/health" in spec["paths"]
+        assert "/healthz" not in spec["paths"]
+        assert "/ready" not in spec["paths"]
+
 
 class TestSecurityHeaders:
     def test_default_headers_present(self, client: TestClient) -> None:

@@ -19,6 +19,7 @@ Covers the four T021 properties:
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from typing import Any
 
@@ -29,7 +30,7 @@ from pipecat.frames.frames import LLMMessagesAppendFrame, TranscriptionFrame
 from pipecat.processors.frame_processor import FrameDirection
 
 from kb_prompts import (
-    BASIC_REFUSAL_SYSTEM_PROMPT_RU,
+    REFUSAL_SYSTEM_PROMPT_RU,
     GROUNDED_SYSTEM_PROMPT_RU,
 )
 from kb_retrieval import KBRetrievalProcessor
@@ -108,7 +109,66 @@ async def test_transcription_triggers_retrieve_call_with_expected_payload(
     assert body["tenant_id"] == str(processor._test_tenant_id)
     assert body["session_id"] == str(processor._test_session_id)
     assert body["transcript"] == "как получить ПРАВА"
-    assert body["turn_id"].startswith("t-")
+    # Format is `<4-hex-salt>-<5+-digit-counter>` per issue #48. The
+    # `\d{5,}` (not `\d{5}`) tolerates the >99,999-turn case in case
+    # one process accidentally lives that long.
+    assert re.match(r"^[0-9a-f]{4}-\d{5,}$", body["turn_id"])
+
+
+@respx.mock
+async def test_outgoing_request_carries_x_internal_token_when_set(captured, monkeypatch) -> None:
+    """Issue #40: the agent MUST attach `X-Internal-Token` to every
+    /retrieve POST when the secret is configured. A regression that
+    drops the header silently turns every turn into a refusal (401
+    on the retriever side) — feature breaks but tests stay green
+    unless we pin this assertion (review finding TEST-001).
+    """
+    proc = KBRetrievalProcessor(
+        retriever_url=_RETRIEVER_BASE,
+        tenant_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        internal_token="secret-token-xyz",
+    )
+
+    async def _capture(frame, direction=FrameDirection.DOWNSTREAM):
+        captured.append((frame, direction))
+
+    monkeypatch.setattr(proc, "push_frame", _capture)
+    route = respx.post(f"{_RETRIEVER_BASE}/retrieve").mock(
+        return_value=httpx.Response(200, json=_response_body())
+    )
+    await proc.process_frame(_tx_frame("вопрос"), FrameDirection.DOWNSTREAM)
+
+    assert route.called
+    headers = route.calls[0].request.headers
+    assert headers.get("x-internal-token") == "secret-token-xyz"
+
+
+@respx.mock
+async def test_outgoing_request_omits_x_internal_token_when_unset(captured, monkeypatch) -> None:
+    """The complementary contract: empty `internal_token` must NOT
+    attach the header. The retriever returns 401 on missing header,
+    which surfaces as a kb_retrieval.auth_failed log on-call can
+    triage."""
+    proc = KBRetrievalProcessor(
+        retriever_url=_RETRIEVER_BASE,
+        tenant_id=uuid.uuid4(),
+        session_id=uuid.uuid4(),
+        internal_token="",  # empty
+    )
+
+    async def _capture(frame, direction=FrameDirection.DOWNSTREAM):
+        captured.append((frame, direction))
+
+    monkeypatch.setattr(proc, "push_frame", _capture)
+    route = respx.post(f"{_RETRIEVER_BASE}/retrieve").mock(
+        return_value=httpx.Response(401, json={"error": "unauthenticated"})
+    )
+    await proc.process_frame(_tx_frame("вопрос"), FrameDirection.DOWNSTREAM)
+
+    assert route.called
+    headers = route.calls[0].request.headers
+    assert "x-internal-token" not in {k.lower() for k in headers}
 
 
 @respx.mock
@@ -155,7 +215,7 @@ async def test_retriever_503_falls_back_to_refusal_without_crashing(processor, c
     assert isinstance(pushed_frames[0], LLMMessagesAppendFrame)
     # Refusal prompt, not grounded.
     msgs = pushed_frames[0].messages
-    assert BASIC_REFUSAL_SYSTEM_PROMPT_RU.split(".")[0] in msgs[0]["content"]
+    assert REFUSAL_SYSTEM_PROMPT_RU.split(".")[0] in msgs[0]["content"]
     # Refusal path must also trigger the LLM — otherwise the user hears
     # nothing after an out-of-scope/error turn.
     assert pushed_frames[0].run_llm is True
@@ -170,7 +230,7 @@ async def test_retriever_timeout_falls_back_to_refusal(processor, captured) -> N
     assert len(pushed_frames) == 1
     assert isinstance(pushed_frames[0], LLMMessagesAppendFrame)
     msgs = pushed_frames[0].messages
-    assert BASIC_REFUSAL_SYSTEM_PROMPT_RU.split(".")[0] in msgs[0]["content"]
+    assert REFUSAL_SYSTEM_PROMPT_RU.split(".")[0] in msgs[0]["content"]
 
 
 @respx.mock
@@ -184,11 +244,15 @@ async def test_out_of_scope_response_falls_back_to_refusal(processor, captured) 
     assert len(pushed_frames) == 1
     assert isinstance(pushed_frames[0], LLMMessagesAppendFrame)
     msgs = pushed_frames[0].messages
-    assert BASIC_REFUSAL_SYSTEM_PROMPT_RU.split(".")[0] in msgs[0]["content"]
+    assert REFUSAL_SYSTEM_PROMPT_RU.split(".")[0] in msgs[0]["content"]
 
 
 @respx.mock
 async def test_turn_id_monotonic_within_session(processor, captured) -> None:
+    """Issue #48: turn_id format is `<instance-salt>-<NNNNN>`. The
+    counter is monotonic per processor; the salt is randomized in
+    __init__ so a restart inside the same session can't replay
+    earlier turn_ids and collide with UNIQUE(session_id, turn_id)."""
     route = respx.post(f"{_RETRIEVER_BASE}/retrieve").mock(
         return_value=httpx.Response(200, json=_response_body())
     )
@@ -197,7 +261,30 @@ async def test_turn_id_monotonic_within_session(processor, captured) -> None:
 
     assert route.call_count == 3
     turn_ids = [json.loads(call.request.content)["turn_id"] for call in route.calls]
-    assert turn_ids == ["t-00001", "t-00002", "t-00003"]
+    pattern = re.compile(r"^[0-9a-f]{4}-\d{5,}$")
+    for tid in turn_ids:
+        assert pattern.match(tid), tid
+    # The numeric suffix is monotonic 1..3.
+    suffixes = [int(t.split("-", 1)[1]) for t in turn_ids]
+    assert suffixes == [1, 2, 3]
+    # All three share the same instance salt — same processor instance.
+    salts = {t.split("-", 1)[0] for t in turn_ids}
+    assert len(salts) == 1
+
+
+def test_turn_id_salt_differs_across_processor_instances() -> None:
+    """Two processors built in the same session MUST get distinct
+    salts so one's counter can never alias onto the other's. This
+    is the post-restart collision guard from issue #48."""
+    p1 = KBRetrievalProcessor(
+        retriever_url=_RETRIEVER_BASE, tenant_id=uuid.uuid4(), session_id=uuid.uuid4()
+    )
+    p2 = KBRetrievalProcessor(
+        retriever_url=_RETRIEVER_BASE, tenant_id=uuid.uuid4(), session_id=uuid.uuid4()
+    )
+    # 16-bit salt collision is ~1/65536 — astronomically unlikely
+    # given test count, so we can assert flat inequality.
+    assert p1._instance_salt != p2._instance_salt
 
 
 async def test_empty_transcript_is_forwarded_untouched(captured, monkeypatch) -> None:

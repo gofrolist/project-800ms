@@ -5,20 +5,34 @@ info:
   description: |
     Internal HTTP surface exposed by `services/retriever` on port 8002.
     Called from `services/agent` (Pipecat KBRetrievalProcessor). NOT exposed
-    to the public internet. No caller authentication in v1 — the retriever
-    binds to the internal Docker network; Compose does not publish :8002
-    to the host. Defense-in-depth: every request MUST carry `tenant_id`,
-    and the retriever refuses if the tenant id is missing or malformed.
+    to the public internet. Compose does not publish :8002 to the host;
+    defense-in-depth network isolation.
+
+    Auth (issue #47/#40): every `/retrieve` call MUST carry
+    `X-Internal-Token: <RETRIEVER_INTERNAL_TOKEN>`. Missing/wrong header
+    returns 401 `unauthenticated`; unset server-side token returns 503
+    `retriever_unconfigured`. The probe endpoints (/healthz, /ready) are
+    intentionally unauthenticated so compose / k8s liveness checks work.
+
+    Tenancy: every request MUST carry `tenant_id`. v1 caveat — `tenant_id`
+    is body-supplied; the bearer secret authorizes the agent process,
+    not a specific tenant. Token-bound tenant claim (signed JWT) is a
+    v2 follow-up filed against #47.
 
 servers:
   - url: http://retriever:8002
     description: Internal Docker Compose network
+
+security:
+  - InternalToken: []
 
 paths:
   /retrieve:
     post:
       operationId: retrieve
       summary: Rewrite, classify scope, and retrieve KB context for one turn
+      security:
+        - InternalToken: []
       description: |
         Called once per final TranscriptionFrame. Does three things in order:
           1. LLM call: rewrite raw transcript into a standalone Russian query;
@@ -51,11 +65,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
+        '401':
+          description: |
+            Missing or invalid `X-Internal-Token`. Issue #40 / #47:
+            shared-secret bearer required on every internal call.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          description: |
+            Request body exceeds the per-request size cap (issue #56).
+            The middleware fires before the auth dep so an
+            unauthenticated caller can't OOM the retriever via
+            `Content-Length` probes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '503':
           description: |
             Dependency unavailable (DB down, embedder failed, rewriter LLM
-            timed out). Agent's KBRetrievalProcessor interprets this as
-            fail-closed → refusal path (FR-008 / FR-022).
+            timed out) OR the retriever's `RETRIEVER_INTERNAL_TOKEN` is
+            unset (`error: retriever_unconfigured`). Agent's
+            KBRetrievalProcessor interprets this as fail-closed →
+            refusal path (FR-008 / FR-022).
           content:
             application/json:
               schema:
@@ -66,6 +100,9 @@ paths:
       operationId: healthz
       summary: Liveness probe
       description: Returns 200 iff the process is up; does not check dependencies.
+      # No auth — compose / k8s liveness probes hit this without the
+      # internal-token secret. Override the global `security` block.
+      security: []
       responses:
         '200':
           description: Process up
@@ -83,6 +120,9 @@ paths:
         reachable, and the rewriter LLM endpoint answered a hello ping within
         the last 30 s. Used by Compose healthcheck with `start_period: 600s`
         (BGE-M3 weight download on cold start).
+      # No auth — compose readiness probe hits this without the
+      # internal-token secret. Override the global `security` block.
+      security: []
       responses:
         '200':
           description: Fully ready to serve /retrieve
@@ -98,6 +138,16 @@ paths:
                 $ref: '#/components/schemas/ReadyResponse'
 
 components:
+  securitySchemes:
+    InternalToken:
+      type: apiKey
+      in: header
+      name: X-Internal-Token
+      description: |
+        Shared-secret bearer for internal callers (agent → retriever).
+        Empty server-side config returns 503 `retriever_unconfigured`;
+        wrong / missing header returns 401 `unauthenticated`. Issue #40 / #47.
+
   schemas:
     RetrieveRequest:
       type: object
@@ -264,28 +314,41 @@ components:
 
     Error:
       type: object
-      required: [error, message]
+      required: [error]
+      description: |
+        Issue #39: nested envelope matching apps/api's convention. Same
+        shape as `apps/api`'s `{error: {code, message, request_id}}` so
+        shared client code can parse one shape, not two. `request_id`
+        is omitted today — added when retriever gains a request-id
+        middleware.
       properties:
         error:
-          type: string
-          description: Short machine-readable error code.
-          enum:
-            - invalid_request
-            - unknown_tenant
-            - unsupported_npc
-            - unsupported_language
-            - rewriter_timeout
-            - rewriter_malformed_output
-            - embedder_unavailable
-            - db_unavailable
-            - internal_error
-        message:
-          type: string
-          description: Short human-readable summary. MUST NOT include KB content, transcript, or internal prompts.
-        trace_id:
-          type: string
-          format: uuid
-          nullable: true
-          description: |
-            Present if a retrieval_traces row was written before failure. Lets
-            the agent correlate the error with a persisted record.
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Short machine-readable error code.
+              enum:
+                - invalid_request
+                - unauthenticated
+                - payload_too_large
+                - unknown_tenant
+                - unsupported_npc
+                - unsupported_language
+                - rewriter_timeout
+                - rewriter_malformed_output
+                - embedder_unavailable
+                - db_unavailable
+                - retriever_unconfigured
+                - internal_error
+            message:
+              type: string
+              description: Short human-readable summary. MUST NOT include KB content, transcript, or internal prompts.
+            trace_id:
+              type: string
+              format: uuid
+              nullable: true
+              description: |
+                Present if a retrieval_traces row was written before failure.
+                Lets the agent correlate the error with a persisted record.

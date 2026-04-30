@@ -127,11 +127,18 @@ class AgentConfig:
     # raw transcript → aggregator → LLM behavior, matching pre-RAG
     # sessions. Set via RETRIEVER_URL env in main.py.
     retriever_url: str = ""
-    # Agent-side hard timeout on the /retrieve call. Bounds how long
-    # the pipeline can stall per turn if the retriever hangs. Larger
-    # than the retriever's own rewriter_timeout_ms so the retriever
-    # gets a chance to fail-closed to its refusal branch first.
-    retriever_timeout_ms: int = 2000
+    # Shared-secret bearer for /retrieve (header `X-Internal-Token`).
+    # Issue #40 / #47: empty here means the agent doesn't send the
+    # header, in which case the retriever returns 503 unconditionally
+    # in production deploys (the token MUST be set on both sides).
+    # Empty is fine for local dev runs that haven't enabled the
+    # retriever — KBRetrievalProcessor's is_enabled gating skips the
+    # call entirely when retriever_url is empty.
+    retriever_internal_token: str = ""
+    # Agent-side hard timeout on the /retrieve call. Issue #49:
+    # default lowered from 2000 ms to 500 ms so the retrieval leg
+    # fits inside the constitution's 800 ms p95 end-to-end SLO.
+    retriever_timeout_ms: int = 500
 
     def __post_init__(self) -> None:
         if self.tts_engine not in _VALID_TTS_ENGINES:
@@ -243,6 +250,7 @@ def build_task(
         retriever_url=cfg.retriever_url,
         tenant_id=_parse_uuid(overrides.tenant_id),
         session_id=_parse_uuid(overrides.session_id),
+        internal_token=cfg.retriever_internal_token,
         timeout_ms=cfg.retriever_timeout_ms,
     )
     # ErrorFrameForwarder sits AFTER the TTS service so that TTS synth

@@ -27,7 +27,10 @@ Research R4 notes:
 
 from __future__ import annotations
 
+import statistics
+import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,6 +40,122 @@ from sqlalchemy.ext.asyncio import AsyncSession
 _SEMANTIC_WEIGHT = 0.7
 _LEXICAL_WEIGHT = 0.3
 _CTE_LIMIT = 20
+
+# ---------------------------------------------------------------------------
+# Per-tenant latency stats — drives the US2 timing-parity pad (T038/T039).
+# ---------------------------------------------------------------------------
+#
+# Constitution Principle IV: every observable side channel must respect
+# tenant isolation. This means the rolling window MUST be keyed by
+# tenant_id and MUST live in a namespace separate from
+# `apps/api/rate_limit.py` (the xff-spoof learning: when two unrelated
+# bucketing systems share the same dict, an unrelated regression in one
+# can change the eviction behaviour of the other).
+#
+# Implementation:
+#   * One deque per tenant, capped at `_LATENCY_WINDOW_MAX` samples
+#     OR `_LATENCY_WINDOW_SECONDS`, whichever evicts first. For
+#     tenants below ~3.3 RPS sustained the time bound dominates; for
+#     busier tenants the count cap dominates and the effective
+#     window shrinks proportionally with load. Pad still tracks
+#     recent latency under both regimes — only the documented
+#     "rolling 60-s" window is approximate (review finding perf-003).
+#   * Each sample is `(timestamp_seconds, latency_ms)`. The window is
+#     trimmed to the most recent `_LATENCY_WINDOW_SECONDS` on every
+#     read so a quiet tenant doesn't return stale data.
+#   * `p50_for(tenant_id)` returns 0 on an empty / too-stale window —
+#     which is the correct degradation: a brand-new tenant with no
+#     in-scope traffic gets pad=0 ms (matching the equally-fast
+#     rewrite-only outcome).
+#   * The state is process-local. Multiple retriever replicas each
+#     compute their own p50; we accept the slight per-replica variance
+#     for the simplicity of not standing up a Redis dependency.
+
+_LATENCY_WINDOW_SECONDS = 60.0
+# Hard cap per tenant — bounds memory under load. Caps the effective
+# window at 200/QPS seconds; for sustained QPS > 3.3 the count cap
+# wins and the window shrinks below the nominal 60s.
+_LATENCY_WINDOW_MAX = 200
+
+# Issue #54 — cross-tenant fallback. When a brand-new (or post-restart)
+# tenant has no local samples yet, p50_for falls back to the GLOBAL
+# rolling window so the refusal pad isn't stuck at 0 ms. This closes
+# the SC-008 cold-start gap: any tenant that's been active in the
+# process can pad against the cluster's recent typical latency, not
+# zero. The global window is sized larger so cross-tenant aggregation
+# still has signal under heterogeneous QPS.
+_GLOBAL_WINDOW_MAX = 1000
+
+_latency_windows: dict[uuid.UUID, deque[tuple[float, int]]] = {}
+_global_latency_window: deque[tuple[float, int]] = deque(maxlen=_GLOBAL_WINDOW_MAX)
+
+
+def _reset_latency_stats() -> None:
+    """Wipe every tenant's latency window — used by tests so a prior
+    test's recorded p50 doesn't bleed into the next one."""
+    _latency_windows.clear()
+    _global_latency_window.clear()
+
+
+def record_p50(tenant_id: uuid.UUID, latency_ms: int) -> None:
+    """Record one in-scope latency sample for a tenant.
+
+    Caller (the in-scope success branch in retrieve.py) passes the
+    embed+sql wall-time so the refusal pad can mirror the cost the
+    rewriter-only branch SKIPS. Rewrite is shared between branches
+    and so excluded.
+
+    Negative or zero latencies are ignored — a 0-ms sample would
+    unconditionally pull p50 toward 0 and defeat the purpose.
+
+    Each sample is recorded BOTH on the per-tenant window (used for
+    that tenant's refusal pad) AND the global window (used as the
+    cross-tenant fallback for cold tenants — issue #54).
+    """
+    if latency_ms <= 0:
+        return
+    now = time.monotonic()
+    window = _latency_windows.setdefault(tenant_id, deque(maxlen=_LATENCY_WINDOW_MAX))
+    window.append((now, latency_ms))
+    _global_latency_window.append((now, latency_ms))
+
+
+def _trim_window(window: deque[tuple[float, int]]) -> None:
+    """Drop samples older than `_LATENCY_WINDOW_SECONDS` from the
+    front of `window` in-place. Mutates the caller's deque."""
+    cutoff = time.monotonic() - _LATENCY_WINDOW_SECONDS
+    while window and window[0][0] < cutoff:
+        window.popleft()
+
+
+def p50_for(tenant_id: uuid.UUID) -> int:
+    """Return the median in-scope latency for `tenant_id` over the
+    rolling 60-s window. Returns 0 when no qualifying samples exist
+    even at the global fallback level.
+
+    Falls back to the GLOBAL rolling window (cross-tenant median)
+    when this specific tenant has no recent samples — closes the
+    SC-008 cold-start gap from issue #54: a fresh or post-restart
+    tenant's refusal pad is no longer stuck at 0 ms while other
+    tenants' samples sit in the same process.
+
+    Stale samples (older than `_LATENCY_WINDOW_SECONDS`) are dropped
+    eagerly here so a tenant that had a burst and went quiet doesn't
+    keep padding refusals against minute-old data.
+    """
+    window = _latency_windows.get(tenant_id)
+    if window:
+        _trim_window(window)
+        if window:
+            return int(statistics.median(latency for _, latency in window))
+
+    # Per-tenant window empty → fall back to the global window so a
+    # cold tenant pads against the cluster's typical latency rather
+    # than 0 ms. Empty global → 0 (truly cold process — pre-first-turn).
+    _trim_window(_global_latency_window)
+    if not _global_latency_window:
+        return 0
+    return int(statistics.median(latency for _, latency in _global_latency_window))
 
 
 @dataclass(frozen=True)

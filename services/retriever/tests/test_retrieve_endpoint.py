@@ -14,18 +14,20 @@ the five T020 assertions:
 
 Slow-marked (testcontainer + BGE-M3 download). CI runs it; devs skip
 with `-m "not slow"`.
+
+The `retriever_app` fixture (one container + one app + one tenant +
+3 KB chunks) lives in conftest.py and is shared with the US2 refusal
++ timing-parity tests so the test suite stays at one container.
 """
 
 from __future__ import annotations
 
-import secrets
 import uuid
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
-import pytest_asyncio
 import respx
 import yaml
 from httpx import ASGITransport
@@ -34,12 +36,10 @@ from openapi_spec_validator.readers import read_from_filename
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from embedder import encode, preload
-
 pytestmark = pytest.mark.slow
 
-# Match the LLM the rewriter is configured against — must align with
-# the monkeypatched LLM_BASE_URL env.
+# Must match `_FIXTURE_LLM_BASE` in conftest.py — that fixture wires
+# LLM_BASE_URL to this host so respx can intercept the rewriter call.
 _LLM_BASE = "http://llm-test.local"
 _LLM_URL = f"{_LLM_BASE}/chat/completions"
 
@@ -50,10 +50,6 @@ _CONTRACT_PATH = (
     / "contracts"
     / "retrieve.openapi.yaml"
 )
-
-
-def _vector_literal(v: list[float]) -> str:
-    return "[" + ",".join(f"{x:.10g}" for x in v) + "]"
 
 
 def _mock_rewriter(
@@ -77,152 +73,17 @@ def _mock_rewriter(
     )
 
 
-@pytest_asyncio.fixture
-async def retriever_app(pgvector_postgres, monkeypatch) -> dict[str, Any]:
-    """Build a fresh FastAPI app pointed at the session-scoped pgvector
-    container, and seed one tenant + session + KB entry + 3 chunks.
-
-    Seed is COMMITTED on a dedicated engine so the app's own engine
-    (opened by `db.get_engine()`) sees the data. The shared container
-    tears down at session end — each test uses unique UUIDs to avoid
-    collisions with other tests that touch the same tables.
-    """
-    preload()
-
-    dsn = pgvector_postgres.get_connection_url().replace("+psycopg2", "+asyncpg")
-
-    tenant_id = uuid.uuid4()
-    session_id = uuid.uuid4()
-    api_key_id = uuid.uuid4()
-    kb_entry_id = uuid.uuid4()
-
-    # Pre-embed the chunk contents OUTSIDE the COMMIT transaction.
-    chunk_specs = [
-        {
-            "section": "Получение прав",
-            "content": (
-                "Чтобы получить водительские права, посетите автошколу "
-                "и сдайте экзамены. Стоимость обучения 5 000 долларов."
-            ),
-        },
-        {
-            "section": "Цены на транспорт",
-            "content": (
-                "Грузовик Mule стоит 15 000 долларов. "
-                "Легковой автомобиль Premier стоит 12 500 долларов."
-            ),
-        },
-        {
-            "section": "Покупка оружия",
-            "content": (
-                "Оружие можно купить в магазине после получения лицензии. "
-                "Лицензия стоит 10 000 долларов."
-            ),
-        },
-    ]
-    for spec in chunk_specs:
-        spec["embedding"] = _vector_literal(await encode(spec["content"]))
-
-    engine = create_async_engine(dsn)
-    async with engine.begin() as conn:
-        await conn.execute(
-            text("INSERT INTO tenants (id, name, slug) VALUES (:i, :n, :s)"),
-            {"i": tenant_id, "n": "Test Tenant", "s": f"t-{tenant_id.hex[:8]}"},
-        )
-        # Random 32-byte key_hash per test — the column has a UNIQUE
-        # index, and pgvector_postgres is session-scoped so rows
-        # accumulate across tests.
-        await conn.execute(
-            text(
-                "INSERT INTO api_keys (id, tenant_id, key_hash, key_prefix) "
-                "VALUES (:i, :t, decode(:h, 'hex'), :p)"
-            ),
-            {
-                "i": api_key_id,
-                "t": tenant_id,
-                "h": secrets.token_hex(32),
-                "p": f"pfx{tenant_id.hex[:5]}",
-            },
-        )
-        await conn.execute(
-            text(
-                "INSERT INTO sessions (id, tenant_id, api_key_id, room, identity) "
-                "VALUES (:si, :t, :ai, :room, 'test-user')"
-            ),
-            {
-                "si": session_id,
-                "t": tenant_id,
-                "ai": api_key_id,
-                "room": f"room-{session_id.hex[:8]}",
-            },
-        )
-        await conn.execute(
-            text(
-                "INSERT INTO kb_entries "
-                "(id, tenant_id, kb_entry_key, title, content_sha256) "
-                "VALUES (:i, :t, 'main', 'Main', :sha)"
-            ),
-            {"i": kb_entry_id, "t": tenant_id, "sha": "shadeadbeef"},
-        )
-        for idx, spec in enumerate(chunk_specs):
-            await conn.execute(
-                text(
-                    "INSERT INTO kb_chunks "
-                    "(tenant_id, kb_entry_id, section, title, content, "
-                    " content_sha256, embedding) "
-                    "VALUES (:t, :e, :sec, :title, :content, :sha, "
-                    "        CAST(:emb AS vector))"
-                ),
-                {
-                    "t": tenant_id,
-                    "e": kb_entry_id,
-                    "sec": spec["section"],
-                    "title": f"Главный раздел — {spec['section']}",
-                    "content": spec["content"],
-                    "sha": f"sha-chunk-{idx}",
-                    "emb": spec["embedding"],
-                },
-            )
-    await engine.dispose()
-
-    # Point the app at the testcontainer + stub LLM. Cached factories
-    # must be invalidated so the new env takes effect.
-    monkeypatch.setenv("DB_URL", dsn)
-    monkeypatch.setenv("LLM_BASE_URL", _LLM_BASE)
-    monkeypatch.setenv("LLM_API_KEY", "test-key")
-    monkeypatch.setenv("REWRITER_MODEL", "test-rewriter-model")
-    monkeypatch.setenv("EMBEDDER_DEVICE", "cpu")
-
-    import config
-    import db
-
-    config.get_settings.cache_clear()
-    db.get_engine.cache_clear()
-    db._session_factory.cache_clear()
-
-    # Import AFTER the env patch so module-level `app = create_app()`
-    # reads the correct settings. Purge any cached module import first.
-    import sys
-
-    sys.modules.pop("main", None)
-    sys.modules.pop("retrieve", None)
-    from main import create_app
-
-    app = create_app()
-
-    yield {
-        "app": app,
-        "tenant_id": tenant_id,
-        "session_id": session_id,
-        "kb_entry_id": kb_entry_id,
-    }
-
-
-async def _client(app) -> httpx.AsyncClient:
+async def _client(app, headers: dict[str, str] | None = None) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://retriever.test",
+        headers=headers,
     )
+
+
+def _headers(retriever_app: dict[str, Any]) -> dict[str, str]:
+    """Pull the X-Internal-Token header out of the fixture for callers."""
+    return retriever_app["auth_headers"]
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -236,7 +97,7 @@ async def test_in_scope_request_returns_chunks_rewritten_and_trace(
 ) -> None:
     _mock_rewriter(query="как получить водительские права", in_scope=True)
 
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -278,7 +139,7 @@ async def test_unknown_tenant_returns_400_unknown_tenant(
     retriever_app: dict[str, Any],
 ) -> None:
     _mock_rewriter()
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -290,7 +151,7 @@ async def test_unknown_tenant_returns_400_unknown_tenant(
         )
     assert resp.status_code == 400, resp.text
     body = resp.json()
-    assert body["error"] == "unknown_tenant"
+    assert body["error"]["code"] == "unknown_tenant"
 
 
 @respx.mock
@@ -298,7 +159,7 @@ async def test_unsupported_npc_returns_400_unsupported_npc(
     retriever_app: dict[str, Any],
 ) -> None:
     _mock_rewriter()
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -310,7 +171,7 @@ async def test_unsupported_npc_returns_400_unsupported_npc(
             },
         )
     assert resp.status_code == 400, resp.text
-    assert resp.json()["error"] == "unsupported_npc"
+    assert resp.json()["error"]["code"] == "unsupported_npc"
 
 
 @respx.mock
@@ -318,7 +179,7 @@ async def test_unsupported_language_returns_400_unsupported_language(
     retriever_app: dict[str, Any],
 ) -> None:
     _mock_rewriter()
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -330,7 +191,7 @@ async def test_unsupported_language_returns_400_unsupported_language(
             },
         )
     assert resp.status_code == 400, resp.text
-    assert resp.json()["error"] == "unsupported_language"
+    assert resp.json()["error"]["code"] == "unsupported_language"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -343,7 +204,7 @@ async def test_out_of_scope_returns_empty_chunks(
     retriever_app: dict[str, Any],
 ) -> None:
     _mock_rewriter(query="погода в Москве", in_scope=False)
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -387,7 +248,7 @@ async def test_pydantic_validation_failure_returns_400_invalid_request(
     required field.
     """
     _mock_rewriter()
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -399,8 +260,8 @@ async def test_pydantic_validation_failure_returns_400_invalid_request(
         )
     assert resp.status_code == 400, resp.text
     body = resp.json()
-    assert body["error"] == "invalid_request"
-    assert "tenant_id" in body["message"]
+    assert body["error"]["code"] == "invalid_request"
+    assert "tenant_id" in body["error"]["message"]
 
 
 @respx.mock
@@ -408,7 +269,7 @@ async def test_empty_transcript_returns_400_invalid_request(
     retriever_app: dict[str, Any],
 ) -> None:
     _mock_rewriter()
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -419,7 +280,7 @@ async def test_empty_transcript_returns_400_invalid_request(
             },
         )
     assert resp.status_code == 400, resp.text
-    assert resp.json()["error"] == "invalid_request"
+    assert resp.json()["error"]["code"] == "invalid_request"
 
 
 @respx.mock
@@ -427,7 +288,7 @@ async def test_top_k_out_of_bounds_returns_400_invalid_request(
     retriever_app: dict[str, Any],
 ) -> None:
     _mock_rewriter()
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -439,7 +300,7 @@ async def test_top_k_out_of_bounds_returns_400_invalid_request(
             },
         )
     assert resp.status_code == 400, resp.text
-    assert resp.json()["error"] == "invalid_request"
+    assert resp.json()["error"]["code"] == "invalid_request"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -477,7 +338,7 @@ async def test_rewriter_timeout_returns_503_and_writes_error_trace(
     converted to the 503 envelope.
     """
     respx.post(_LLM_URL).mock(side_effect=httpx.ReadTimeout("slow"))
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -489,7 +350,7 @@ async def test_rewriter_timeout_returns_503_and_writes_error_trace(
         )
 
     assert resp.status_code == 503, resp.text
-    assert resp.json()["error"] == "rewriter_timeout"
+    assert resp.json()["error"]["code"] == "rewriter_timeout"
 
     # Forensics row must exist for this turn with error_class populated.
     dsn = pgvector_postgres.get_connection_url().replace("+psycopg2", "+asyncpg")
@@ -521,7 +382,7 @@ async def test_embedder_failure_returns_503_embedder_unavailable(
 
     monkeypatch.setattr(retrieve, "encode", _bad_encode)
 
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={
@@ -533,7 +394,189 @@ async def test_embedder_failure_returns_503_embedder_unavailable(
         )
 
     assert resp.status_code == 503, resp.text
-    assert resp.json()["error"] == "embedder_unavailable"
+    assert resp.json()["error"]["code"] == "embedder_unavailable"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Internal-caller auth (issue #40 / #47)
+# ─────────────────────────────────────────────────────────────────────
+
+
+@respx.mock
+async def test_retrieve_without_internal_token_returns_401(
+    retriever_app: dict[str, Any],
+) -> None:
+    """Caller without ``X-Internal-Token`` is rejected before any
+    DB / LLM work happens. Closes issue #40."""
+    _mock_rewriter()
+    async with await _client(retriever_app["app"]) as client:
+        resp = await client.post(
+            "/retrieve",
+            json={
+                "tenant_id": str(retriever_app["tenant_id"]),
+                "session_id": str(retriever_app["session_id"]),
+                "turn_id": "t-noauth",
+                "transcript": "как получить права?",
+            },
+        )
+    assert resp.status_code == 401, resp.text
+    assert resp.json()["error"]["code"] == "unauthenticated"
+
+
+@respx.mock
+async def test_retrieve_with_wrong_internal_token_returns_401(
+    retriever_app: dict[str, Any],
+) -> None:
+    """Wrong token value (e.g. stale rotation) is rejected. The
+    `secrets.compare_digest` comparison short-circuits in constant
+    time so the response carries no length-leak signal."""
+    _mock_rewriter()
+    async with await _client(retriever_app["app"], {"X-Internal-Token": "wrong-token"}) as client:
+        resp = await client.post(
+            "/retrieve",
+            json={
+                "tenant_id": str(retriever_app["tenant_id"]),
+                "session_id": str(retriever_app["session_id"]),
+                "turn_id": "t-wrongauth",
+                "transcript": "как получить права?",
+            },
+        )
+    assert resp.status_code == 401, resp.text
+    assert resp.json()["error"]["code"] == "unauthenticated"
+
+
+@respx.mock
+async def test_retrieve_returns_503_when_internal_token_unset(
+    retriever_app: dict[str, Any], monkeypatch
+) -> None:
+    """Empty ``RETRIEVER_INTERNAL_TOKEN`` env disables the endpoint
+    entirely — production deploys MUST set the secret. Issue #47."""
+    monkeypatch.setenv("RETRIEVER_INTERNAL_TOKEN", "")
+    import config
+
+    config.get_settings.cache_clear()
+
+    try:
+        _mock_rewriter()
+        async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
+            resp = await client.post(
+                "/retrieve",
+                json={
+                    "tenant_id": str(retriever_app["tenant_id"]),
+                    "session_id": str(retriever_app["session_id"]),
+                    "turn_id": "t-unconfig",
+                    "transcript": "как получить права?",
+                },
+            )
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["error"]["code"] == "retriever_unconfigured"
+    finally:
+        # Restore the cached Settings so subsequent tests don't see
+        # the empty token (review finding correctness-006 / adv-006).
+        config.get_settings.cache_clear()
+
+
+@respx.mock
+async def test_retrieve_accepts_previous_token_during_rotation_grace(
+    retriever_app: dict[str, Any], monkeypatch
+) -> None:
+    """Issue #55: when ``RETRIEVER_INTERNAL_TOKEN_PREVIOUS`` is set,
+    the retriever accepts EITHER the current OR the previous token.
+    Lets agents rotate first and retriever rotate second without a
+    401-cascade window during the rollout.
+    """
+    # Current (rotated-to) value is the fixture's; set _PREVIOUS to
+    # an "old" value the agent might still be presenting mid-rollout.
+    old_token = "old-rotated-out-secret"
+    monkeypatch.setenv("RETRIEVER_INTERNAL_TOKEN_PREVIOUS", old_token)
+    import config
+
+    config.get_settings.cache_clear()
+
+    try:
+        _mock_rewriter()
+        async with await _client(retriever_app["app"], {"X-Internal-Token": old_token}) as client:
+            resp = await client.post(
+                "/retrieve",
+                json={
+                    "tenant_id": str(retriever_app["tenant_id"]),
+                    "session_id": str(retriever_app["session_id"]),
+                    "turn_id": "t-rotation-grace",
+                    "transcript": "как получить права?",
+                },
+            )
+        # Old token accepted during grace — successful retrieval.
+        assert resp.status_code == 200, resp.text
+    finally:
+        config.get_settings.cache_clear()
+
+
+@respx.mock
+async def test_retrieve_rejects_truly_invalid_token_even_with_previous_set(
+    retriever_app: dict[str, Any], monkeypatch
+) -> None:
+    """A token that matches NEITHER current NOR previous still 401s.
+    The grace window expands the accepted set; it does not weaken
+    the constant-time comparison.
+    """
+    monkeypatch.setenv("RETRIEVER_INTERNAL_TOKEN_PREVIOUS", "old-rotated-out-secret")
+    import config
+
+    config.get_settings.cache_clear()
+
+    try:
+        _mock_rewriter()
+        async with await _client(
+            retriever_app["app"], {"X-Internal-Token": "neither-current-nor-previous"}
+        ) as client:
+            resp = await client.post(
+                "/retrieve",
+                json={
+                    "tenant_id": str(retriever_app["tenant_id"]),
+                    "session_id": str(retriever_app["session_id"]),
+                    "turn_id": "t-rotation-bad",
+                    "transcript": "вопрос",
+                },
+            )
+        assert resp.status_code == 401, resp.text
+        assert resp.json()["error"]["code"] == "unauthenticated"
+    finally:
+        config.get_settings.cache_clear()
+
+
+@respx.mock
+async def test_retrieve_503_takes_priority_over_401_when_unconfigured(
+    retriever_app: dict[str, Any], monkeypatch
+) -> None:
+    """A wrong header AND empty server token must still yield 503
+    `retriever_unconfigured`, not 401. The auth dep checks
+    `if not token` BEFORE the comparison — flipping that order would
+    leak the auth state of an unconfigured server and break the
+    'fail-closed at request time' contract.
+    """
+    monkeypatch.setenv("RETRIEVER_INTERNAL_TOKEN", "")
+    import config
+
+    config.get_settings.cache_clear()
+
+    try:
+        _mock_rewriter()
+        async with await _client(
+            retriever_app["app"], {"X-Internal-Token": "some-wrong-token"}
+        ) as client:
+            resp = await client.post(
+                "/retrieve",
+                json={
+                    "tenant_id": str(retriever_app["tenant_id"]),
+                    "session_id": str(retriever_app["session_id"]),
+                    "turn_id": "t-unconfig-wrong",
+                    "transcript": "вопрос",
+                },
+            )
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["error"]["code"] == "retriever_unconfigured"
+    finally:
+        config.get_settings.cache_clear()
 
 
 @respx.mock
@@ -541,7 +584,7 @@ async def test_response_shape_conforms_to_openapi_contract(
     retriever_app: dict[str, Any],
 ) -> None:
     _mock_rewriter(query="как получить водительские права", in_scope=True)
-    async with await _client(retriever_app["app"]) as client:
+    async with await _client(retriever_app["app"], _headers(retriever_app)) as client:
         resp = await client.post(
             "/retrieve",
             json={

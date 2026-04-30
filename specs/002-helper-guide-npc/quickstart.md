@@ -121,12 +121,18 @@ FROM kb_chunks GROUP BY tenant_id;"
 
 ## 5. Smoke-test `/retrieve` directly
 
-From inside the Docker network:
+From inside the Docker network. The retriever requires the
+`X-Internal-Token` bearer (issue #40/#47) — read it from the same
+`infra/.env` value compose uses for the agent. To mint a fresh secret:
+`openssl rand -hex 32`.
 
 ```bash
+TOKEN=$(grep '^RETRIEVER_INTERNAL_TOKEN=' infra/.env | cut -d= -f2-)
+
 docker compose -f infra/docker-compose.yml exec agent \
   curl -s http://retriever:8002/retrieve \
   -H 'content-type: application/json' \
+  -H "X-Internal-Token: $TOKEN" \
   -d '{
     "tenant_id": "<demo tenant uuid from step 4>",
     "session_id": "00000000-0000-0000-0000-000000000001",
@@ -140,14 +146,17 @@ docker compose -f infra/docker-compose.yml exec agent \
 
 Expected: `in_scope: true`, `rewritten_query` a clean standalone Russian
 question, `chunks[0].title` mentioning "Водительская лицензия",
-`stage_timings_ms.total` ≤ 500 ms on warm cache.
+`stage_timings_ms.total` ≤ 500 ms on warm cache. A 401 response means
+the token in `infra/.env` doesn't match the retriever's; a 503
+`retriever_unconfigured` means the env var is unset on the retriever.
 
-Now an out-of-scope probe:
+Now an out-of-scope probe (header still required):
 
 ```bash
 docker compose -f infra/docker-compose.yml exec agent \
   curl -s http://retriever:8002/retrieve \
   -H 'content-type: application/json' \
+  -H "X-Internal-Token: $TOKEN" \
   -d '{
     "tenant_id": "<demo tenant uuid>",
     "session_id": "00000000-0000-0000-0000-000000000001",
