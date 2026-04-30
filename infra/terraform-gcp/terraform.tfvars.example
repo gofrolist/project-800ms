@@ -112,6 +112,20 @@ llm_api_key  = ""
 seed_demo_api_key = ""  # e.g. "tk_0123...abcd"
 
 # -----------------------------------------------------------------------------
+# Retriever <-> agent shared secret
+#
+# The agent presents this to the retriever's /retrieve endpoint as
+# `X-Internal-Token`; the retriever validates against its own copy.
+# Compose enforces non-empty on both sides — without this, agent +
+# retriever fail to start. Empty here triggers the same auto-generate-
+# and-persist fallback used for agent_internal_token (file lives at
+# /etc/project-800ms/retriever-token, survives spot preemptions). Set
+# to a deliberate value only when rotating per
+# docs/solutions/security-issues/retriever-internal-token-rotation-2026-04-27.md.
+# -----------------------------------------------------------------------------
+retriever_internal_token = ""  # auto-generated when empty
+
+# -----------------------------------------------------------------------------
 # Access
 # -----------------------------------------------------------------------------
 allowed_app_cidr = "0.0.0.0/0"

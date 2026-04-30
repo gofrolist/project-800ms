@@ -163,6 +163,24 @@ if [ "$AGENT_INTERNAL_TOKEN" = "__UNSET__" ]; then
   AGENT_INTERNAL_TOKEN=$(cat "$TOKEN_FILE")
 fi
 
+# Agent <-> retriever internal token. Same auto-generate-and-persist
+# pattern as the AGENT_INTERNAL_TOKEN above — both agent and retriever
+# read the value from infra/.env, so as long as bootstrap writes the
+# same value to both, the token always matches. Without this, the
+# compose `:?` validation rejects the deploy on first boot of any VM
+# whose tfvars doesn't carry an explicit token value.
+RETRIEVER_INTERNAL_TOKEN=$(secret_get retriever_internal_token)
+if [ "$RETRIEVER_INTERNAL_TOKEN" = "__UNSET__" ]; then
+  TOKEN_FILE=/etc/project-800ms/retriever-token
+  mkdir -p /etc/project-800ms
+  chmod 700 /etc/project-800ms
+  if [ ! -s "$TOKEN_FILE" ]; then
+    openssl rand -hex 32 > "$TOKEN_FILE"
+    chmod 600 "$TOKEN_FILE"
+  fi
+  RETRIEVER_INTERNAL_TOKEN=$(cat "$TOKEN_FILE")
+fi
+
 ADMIN_API_KEY=$(secret_get admin_api_key)
 if [ "$ADMIN_API_KEY" = "__UNSET__" ]; then
   ADMIN_API_KEY=""
@@ -221,6 +239,13 @@ umask 077
   printf 'SEED_DEMO_API_KEY=%s\n' "$SEED_DEMO_API_KEY"
   # Shared agent <-> api secret for transcript persistence.
   printf 'AGENT_INTERNAL_TOKEN=%s\n' "$AGENT_INTERNAL_TOKEN"
+  # Helper/Guide NPC RAG bridge. RETRIEVER_INTERNAL_TOKEN is enforced
+  # on both sides via compose `:?` — without it, agent + retriever
+  # both fail to start. RETRIEVER_URL points the agent at the local
+  # retriever sidecar; empty would drop the agent into KB-passthrough
+  # mode and silently disable the RAG path.
+  printf 'RETRIEVER_INTERNAL_TOKEN=%s\n' "$RETRIEVER_INTERNAL_TOKEN"
+  printf 'RETRIEVER_URL=http://retriever:8002\n'
   # Master admin key — empty disables the /v1/admin/* surface.
   printf 'ADMIN_API_KEY=%s\n' "$ADMIN_API_KEY"
   # The demo SPA embeds this key. Default to the seeded 'demo' tenant
