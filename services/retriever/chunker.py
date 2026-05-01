@@ -282,6 +282,37 @@ def chunk_article(*, title: str, content: str) -> list[Chunk]:
     # list for an article that had any content — keep at least the
     # longest chunk as the article's representation.
     survivors = [c for c in chunks if len(c.content) >= MIN_CHARS]
-    if survivors:
-        return survivors
-    return [max(chunks, key=lambda c: len(c.content))] if chunks else []
+    if not survivors:
+        return [max(chunks, key=lambda c: len(c.content))] if chunks else []
+    return _ensure_unique_sections(survivors)
+
+
+def _ensure_unique_sections(chunks: list[Chunk]) -> list[Chunk]:
+    """Append ``" #N"`` suffixes to repeated section names so the
+    ``(tenant_id, kb_entry_id, section) NULLS NOT DISTINCT`` unique
+    index never sees collisions within a single article.
+
+    Some upstream Markdown sources (Chatwoot help-base in particular)
+    repeat boilerplate H2 headings like ``"🆘 Не нашли решения?"`` at
+    the bottom of multiple sections. The chunker preserves both
+    occurrences so retrieval still pulls the right paragraph; the
+    suffix just disambiguates the DB key. Both ``None`` and
+    string-valued sections are handled (``"#2"`` for the headingless
+    overflow case, ``"<section> #N"`` otherwise).
+    """
+    seen: set[str | None] = set()
+    out: list[Chunk] = []
+    for chunk in chunks:
+        sec = chunk.section
+        if sec in seen:
+            n = 2
+            while True:
+                candidate = f"{sec} #{n}" if sec else f"#{n}"
+                if candidate not in seen:
+                    sec = candidate
+                    break
+                n += 1
+            chunk = Chunk(sec, chunk.content)
+        seen.add(sec)
+        out.append(chunk)
+    return out

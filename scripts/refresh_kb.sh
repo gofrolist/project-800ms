@@ -120,13 +120,17 @@ INGEST_CMD=(
     --env-file "${ENV_FILE}"
     -f "${REPO_ROOT}/infra/docker-compose.yml"
     exec -T retriever
-    uv run python -m ingest
+    python -m ingest
     --tenant "${TENANT}"
     --source "/app/data/kb/${PROJECT}/"
     --mode incremental
 )
 
 # Apply prod overlay when present — same pattern the startup script uses.
+# The retriever runtime image bakes its venv at /opt/venv and exposes
+# ``python`` directly on PATH; ``uv`` is a build-time-only dependency
+# and is NOT in the runtime image. ``python -m ingest`` (not
+# ``uv run python``) is the correct in-container invocation.
 if [[ -f "${REPO_ROOT}/infra/docker-compose.prod.yml" ]]; then
     INGEST_CMD=(
         docker compose
@@ -134,7 +138,7 @@ if [[ -f "${REPO_ROOT}/infra/docker-compose.prod.yml" ]]; then
         -f "${REPO_ROOT}/infra/docker-compose.yml"
         -f "${REPO_ROOT}/infra/docker-compose.prod.yml"
         exec -T retriever
-        uv run python -m ingest
+        python -m ingest
         --tenant "${TENANT}"
         --source "/app/data/kb/${PROJECT}/"
         --mode incremental

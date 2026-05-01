@@ -203,7 +203,10 @@ def fetch(config: FetchConfig) -> dict[str, Any]:
     if not isinstance(articles, list):
         raise SystemExit(f"expected data: list, got {type(articles).__name__}")
 
-    fetched_at = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
+    # ``dt.timezone.utc`` rather than ``dt.UTC`` so this script also runs
+    # on the VM's stock Python 3.10 (``dt.UTC`` was added in 3.11). The
+    # script header advertises 3.10+ compatibility — keep it honest.
+    fetched_at = dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
     config.out_dir.mkdir(parents=True, exist_ok=True)
 
     written: list[str] = []

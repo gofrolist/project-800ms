@@ -194,3 +194,35 @@ def test_paragraph_overlap_does_not_exceed_max_chars() -> None:
         assert len(c.content) <= MAX_CHARS, (
             f"chunk exceeds MAX_CHARS={MAX_CHARS}: {len(c.content)} chars"
         )
+
+
+def test_repeated_section_names_get_unique_suffixes() -> None:
+    """Articles with repeated H2 (boilerplate footer-style headings,
+    common in Chatwoot help-base — e.g. ``"🆘 Не нашли решения?"``
+    appearing at the bottom of multiple sections) used to violate the
+    ``(tenant_id, kb_entry_id, section) NULLS NOT DISTINCT`` unique
+    index. Repeated sections now get ``" #2"``, ``" #3"`` suffixes
+    so each chunk has a distinct DB key.
+
+    Concrete failure: article 17 in the live Chatwoot feed has
+    ``"🆘 Не нашли решения?"`` three times; the ingest UPSERT raised
+    ``UniqueViolationError`` and rolled back the entire run.
+    """
+    body = (
+        "## Раздел A\n\nСодержимое первого раздела статьи.\n\n"
+        "## 🆘 Не нашли решения?\n\nКонтакт первый, обратитесь к нам.\n\n"
+        "## Раздел B\n\nСодержимое второго раздела статьи.\n\n"
+        "## 🆘 Не нашли решения?\n\nКонтакт второй, повторим ссылку.\n\n"
+        "## Раздел C\n\nСодержимое третьего раздела статьи.\n\n"
+        "## 🆘 Не нашли решения?\n\nКонтакт третий, последний.\n"
+    )
+    chunks = chunk_article(title="Тест", content=body)
+    sections = [c.section for c in chunks]
+    # Hard DB invariant — all section keys within an article must be
+    # distinct.
+    assert len(set(sections)) == len(sections), f"duplicate sections produced: {sections}"
+    # The first repeat keeps the bare name; subsequent ones get suffixes.
+    repeats = [s for s in sections if s and "Не нашли" in s]
+    assert repeats[0] == "🆘 Не нашли решения?"
+    assert repeats[1] == "🆘 Не нашли решения? #2"
+    assert repeats[2] == "🆘 Не нашли решения? #3"
