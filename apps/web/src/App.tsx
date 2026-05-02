@@ -14,23 +14,13 @@ const API_KEY = import.meta.env.VITE_API_KEY ?? "";
 // Comma-separated list of engines the operator wants visible in the demo
 // UI. Same source of truth as the agent's TTS_PRELOAD_ENGINES — the web
 // container's entrypoint substitutes the literal `__TTS_PRELOAD_ENGINES__`
-// placeholder at startup. When the placeholder is left in place (e.g.
-// `bun run dev` with no env set) or the value is empty, every engine
-// renders so a fresh dev environment doesn't show an empty picker.
-const TTS_PRELOAD_ENGINES_RAW =
-  import.meta.env.VITE_TTS_PRELOAD_ENGINES ?? "__TTS_PRELOAD_ENGINES__";
-const TTS_PRELOAD_ENGINES_FILTER: ReadonlySet<string> | null = (() => {
-  if (
-    !TTS_PRELOAD_ENGINES_RAW ||
-    TTS_PRELOAD_ENGINES_RAW === "__TTS_PRELOAD_ENGINES__"
-  ) {
-    return null;
-  }
-  const ids = TTS_PRELOAD_ENGINES_RAW.split(",")
-    .map((s: string) => s.trim().toLowerCase())
-    .filter((s: string) => s.length > 0);
-  return ids.length > 0 ? new Set(ids) : null;
-})();
+// placeholder at startup. The actual filter Set is constructed below the
+// engine catalog so we can whitelist against the known engine ids,
+// instead of comparing against a literal sentinel string (sed during
+// container start would substitute that sentinel too — a self-
+// collision that defeats the dev-build fallback).
+const TTS_PRELOAD_ENGINES_RAW: string | undefined = import.meta.env
+  .VITE_TTS_PRELOAD_ENGINES;
 
 interface VoiceOption {
   id: string;
@@ -116,10 +106,28 @@ const TTS_ENGINES = [
 // second place to keep in sync.
 type TtsEngine = (typeof TTS_ENGINES)[number]["id"];
 
+// Whitelist of valid engine ids — derived from the catalog so a typo
+// in TTS_PRELOAD_ENGINES (e.g. "qwn3") silently drops to "no match"
+// rather than rendering a card the agent will reject. Detection-by-
+// whitelist is also why we can avoid a string-sentinel fallback for
+// the unsubstituted `__TTS_PRELOAD_ENGINES__` case (which sed would
+// rewrite alongside the actual value, breaking the sentinel).
+const VALID_ENGINE_IDS: ReadonlySet<string> = new Set(
+  TTS_ENGINES.map((e) => e.id),
+);
+
 // Engines the runtime feature flag has whitelisted. Falls back to the
-// full catalog when the flag is unset (dev build) or empty. Computed
-// once at module load — TTS_PRELOAD_ENGINES is a deploy-time setting,
-// not a per-render one.
+// full catalog when the flag is unset / unsubstituted / contains no
+// recognized engine ids. Computed once at module load — TTS_PRELOAD_-
+// ENGINES is a deploy-time setting, not a per-render one.
+const TTS_PRELOAD_ENGINES_FILTER: ReadonlySet<string> | null = (() => {
+  if (!TTS_PRELOAD_ENGINES_RAW) return null;
+  const ids = TTS_PRELOAD_ENGINES_RAW.split(",")
+    .map((s: string) => s.trim().toLowerCase())
+    .filter((s: string) => VALID_ENGINE_IDS.has(s));
+  return ids.length > 0 ? new Set(ids) : null;
+})();
+
 const VISIBLE_ENGINES = TTS_PRELOAD_ENGINES_FILTER
   ? TTS_ENGINES.filter((e) => TTS_PRELOAD_ENGINES_FILTER.has(e.id))
   : TTS_ENGINES;
