@@ -11,6 +11,27 @@ import {
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const API_KEY = import.meta.env.VITE_API_KEY ?? "";
 
+// Comma-separated list of engines the operator wants visible in the demo
+// UI. Same source of truth as the agent's TTS_PRELOAD_ENGINES — the web
+// container's entrypoint substitutes the literal `__TTS_PRELOAD_ENGINES__`
+// placeholder at startup. When the placeholder is left in place (e.g.
+// `bun run dev` with no env set) or the value is empty, every engine
+// renders so a fresh dev environment doesn't show an empty picker.
+const TTS_PRELOAD_ENGINES_RAW =
+  import.meta.env.VITE_TTS_PRELOAD_ENGINES ?? "__TTS_PRELOAD_ENGINES__";
+const TTS_PRELOAD_ENGINES_FILTER: ReadonlySet<string> | null = (() => {
+  if (
+    !TTS_PRELOAD_ENGINES_RAW ||
+    TTS_PRELOAD_ENGINES_RAW === "__TTS_PRELOAD_ENGINES__"
+  ) {
+    return null;
+  }
+  const ids = TTS_PRELOAD_ENGINES_RAW.split(",")
+    .map((s: string) => s.trim().toLowerCase())
+    .filter((s: string) => s.length > 0);
+  return ids.length > 0 ? new Set(ids) : null;
+})();
+
 interface VoiceOption {
   id: string;
   label: string;
@@ -94,6 +115,14 @@ const TTS_ENGINES = [
 // above automatically extends `TtsEngine`; removing one narrows it. No
 // second place to keep in sync.
 type TtsEngine = (typeof TTS_ENGINES)[number]["id"];
+
+// Engines the runtime feature flag has whitelisted. Falls back to the
+// full catalog when the flag is unset (dev build) or empty. Computed
+// once at module load — TTS_PRELOAD_ENGINES is a deploy-time setting,
+// not a per-render one.
+const VISIBLE_ENGINES = TTS_PRELOAD_ENGINES_FILTER
+  ? TTS_ENGINES.filter((e) => TTS_PRELOAD_ENGINES_FILTER.has(e.id))
+  : TTS_ENGINES;
 
 interface Session {
   session_id: string;
@@ -300,7 +329,13 @@ export function App() {
       <h1>project-800ms</h1>
       <p className="subtitle">Pick a TTS engine + voice to start a call.</p>
       <div className="engine-picker">
-        {TTS_ENGINES.map((engine) => {
+        {VISIBLE_ENGINES.length === 0 && (
+          <div className="status error">
+            No TTS engines enabled. Set TTS_PRELOAD_ENGINES on the web service
+            (e.g. <code>piper,silero,xtts</code>).
+          </div>
+        )}
+        {VISIBLE_ENGINES.map((engine) => {
           const isPending = pendingEngine === engine.id && status === "connecting";
           const voice = selectedVoice[engine.id];
           const singleVoice = engine.voices.length === 1;

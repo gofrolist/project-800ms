@@ -138,7 +138,7 @@ async def rewrite_and_classify(
         history: Prior conversation turns; older than `_HISTORY_MAX`
             are silently dropped.
         model: Model identifier to send to the LLM (e.g.
-            "Qwen2.5-7B-Instruct-AWQ"). Threaded from the caller so
+            "qwen3-8b"). Threaded from the caller so
             `/retrieve` can override per-request if the env default is
             rolled out incrementally.
 

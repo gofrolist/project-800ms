@@ -179,12 +179,31 @@ variable "tts_preload_engines" {
     at dispatch. Valid values: piper, silero, qwen3, xtts. Including `qwen3`
     automatically activates the `tts-qwen3` compose profile and writes
     `QWEN3_TTS_BASE_URL=http://qwen3-tts:8000/v1` to infra/.env. Including
-    `xtts` requires populated voice_library/profiles/ on disk — the agent
-    hard-fails at boot otherwise. Default `piper` preserves the
-    single-engine operator workflow.
+    `xtts` also requires `coqui_tos_agreed = "1"` (XTTS v2 ships under the
+    Coqui Public Model License — non-commercial; coqui-tts blocks on stdin
+    waiting for license acceptance otherwise) and a populated
+    voice_library/profiles/ on disk — the agent hard-fails at boot
+    otherwise. Default `piper` preserves the single-engine operator workflow.
   EOT
   type        = string
   default     = "piper"
+}
+
+variable "coqui_tos_agreed" {
+  description = <<-EOT
+    Set to "1" to auto-accept the XTTS v2 Coqui Public Model License (CPML —
+    NON-COMMERCIAL use only) when `xtts` is in tts_preload_engines. Empty
+    means the agent will fail XTTS preload at boot, surfacing the licensing
+    requirement loud and clear. Read the CPML at https://coqui.ai/cpml
+    before flipping this on for any deployment that monetizes the voice.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = contains(["", "1"], var.coqui_tos_agreed)
+    error_message = "coqui_tos_agreed must be either \"\" (decline) or \"1\" (accept the CPML)."
+  }
 }
 
 variable "livekit_public_url" {
@@ -271,7 +290,7 @@ variable "llm_base_url" {
 }
 
 variable "llm_model" {
-  description = "Model name for the external LLM (e.g. llama-3.3-70b-versatile). Empty = use local default qwen-7b."
+  description = "Model name for the external LLM (e.g. llama-3.3-70b-versatile). Empty = use local default qwen3-8b."
   type        = string
   default     = ""
 }

@@ -258,7 +258,7 @@ variable "llm_base_url" {
 }
 
 variable "llm_model" {
-  description = "Model name for the external LLM (e.g. llama-3.3-70b-versatile). Empty = use local default qwen-7b."
+  description = "Model name for the external LLM (e.g. llama-3.3-70b-versatile). Empty = use local default qwen3-8b."
   type        = string
   default     = ""
 }

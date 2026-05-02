@@ -258,10 +258,11 @@ jobs:
           docker run --rm \
             -e API_URL=https://api.example.com \
             -e API_KEY=smoke-test-placeholder \
+            -e TTS_PRELOAD_ENGINES=piper,silero \
             -v /tmp/web-dist:/dist \
             "$FIRST_TAG"
           test -s /tmp/web-dist/index.html
-          for placeholder in __API_URL__ __API_KEY__; do
+          for placeholder in __API_URL__ __API_KEY__ __TTS_PRELOAD_ENGINES__; do
             if grep -qr "$placeholder" /tmp/web-dist/ 2>/dev/null; then
               echo "::error::Placeholder $placeholder still present after substitution"
               exit 1
@@ -273,6 +274,10 @@ jobs:
           fi
           if ! grep -qr "smoke-test-placeholder" /tmp/web-dist/; then
             echo "::error::Expected API key not found in built assets"
+            exit 1
+          fi
+          if ! grep -qr "piper,silero" /tmp/web-dist/; then
+            echo "::error::Expected TTS_PRELOAD_ENGINES list not found in built assets"
             exit 1
           fi
           echo "web container runtime substitution works"

@@ -28,6 +28,7 @@ SECRET_PREFIX="${secret_prefix}"
 LLM_BASE_URL_TF="${llm_base_url}"
 LLM_MODEL_TF="${llm_model}"
 TTS_PRELOAD_ENGINES_TF="${tts_preload_engines}"
+COQUI_TOS_AGREED_TF="${coqui_tos_agreed}"
 
 # Compose files depend on whether TLS is enabled.
 if [ "$TLS_ENABLED" = "true" ]; then
@@ -282,6 +283,14 @@ umask 077
   # the agent only dials it when a session selects tts_engine=qwen3.
   if printf '%s' "$TTS_PRELOAD_ENGINES_TF" | grep -qw qwen3; then
     printf 'QWEN3_TTS_BASE_URL=http://qwen3-tts:8000/v1\n'
+  fi
+  # Coqui CPML acceptance — required only when `xtts` is preloaded.
+  # Writing it conditionally (rather than always) keeps the variable
+  # absent on deploys that don't use XTTS, so a future operator
+  # can't accidentally inherit the non-commercial acceptance for an
+  # unrelated engine.
+  if [ -n "$COQUI_TOS_AGREED_TF" ] && printf '%s' "$TTS_PRELOAD_ENGINES_TF" | grep -qw xtts; then
+    printf 'COQUI_TOS_AGREED=%s\n' "$COQUI_TOS_AGREED_TF"
   fi
 } > infra/.env
 chmod 600 infra/.env

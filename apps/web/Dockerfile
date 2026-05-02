@@ -12,8 +12,10 @@ COPY . .
 # the placeholder isn't present).
 ARG VITE_API_URL=__API_URL__
 ARG VITE_API_KEY=__API_KEY__
+ARG VITE_TTS_PRELOAD_ENGINES=__TTS_PRELOAD_ENGINES__
 ENV VITE_API_URL=$VITE_API_URL
 ENV VITE_API_KEY=$VITE_API_KEY
+ENV VITE_TTS_PRELOAD_ENGINES=$VITE_TTS_PRELOAD_ENGINES
 RUN bun run build
 
 FROM busybox:1.37-musl AS dist
@@ -24,7 +26,9 @@ COPY --from=build /app/dist /dist-template
 CMD ["/bin/sh", "-c", "set -e; \
 : \"${API_URL:?API_URL env var required (e.g. https://api.example.com)}\"; \
 : \"${API_KEY:?API_KEY env var required (tenant X-API-Key baked into the SPA)}\"; \
+: \"${TTS_PRELOAD_ENGINES:?TTS_PRELOAD_ENGINES env var required (comma-separated subset of: piper,silero,qwen3,xtts)}\"; \
 cp -r /dist-template/. /dist/; \
 grep -rl __API_URL__ /dist 2>/dev/null | xargs -r sed -i \"s|__API_URL__|${API_URL}|g\"; \
 grep -rl __API_KEY__ /dist 2>/dev/null | xargs -r sed -i \"s|__API_KEY__|${API_KEY}|g\"; \
-echo \"web dist staged for ${API_URL}\""]
+grep -rl __TTS_PRELOAD_ENGINES__ /dist 2>/dev/null | xargs -r sed -i \"s|__TTS_PRELOAD_ENGINES__|${TTS_PRELOAD_ENGINES}|g\"; \
+echo \"web dist staged for ${API_URL} engines=${TTS_PRELOAD_ENGINES}\""]
