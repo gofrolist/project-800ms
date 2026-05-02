@@ -19,8 +19,7 @@ const API_KEY = import.meta.env.VITE_API_KEY ?? "";
 // instead of comparing against a literal sentinel string (sed during
 // container start would substitute that sentinel too — a self-
 // collision that defeats the dev-build fallback).
-const TTS_PRELOAD_ENGINES_RAW: string | undefined = import.meta.env
-  .VITE_TTS_PRELOAD_ENGINES;
+const TTS_PRELOAD_ENGINES_RAW = import.meta.env.VITE_TTS_PRELOAD_ENGINES;
 
 interface VoiceOption {
   id: string;
@@ -112,19 +111,25 @@ type TtsEngine = (typeof TTS_ENGINES)[number]["id"];
 // whitelist is also why we can avoid a string-sentinel fallback for
 // the unsubstituted `__TTS_PRELOAD_ENGINES__` case (which sed would
 // rewrite alongside the actual value, breaking the sentinel).
-const VALID_ENGINE_IDS: ReadonlySet<string> = new Set(
-  TTS_ENGINES.map((e) => e.id),
-);
+//
+// Type inferred as `Set<TtsEngine>` so a stray `string` argument to
+// `.has()` is a compile error, not a silent boolean answer. The type
+// guard `isValidEngineId` widens the input contract to `string` for
+// the env-derived call site.
+const VALID_ENGINE_IDS = new Set(TTS_ENGINES.map((e) => e.id));
+
+const isValidEngineId = (s: string): s is TtsEngine =>
+  (VALID_ENGINE_IDS as ReadonlySet<string>).has(s);
 
 // Engines the runtime feature flag has whitelisted. Falls back to the
 // full catalog when the flag is unset / unsubstituted / contains no
 // recognized engine ids. Computed once at module load — TTS_PRELOAD_-
 // ENGINES is a deploy-time setting, not a per-render one.
-const TTS_PRELOAD_ENGINES_FILTER: ReadonlySet<string> | null = (() => {
+const TTS_PRELOAD_ENGINES_FILTER = (() => {
   if (!TTS_PRELOAD_ENGINES_RAW) return null;
   const ids = TTS_PRELOAD_ENGINES_RAW.split(",")
-    .map((s: string) => s.trim().toLowerCase())
-    .filter((s: string) => VALID_ENGINE_IDS.has(s));
+    .map((s) => s.trim().toLowerCase())
+    .filter(isValidEngineId);
   return ids.length > 0 ? new Set(ids) : null;
 })();
 
@@ -337,12 +342,6 @@ export function App() {
       <h1>project-800ms</h1>
       <p className="subtitle">Pick a TTS engine + voice to start a call.</p>
       <div className="engine-picker">
-        {VISIBLE_ENGINES.length === 0 && (
-          <div className="status error">
-            No TTS engines enabled. Set TTS_PRELOAD_ENGINES on the web service
-            (e.g. <code>piper,silero,xtts</code>).
-          </div>
-        )}
         {VISIBLE_ENGINES.map((engine) => {
           const isPending = pendingEngine === engine.id && status === "connecting";
           const voice = selectedVoice[engine.id];

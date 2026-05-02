@@ -46,17 +46,18 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from kb_prompts import build_grounded_messages, build_refusal_messages
 
-# Default request timeout. Issue #49: lowered from 2000 ms to 500 ms so
-# the constitution's p95 ≤ 800 ms end-to-end SLO has actual room for
-# the LLM + TTS legs after retrieval. Issue #53: the retriever's own
-# `rewriter_timeout_ms` (default 400 ms) is now SMALLER than this so
-# the retriever fails-closed to its refusal branch (writes a trace
-# row, returns 503 `rewriter_timeout`) BEFORE the agent's read budget
-# expires. If the retriever itself stalls (DB pause, container
-# restart), the agent stops waiting at 500 ms and routes to refusal —
-# losing the forensic trace row, but bounding the user-perceived
-# latency.
-_DEFAULT_TIMEOUT_MS = 500
+# Default request timeout. 2000 ms covers the local Qwen3-8B-AWQ
+# rewriter call (~600 ms TTFT + JSON gen) + hybrid SQL search +
+# serialization. External-LLM deploys (Groq llama-3.3 ~80 ms TTFT) can
+# drop it back to ~500 ms via AGENT_RETRIEVER_TIMEOUT_MS. Issue #53:
+# the retriever's own `rewriter_timeout_ms` (default 1500 ms) MUST stay
+# smaller than this so the retriever fails-closed to its refusal branch
+# (writes a trace row, returns 503 `rewriter_timeout`) BEFORE the
+# agent's read budget expires. If the retriever itself stalls (DB
+# pause, container restart), the agent stops waiting at 2000 ms and
+# routes to refusal — losing the forensic trace row but bounding the
+# user-perceived latency.
+_DEFAULT_TIMEOUT_MS = 2000
 
 
 class KBRetrievalProcessor(FrameProcessor):
