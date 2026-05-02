@@ -322,7 +322,7 @@ def main() -> None:
 
         _base_config = {
             "vllm_base_url": require_env("VLLM_BASE_URL"),
-            "vllm_model": require_env("VLLM_MODEL", "qwen-7b"),
+            "vllm_model": require_env("VLLM_MODEL", "qwen3-8b"),
             "tts_voice": require_env("TTS_VOICE", "ru_RU-denis-medium"),
             "vllm_api_key": require_env("VLLM_API_KEY", "not-used"),
             "piper_voices_dir": Path(require_env("PIPER_VOICES_DIR", "/home/appuser/.cache/piper")),

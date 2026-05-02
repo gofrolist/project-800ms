@@ -100,10 +100,21 @@ services:
   # ─────────────────────────────────────────────────────────────────────────
   # GPU inference: vLLM (OpenAI-compatible)
   #
-  # Model: Qwen2.5-7B-Instruct-AWQ — best multilingual 7B model,
-  # strong Russian. ~4GB weights. gpu_memory_utilization=0.55 on
-  # 24GB L4 → ~13GB for vLLM (weights + KV cache), leaving headroom
-  # for Whisper (~2GB) + OS.
+  # Model: Qwen3-8B-AWQ — Apache 2.0, native Russian, ~6.2 GB AWQ
+  # weights. gpu_memory_utilization=0.55 on 24 GB L4 → ~13 GB for vLLM
+  # (weights + KV cache), leaving headroom for GigaAM (~2 GB) + OS.
+  #
+  # `--max-model-len=8192` was bumped from the 4096 default after voice
+  # sessions accumulated ~4 KB of conversation history + 5 retrieved KB
+  # chunks (~3.9 K input tokens) and silently 400'd on turn 2+. 8 K
+  # gives enough KV-cache headroom for ~10–12-turn conversations
+  # without paging.
+  #
+  # `--chat-template=` pins a vendored copy of the Qwen3 stock template
+  # with the `enable_thinking` guard flipped to always emit the empty
+  # `<think></think>` block. That suppresses reasoning output (~200–
+  # 800 ms TTFT savings) — the Helper/Guide NPC produces short
+  # grounded replies that don't benefit from chain-of-thought.
   # ─────────────────────────────────────────────────────────────────────────
   vllm:
     image: vllm/vllm-openai:v0.19.1
@@ -122,6 +133,10 @@ services:
       # Dedicated HF cache for vLLM. Don't share with the agent: different
       # UIDs would leave cache files unwritable for the other service.
       - hf_cache_vllm:/root/.cache/huggingface
+      # Vendored chat template (read-only). Without this mount the
+      # `--chat-template=` flag below points at a missing path and the
+      # vllm container fails its first request.
+      - ./chat-templates:/chat-templates:ro
     ports:
       # Loopback only — vLLM has no built-in rate limiting and (until the
       # api-key flag below) accepts arbitrary prompts. Reachable from the
@@ -131,13 +146,14 @@ services:
     # container-escape amplifier. 16 GB is plenty for single-GPU workloads.
     shm_size: "16gb"
     command:
-      - Qwen/Qwen2.5-7B-Instruct-AWQ
+      - Qwen/Qwen3-8B-AWQ
       - --quantization=awq_marlin
       - --dtype=float16
-      - --max-model-len=4096
+      - --max-model-len=8192
       - --gpu-memory-utilization=0.55
       - --enable-prefix-caching
-      - --served-model-name=qwen-7b
+      - --served-model-name=qwen3-8b
+      - --chat-template=/chat-templates/qwen3-no-think.jinja
       - --host=0.0.0.0
       - --port=8000
       # Require an API key on every request — even on loopback. The agent
@@ -339,7 +355,7 @@ services:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
       - VLLM_BASE_URL=${LLM_BASE_URL:-http://vllm:8000/v1}
-      - VLLM_MODEL=${LLM_MODEL:-qwen-7b}
+      - VLLM_MODEL=${LLM_MODEL:-qwen3-8b}
       - VLLM_API_KEY=${LLM_API_KEY:?LLM_API_KEY is required}
       - TTS_VOICE=${TTS_VOICE:-ru_RU-denis-medium}
       # TTS engine selector — one of "piper" (default), "silero", "qwen3",
@@ -401,8 +417,11 @@ services:
       # the KB path entirely — KBRetrievalProcessor falls into
       # pass-through mode. Set both RETRIEVER_URL and
       # RETRIEVER_INTERNAL_TOKEN to enable. AGENT_RETRIEVER_TIMEOUT_MS
-      # defaults to 500 ms per issue #49 so the retriever leg fits
-      # inside the constitution's 800 ms p95 SLO.
+      # default of 2000 ms covers the local Qwen3-8B-AWQ rewriter
+      # call (~600 ms) + hybrid SQL search (~50 ms) + serialization;
+      # external-LLM deploys can drop it back to ~500 ms via env. The
+      # constitution's 800 ms p95 SLO is voice-perceived (first-audio-
+      # out from end-of-speech), not the retrieve leg in isolation.
       - RETRIEVER_URL=${RETRIEVER_URL:-}
       # Symmetric `:?` with the retriever side below — both agents and
       # retriever fail to start without the secret, so a partial deploy
@@ -411,7 +430,7 @@ services:
       # RETRIEVER_URL empty (KBRetrievalProcessor skips when URL is
       # empty regardless of token state).
       - RETRIEVER_INTERNAL_TOKEN=${RETRIEVER_INTERNAL_TOKEN:?RETRIEVER_INTERNAL_TOKEN is required}
-      - AGENT_RETRIEVER_TIMEOUT_MS=${AGENT_RETRIEVER_TIMEOUT_MS:-500}
+      - AGENT_RETRIEVER_TIMEOUT_MS=${AGENT_RETRIEVER_TIMEOUT_MS:-2000}
       # INFO by default — DEBUG logs full STT transcripts and LLM
       # prompts/completions, which is a privacy issue if exposed via
       # docker logs. Set LOG_LEVEL=DEBUG in .env when actively debugging.
@@ -501,8 +520,11 @@ services:
       - DB_URL=postgresql+asyncpg://${POSTGRES_USER:-voice}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-voice}
       - LLM_BASE_URL=${LLM_BASE_URL:?LLM_BASE_URL is required}
       - LLM_API_KEY=${LLM_API_KEY:?LLM_API_KEY is required}
-      - REWRITER_MODEL=${REWRITER_MODEL:-${LLM_MODEL:-qwen-7b}}
-      - REWRITER_TIMEOUT_MS=${REWRITER_TIMEOUT_MS:-400}
+      - REWRITER_MODEL=${REWRITER_MODEL:-${LLM_MODEL:-qwen3-8b}}
+      # 1500 ms accommodates Qwen3-8B-AWQ TTFT (~460 ms) + JSON-mode
+      # generation. The 400 ms default was tuned for Groq llama-3.3
+      # (~80 ms TTFT); on the local model every /retrieve 503'd.
+      - REWRITER_TIMEOUT_MS=${REWRITER_TIMEOUT_MS:-1500}
       - EMBEDDER_DEVICE=${EMBEDDER_DEVICE:-cpu}
       - LOG_LEVEL=${RETRIEVER_LOG_LEVEL:-INFO}
       # Issue #40 / #47: shared-secret bearer for /retrieve. Required
