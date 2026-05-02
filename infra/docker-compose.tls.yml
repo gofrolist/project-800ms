@@ -54,6 +54,14 @@ services:
       # exposes it in-page. Use a tenant with an origin allowlist scoped
       # tight to this deployment's domain.
       - API_KEY=${WEB_API_KEY:?WEB_API_KEY is required — rotate this tenant's key via the API to revoke}
+      # Per-engine TTS feature flag. Mirrored from the agent's
+      # TTS_PRELOAD_ENGINES so the demo SPA only renders engine cards
+      # the backend will actually accept. An explicit override here is
+      # legitimate when the operator wants to hide a backend-enabled
+      # engine (e.g. limit XTTS to API customers but keep it off the
+      # public demo). The web container fails fast at startup if this
+      # is empty.
+      - TTS_PRELOAD_ENGINES=${TTS_PRELOAD_ENGINES:?TTS_PRELOAD_ENGINES is required — comma-separated subset of piper,silero,qwen3,xtts}
     volumes:
       - web_dist:/dist
 
