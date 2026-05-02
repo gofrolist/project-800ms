@@ -693,10 +693,12 @@ class TestParticipantLeftTeardown:
             # Retriever wiring (review-hardening sweep — issue #40/#47/#49).
             # Empty URL keeps KBRetrievalProcessor in pass-through mode so
             # the test pipeline doesn't try to reach a non-existent
-            # retriever during _run_pipeline assertions.
+            # retriever during _run_pipeline assertions. Value matches the
+            # post-Qwen3-swap default; the URL-empty short-circuit means
+            # the timeout is never actually exercised in this test.
             "retriever_url": "",
             "retriever_internal_token": "",
-            "retriever_timeout_ms": 500,
+            "retriever_timeout_ms": 2000,
         }
         main._active_rooms.add(room)
 

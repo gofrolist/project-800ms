@@ -135,10 +135,11 @@ class AgentConfig:
     # retriever — KBRetrievalProcessor's is_enabled gating skips the
     # call entirely when retriever_url is empty.
     retriever_internal_token: str = ""
-    # Agent-side hard timeout on the /retrieve call. Issue #49:
-    # default lowered from 2000 ms to 500 ms so the retrieval leg
-    # fits inside the constitution's 800 ms p95 end-to-end SLO.
-    retriever_timeout_ms: int = 500
+    # Agent-side hard timeout on the /retrieve call. Default 2000 ms
+    # covers the local Qwen3-8B-AWQ rewriter call (~600 ms) + hybrid
+    # SQL search + serialization. External-LLM deploys (Groq, OpenAI)
+    # can drop it back to ~500 ms because their TTFT is ~80 ms.
+    retriever_timeout_ms: int = 2000
 
     def __post_init__(self) -> None:
         if self.tts_engine not in _VALID_TTS_ENGINES:

@@ -39,13 +39,13 @@ class Settings(BaseSettings):
     rewriter_model: str = Field(min_length=1)
     # Hard timeout for the rewriter call; beyond this we fail-closed
     # (refusal). Issue #53: must be SMALLER than the agent's
-    # AGENT_RETRIEVER_TIMEOUT_MS (default 500 ms) so the retriever's
+    # AGENT_RETRIEVER_TIMEOUT_MS (default 2000 ms) so the retriever's
     # own refusal branch fires + writes its trace row before the agent
-    # gives up waiting and routes to refusal on its own. Default 400 ms
-    # leaves ~50 ms slack on top of the typical rewriter p95 against a
-    # warm Groq / vLLM endpoint, with the agent's 500 ms read budget
-    # absorbing network jitter.
-    rewriter_timeout_ms: int = Field(default=400, ge=100, le=10_000)
+    # gives up waiting and routes to refusal on its own. Default 1500 ms
+    # accommodates Qwen3-8B-AWQ TTFT (~460 ms) + JSON-mode generation;
+    # external-LLM deploys (Groq ~80 ms TTFT) can drop it back to 400 ms
+    # via env.
+    rewriter_timeout_ms: int = Field(default=1500, ge=100, le=10_000)
 
     # ── Embedder ─────────────────────────────────────────────────────────
     # "cpu" | "cuda" | "cuda:0" — passed through to sentence-transformers.

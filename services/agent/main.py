@@ -374,11 +374,13 @@ def main() -> None:
             # so the production deploy must wire the same secret on
             # both sides via infra/.env.
             "retriever_internal_token": os.environ.get("RETRIEVER_INTERNAL_TOKEN", ""),
-            # Issue #49: 500 ms aligns the agent budget with the
-            # constitution's 800 ms p95 SLO. Operators can override
-            # via env if a slower retriever is acceptable in their
-            # deploy.
-            "retriever_timeout_ms": int(os.environ.get("AGENT_RETRIEVER_TIMEOUT_MS", "500")),
+            # Default 2000 ms covers the local Qwen3-8B-AWQ rewriter
+            # call (~600 ms TTFT + JSON gen) + hybrid SQL search +
+            # serialization. External-LLM deploys can drop it back to
+            # ~500 ms via env. The constitutional 800 ms p95 SLO is
+            # voice-perceived (first-audio-out from end-of-speech), not
+            # the retrieve leg in isolation.
+            "retriever_timeout_ms": int(os.environ.get("AGENT_RETRIEVER_TIMEOUT_MS", "2000")),
         }
     except MissingEnvError as exc:
         logger.error(str(exc))
