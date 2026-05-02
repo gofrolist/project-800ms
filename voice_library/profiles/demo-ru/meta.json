@@ -1,0 +1,16 @@
+{
+  "profile_id": "demo-ru",
+  "name": "Demo Russian",
+  "ref_audio_filename": "ref.wav",
+  "ref_text": "Сказка о царе Салтане, о сыне его славном и могучем богатыре князе Гвидоне Салтановиче и о прекрасной царевне Лебеди.",
+  "language": "Russian",
+  "x_vector_only_mode": false,
+  "_attribution": {
+    "source": "Wikimedia Commons",
+    "source_url": "https://commons.wikimedia.org/wiki/File:Ru-Skazka-o-tsare-Saltane_-o-syne-ego-slavnom-i-moguchem.ogg",
+    "uploader": "Revolynka",
+    "license": "CC BY-SA 4.0 + dedicated to public domain by uploader",
+    "note": "Placeholder for demo only. Replace with a project-owned recording before any production-facing showcase.",
+    "fetched": "2026-05-02"
+  }
+}

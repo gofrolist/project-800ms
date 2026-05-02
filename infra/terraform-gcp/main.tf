@@ -260,6 +260,7 @@ locals {
     git_ref             = var.git_ref
     image_tag           = var.image_tag
     tts_preload_engines = var.tts_preload_engines
+    coqui_tos_agreed    = var.coqui_tos_agreed
     project_name        = var.project_name
     region              = var.region
     livekit_public_url  = local.livekit_public_url

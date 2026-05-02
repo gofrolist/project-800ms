@@ -23,13 +23,25 @@ image_tag = "latest"
 # Including `qwen3` automatically activates the `tts-qwen3` compose profile
 # (starts the qwen3-tts sidecar) and writes QWEN3_TTS_BASE_URL to infra/.env.
 #
-# Including `xtts` requires populated voice_library/profiles/ on disk — the
-# agent hard-fails at boot otherwise.
+# Including `xtts` requires populated voice_library/profiles/ on disk and
+# `coqui_tos_agreed = "1"` below — the agent hard-fails at boot otherwise.
 #
-# Demo deployments that expose the three-button engine selector should use:
-#   tts_preload_engines = "piper,silero,qwen3"
+# Demo deployments that expose the four-button engine selector should use:
+#   tts_preload_engines = "piper,silero,qwen3,xtts"
+#   coqui_tos_agreed    = "1"
 # -----------------------------------------------------------------------------
 tts_preload_engines = "piper"
+
+# -----------------------------------------------------------------------------
+# Coqui XTTS v2 license acceptance.
+#
+# Empty (default) declines — boot fails fast if `xtts` is in
+# tts_preload_engines, surfacing the licensing requirement loud and clear.
+# "1" auto-accepts the Coqui Public Model License (CPML — NON-COMMERCIAL).
+# Read https://coqui.ai/cpml before flipping this on for any deployment
+# that monetizes the voice.
+# -----------------------------------------------------------------------------
+coqui_tos_agreed = ""
 
 # -----------------------------------------------------------------------------
 # Spot vs on-demand

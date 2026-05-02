@@ -242,8 +242,14 @@ yarn-error.log*
 # Compound-engineering run artifacts (ce-code-review, ce-ideate, etc.)
 .context/
 
-# Qwen3-TTS voice-clone profiles — audio samples + transcripts are
-# per-deployment data (often personal recordings), not source code.
-# Track only the directory scaffold + README, not the profile contents.
+# Voice-clone profiles — audio samples + transcripts are per-deployment
+# data (often personal recordings), not source code. Track only the
+# directory scaffold, README, and the public-domain `demo-ru/` sample
+# (Wikimedia Commons Pushkin reading; see profile meta.json for
+# attribution + license). Real demo voices replace `demo-ru/` post-
+# clone, so its presence in git is a "works out of the box" baseline,
+# not a recommended production voice.
 voice_library/profiles/*
 !voice_library/profiles/.gitkeep
+!voice_library/profiles/demo-ru/
+!voice_library/profiles/demo-ru/**
