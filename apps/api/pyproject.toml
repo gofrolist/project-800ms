@@ -19,7 +19,7 @@ dependencies = [
     "alembic==1.18.4",
     # TTL cache for authenticated tenant lookup — avoids hitting Postgres
     # on every request. Revocations propagate within TENANT_CACHE_TTL_SECONDS.
-    "cachetools==7.0.6",
+    "cachetools==7.1.1",
     # ULID for request IDs — monotonic, sortable, URL-safe, shorter than UUID.
     "python-ulid==3.1.0",
     # Prometheus instrumentation — request counters + latency histograms
