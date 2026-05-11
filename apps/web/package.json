@@ -9,17 +9,17 @@
     "preview": "vite preview --host"
   },
   "dependencies": {
-    "@livekit/components-react": "^2.9.0",
+    "@livekit/components-react": "^2.9.21",
     "@livekit/components-styles": "^1.1.4",
-    "livekit-client": "^2.18.8",
-    "react": "^19.2.5",
-    "react-dom": "^19.2.5"
+    "livekit-client": "^2.18.9",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
   },
   "devDependencies": {
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
     "typescript": "^6.0.3",
-    "vite": "^8.0.10"
+    "vite": "^8.0.12"
   }
 }
