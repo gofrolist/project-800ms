@@ -219,11 +219,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
 
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -231,7 +231,7 @@ jobs:
 
       - name: Compute web image tags
         id: meta-web
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6.0.0
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/project-800ms-web
           tags: |
@@ -240,7 +240,7 @@ jobs:
             type=sha,format=short
 
       - name: Build web image
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
         with:
           context: apps/web
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -298,11 +298,11 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
 
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -310,7 +310,7 @@ jobs:
 
       - name: Compute api image tags
         id: meta-api
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6.0.0
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/project-800ms-api
           tags: |
@@ -319,7 +319,7 @@ jobs:
             type=sha,format=short
 
       - name: Build api image
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
         with:
           context: apps/api
           push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -398,7 +398,7 @@ jobs:
           sudo docker image prune -af || true
           df -h
 
-      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
         with:
           # network=host lets the buildx builder reach localhost:5000 (the
           # registry service). Without it, buildx runs in its own network
@@ -407,7 +407,7 @@ jobs:
 
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -417,7 +417,7 @@ jobs:
       # only occurs when pyproject.toml / uv.lock change; the typical PR
       # reuses the cached layers in full and finishes fast.
       - name: Build agent-base image (CI handoff to local registry)
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
         with:
           context: services/agent
           file: services/agent/Dockerfile.base
@@ -435,7 +435,7 @@ jobs:
       - name: Compute agent-base image tags (GHCR)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: meta-agent-base
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6.0.0
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/project-800ms-agent-base
           tags: |
@@ -445,7 +445,7 @@ jobs:
 
       - name: Push agent-base image to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
         with:
           context: services/agent
           file: services/agent/Dockerfile.base
@@ -456,7 +456,7 @@ jobs:
 
       - name: Compute agent image tags
         id: meta-agent
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6.0.0
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/project-800ms-agent
           tags: |
@@ -465,7 +465,7 @@ jobs:
             type=sha,format=short
 
       - name: Build agent image
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
         with:
           context: services/agent
           # Load the built image back into the local daemon so the next
@@ -533,20 +533,20 @@ jobs:
           sudo docker image prune -af || true
           df -h
 
-      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
         with:
           driver-opts: network=host
 
       - name: Log in to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build retriever-base image (CI handoff to local registry)
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
         with:
           context: services/retriever
           file: services/retriever/Dockerfile.base
@@ -558,7 +558,7 @@ jobs:
       - name: Compute retriever-base image tags (GHCR)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         id: meta-retriever-base
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6.0.0
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/project-800ms-retriever-base
           tags: |
@@ -568,7 +568,7 @@ jobs:
 
       - name: Push retriever-base image to GHCR
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
         with:
           context: services/retriever
           file: services/retriever/Dockerfile.base
@@ -579,7 +579,7 @@ jobs:
 
       - name: Compute retriever image tags
         id: meta-retriever
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf  # v6.0.0
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9  # v6.1.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/project-800ms-retriever
           tags: |
@@ -588,7 +588,7 @@ jobs:
             type=sha,format=short
 
       - name: Build retriever image
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
         with:
           context: services/retriever
           load: true
