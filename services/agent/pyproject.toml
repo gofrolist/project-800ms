@@ -11,7 +11,7 @@ dependencies = [
     "pipecat-ai[livekit,piper,openai,silero]==0.0.108",
     "livekit-api==1.1.0",
     "loguru==0.7.3",
-    "aiohttp>=3.11,<4",
+    "aiohttp>=3.14.0,<4",
     # GigaAM-v3 (Sber, MIT) — the only STT since the 2026-04-19 A/B
     # experiment (docs/experiments/2026-04-19-stt-ab/phase-a-results.md).
     # PyPI 0.1.0 is v1/v2-only; v3 requires git source + the `torch` extra
@@ -46,7 +46,7 @@ dev = [
     # KBRetrievalProcessor tests (services/agent/tests/test_kb_retrieval.py).
     # The processor is async and POSTs to the retriever via httpx; respx
     # intercepts without a live network dependency.
-    "pytest-asyncio>=1.0,<2",
+    "pytest-asyncio>=1.4.0,<2",
     "respx>=0.21,<1",
 ]
 
