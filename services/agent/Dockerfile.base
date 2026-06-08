@@ -23,7 +23,7 @@
 # driver must be R580 or newer for the CUDA 13 runtime to load.
 
 # ---- builder ---------------------------------------------------------------
-FROM nvidia/cuda:13.2.1-cudnn-runtime-ubuntu24.04 AS builder
+FROM nvidia/cuda:13.3.0-cudnn-runtime-ubuntu24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -54,7 +54,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev
 
 # ---- runtime ---------------------------------------------------------------
-FROM nvidia/cuda:13.2.1-cudnn-runtime-ubuntu24.04
+FROM nvidia/cuda:13.3.0-cudnn-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
