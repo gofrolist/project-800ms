@@ -41,7 +41,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pytest==9.0.3",
+    "pytest==9.1.0",
     # Async test support + httpx transport mock — needed by the
     # KBRetrievalProcessor tests (services/agent/tests/test_kb_retrieval.py).
     # The processor is async and POSTs to the retriever via httpx; respx
