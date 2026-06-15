@@ -4,14 +4,14 @@ version = "0.1.0"
 description = "FastAPI control plane for the project-800ms voice assistant"
 requires-python = "==3.14.*"
 dependencies = [
-    "fastapi==0.136.3",
+    "fastapi==0.137.0",
     "uvicorn[standard]==0.49.0",
     "pydantic-settings==2.14.1",
     "livekit-api==1.1.0",
     # Per-tenant rate limiting. See Phase 1 PRD — key_func resolves to
     # tenant_id from the X-API-Key header so one noisy tenant can't starve
     # others.
-    "slowapi==0.1.9",
+    "slowapi==0.1.10",
     "httpx>=0.28.1",
     # SQLAlchemy 2.0 async + asyncpg + Alembic for tenant/session persistence.
     "sqlalchemy[asyncio]>=2.0.50",
@@ -29,7 +29,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pytest==9.0.3",
+    "pytest==9.1.0",
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
     "httpx==0.28.1",
