@@ -7,7 +7,7 @@ dependencies = [
     # HTTP surface — matches apps/api's FastAPI/Uvicorn pin to keep ops surface small.
     "fastapi==0.136.0",
     "uvicorn[standard]==0.45.0",
-    "pydantic-settings==2.14.0",
+    "pydantic-settings==2.14.2",
     # SQLAlchemy 2.0 async + asyncpg + pgvector-python mirrors apps/api's stack.
     # pgvector-python plugs vector(n) column types into SQLAlchemy so typed ORM
     # survives the pgvector extension.
