@@ -9,7 +9,7 @@ dependencies = [
     # only STT since the 2026-04-19 A/B experiment, and retiring Whisper
     # removed the CUDA 12 ABI pin on ctranslate2.
     "pipecat-ai[livekit,piper,openai,silero]==0.0.108",
-    "livekit-api==1.1.0",
+    "livekit-api==1.1.1",
     "loguru==0.7.3",
     "aiohttp>=3.14.1,<4",
     # GigaAM-v3 (Sber, MIT) — the only STT since the 2026-04-19 A/B
