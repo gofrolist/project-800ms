@@ -117,7 +117,7 @@ services:
   # grounded replies that don't benefit from chain-of-thought.
   # ─────────────────────────────────────────────────────────────────────────
   vllm:
-    image: vllm/vllm-openai:v0.24.0
+    image: vllm/vllm-openai:v0.25.0
     restart: unless-stopped
     # Only start when the `local-llm` profile is active. Default stack skips
     # vllm and relies on an external LLM (LLM_BASE_URL). Opt in with:
