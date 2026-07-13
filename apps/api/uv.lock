@@ -476,7 +476,7 @@ wheels = [
 
 [[package]]
 name = "livekit-api"
-version = "1.1.1"
+version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -485,22 +485,22 @@ dependencies = [
     { name = "pyjwt" },
     { name = "types-protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f8/03/00e0ec173f247e1f7ea63cb5591d5680a64c7a74ea4d5d558e5aed6cc399/livekit_api-1.1.1.tar.gz", hash = "sha256:70c7b80eecbc297b40756ebd76e4f52d00b0348fb7d212a21c1f69cc57fd9c83", size = 15196, upload-time = "2026-06-24T01:36:19.686Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f3/19/36ff6712ec638a4b7dad4d8f03795952e401dc31db0b04cddec7892650da/livekit_api-1.2.0.tar.gz", hash = "sha256:a89817b3bca9584873786ff07209839308217537a42f95ecb2609aafaa109ddc", size = 20778, upload-time = "2026-07-11T23:20:54.781Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1e/c0/d5f3ff74ab5db2d06f173801ec934885d11a754b9fb9ad768c8ede0a6c89/livekit_api-1.1.1-py3-none-any.whl", hash = "sha256:ce8c327676c366e66cf68782934368dd0ba92b9d48f578275227e255c890fe88", size = 19471, upload-time = "2026-06-24T01:36:18.42Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/e7/8926f16d4bc1b2e0ae46d4a507321bb899396d263a757f1adaabcd3b3867/livekit_api-1.2.0-py3-none-any.whl", hash = "sha256:307f8e5cfb0358c3ca091814ab768af55896022151bcd7f951954ccefa036a24", size = 26499, upload-time = "2026-07-11T23:20:53.736Z" },
 ]
 
 [[package]]
 name = "livekit-protocol"
-version = "1.1.18"
+version = "1.1.19"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "protobuf" },
     { name = "types-protobuf" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e7/88/64f2be01a630e249f1dbd0d51876f109b53b7899ae41246d2ca5b647086d/livekit_protocol-1.1.18.tar.gz", hash = "sha256:187af32ebf75333a62117b0db9e551c99060bd4e1f57cfc0fce73bcd7a671da8", size = 115802, upload-time = "2026-06-27T15:31:04.102Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/84/85/10aee7d87cf716ab06075836590616cb91d453251dac683cae73fe4b7122/livekit_protocol-1.1.19.tar.gz", hash = "sha256:81709e8bc47cdaf0cc5ba937bd9ec24a095e4978c58fb3d5e69b9888b9930be4", size = 118325, upload-time = "2026-07-08T17:21:10.707Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/14/80/9cc33e4d0280132538850aaf9559d6b8aa9e670c5917f75dab996400ab84/livekit_protocol-1.1.18-py3-none-any.whl", hash = "sha256:30c539410fd3cfc2e551ca3a193aaaaacaaec6dd57dabe2c9be7c7c7d15f0e01", size = 143134, upload-time = "2026-06-27T15:31:02.686Z" },
+    { url = "https://files.pythonhosted.org/packages/44/20/98150dc45b9e92ab81a8eba74cdf544015b9291c4281252e2e76a7338462/livekit_protocol-1.1.19-py3-none-any.whl", hash = "sha256:fe5a8411c6cb886e55b2564d729f275af5d77ec191dd2ca95ffac3db16979a8a", size = 145513, upload-time = "2026-07-08T17:21:09.303Z" },
 ]
 
 [[package]]
@@ -644,13 +644,13 @@ requires-dist = [
     { name = "cachetools", specifier = "==7.1.4" },
     { name = "fastapi", specifier = "==0.139.0" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "livekit-api", specifier = "==1.1.1" },
+    { name = "livekit-api", specifier = "==1.2.0" },
     { name = "prometheus-client", specifier = "==0.25.0" },
     { name = "pydantic-settings", specifier = "==2.14.2" },
     { name = "python-ulid", specifier = "==3.1.0" },
     { name = "slowapi", specifier = "==0.1.10" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.51" },
-    { name = "uvicorn", extras = ["standard"], specifier = "==0.50.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = "==0.51.0" },
 ]
 
 [package.metadata.requires-dev]
@@ -1036,20 +1036,19 @@ wheels = [
 
 [[package]]
 name = "uvicorn"
-version = "0.50.0"
+version = "0.51.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "h11" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2e/41/06cce5dbb9f77591512957710ac709e60b12e6216a2f2d0d607fd49706e8/uvicorn-0.50.0.tar.gz", hash = "sha256:0c92e1bc2259cb7faa4fcef774a5966588f2e88542744550b66799fba10b76f1", size = 93257, upload-time = "2026-07-04T05:03:26.33Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a2/65/b7c6c443ccc58678c91e1e973bbe2a878591538655d6e1d47f24ba1c51f3/uvicorn-0.51.0.tar.gz", hash = "sha256:f6f4b69b657c312f516dd2d268ab9ae6f254b11e4bac504f37b2ab58b24dd0b0", size = 94412, upload-time = "2026-07-08T10:59:05.962Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a0/3a/eb70620ca2bf8213603d5c731460687c49fee38b0072f0b4a637781f0a53/uvicorn-0.50.0-py3-none-any.whl", hash = "sha256:05f0eb19edf38208f79f43df8a63081b48df31b0cd1e5997be957a4dc97d1b19", size = 72716, upload-time = "2026-07-04T05:03:24.848Z" },
+    { url = "https://files.pythonhosted.org/packages/45/ec/dbb7e5a6b91f86bfb9eb7d2988a2730907b6a729875b949c7f022e8b88fa/uvicorn-0.51.0-py3-none-any.whl", hash = "sha256:5d38af6cd620f2ae3849fb44fd4879e0890aa1febe8d47eb355fb45d93fe6a5b", size = 73219, upload-time = "2026-07-08T10:59:04.44Z" },
 ]
 
 [package.optional-dependencies]
 standard = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
     { name = "httptools" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
