@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "FastAPI control plane for the project-800ms voice assistant"
 requires-python = "==3.14.*"
 dependencies = [
-    "fastapi==0.139.0",
+    "fastapi==0.139.2",
     "uvicorn[standard]==0.51.0",
     "pydantic-settings==2.14.2",
     "livekit-api==1.2.0",
@@ -21,7 +21,7 @@ dependencies = [
     # on every request. Revocations propagate within TENANT_CACHE_TTL_SECONDS.
     "cachetools==7.1.4",
     # ULID for request IDs — monotonic, sortable, URL-safe, shorter than UUID.
-    "python-ulid==3.1.0",
+    "python-ulid==3.2.1",
     # Prometheus instrumentation — request counters + latency histograms
     # exposed at /metrics. See apps/api/observability.py.
     "prometheus-client==0.25.0",
