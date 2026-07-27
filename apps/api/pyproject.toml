@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "FastAPI control plane for the project-800ms voice assistant"
 requires-python = "==3.14.*"
 dependencies = [
-    "fastapi==0.139.2",
+    "fastapi==0.140.0",
     "uvicorn[standard]==0.51.0",
     "pydantic-settings==2.14.2",
     "livekit-api==1.2.0",
@@ -19,12 +19,12 @@ dependencies = [
     "alembic==1.18.5",
     # TTL cache for authenticated tenant lookup — avoids hitting Postgres
     # on every request. Revocations propagate within TENANT_CACHE_TTL_SECONDS.
-    "cachetools==7.1.4",
+    "cachetools==7.1.6",
     # ULID for request IDs — monotonic, sortable, URL-safe, shorter than UUID.
     "python-ulid==3.2.1",
     # Prometheus instrumentation — request counters + latency histograms
     # exposed at /metrics. See apps/api/observability.py.
-    "prometheus-client==0.25.0",
+    "prometheus-client==0.26.0",
 ]
 
 [dependency-groups]
@@ -40,7 +40,7 @@ dev = [
     # Real Postgres in tests (not SQLite) to catch dialect drift. Requires
     # Docker to be running locally. CI uses a GHA service container instead,
     # see .github/workflows/ci.yml.
-    "testcontainers[postgresql]==4.14.2",
+    "testcontainers[postgresql]==4.15.0",
 ]
 
 [tool.uv]
