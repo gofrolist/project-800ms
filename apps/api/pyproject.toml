@@ -21,7 +21,7 @@ dependencies = [
     # on every request. Revocations propagate within TENANT_CACHE_TTL_SECONDS.
     "cachetools==7.1.7",
     # ULID for request IDs — monotonic, sortable, URL-safe, shorter than UUID.
-    "python-ulid==3.2.1",
+    "python-ulid==4.0.1",
     # Prometheus instrumentation — request counters + latency histograms
     # exposed at /metrics. See apps/api/observability.py.
     "prometheus-client==0.26.0",
