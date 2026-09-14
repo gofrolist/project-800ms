@@ -16,7 +16,7 @@ dependencies = [
     # SQLAlchemy 2.0 async + asyncpg + Alembic for tenant/session persistence.
     "sqlalchemy[asyncio]>=2.0.52",
     "asyncpg==0.31.0",
-    "alembic==1.19.1",
+    "alembic==1.19.2",
     # TTL cache for authenticated tenant lookup — avoids hitting Postgres
     # on every request. Revocations propagate within TENANT_CACHE_TTL_SECONDS.
     "cachetools==7.1.8",
