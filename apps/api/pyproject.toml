@@ -36,7 +36,7 @@ dev = [
     # Used by tests to inspect/verify the JWTs that /sessions mints. Already
     # a transitive dep via livekit-api, but declared explicitly so test imports
     # don't depend on dependency drift.
-    "pyjwt==2.14.0",
+    "pyjwt==2.15.0",
     # Real Postgres in tests (not SQLite) to catch dialect drift. Requires
     # Docker to be running locally. CI uses a GHA service container instead,
     # see .github/workflows/ci.yml.
