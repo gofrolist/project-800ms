@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "FastAPI control plane for the project-800ms voice assistant"
 requires-python = "==3.14.*"
 dependencies = [
-    "fastapi==0.142.2",
+    "fastapi==0.143.0",
     "uvicorn[standard]==0.54.0",
     "pydantic-settings==2.15.0",
     "livekit-api==1.2.1",
@@ -15,11 +15,11 @@ dependencies = [
     "httpx>=0.28.1",
     # SQLAlchemy 2.0 async + asyncpg + Alembic for tenant/session persistence.
     "sqlalchemy[asyncio]>=2.0.52",
-    "asyncpg==0.31.0",
+    "asyncpg==0.32.0",
     "alembic==1.20.0",
     # TTL cache for authenticated tenant lookup — avoids hitting Postgres
     # on every request. Revocations propagate within TENANT_CACHE_TTL_SECONDS.
-    "cachetools==7.2.0",
+    "cachetools==7.2.1",
     # ULID for request IDs — monotonic, sortable, URL-safe, shorter than UUID.
     "python-ulid==3.2.1",
     # Prometheus instrumentation — request counters + latency histograms
