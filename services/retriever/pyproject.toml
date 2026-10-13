@@ -27,7 +27,7 @@ dependencies = [
     # vectors in v1. If sparse / multi-vector retrieval is adopted later
     # (a deferred research survivor), `FlagEmbedding` becomes the natural
     # add since BAAI ships it with that tri-output API.
-    "sentence-transformers>=3.3,<5.0",
+    "sentence-transformers>=3.3,<6.0",
     # Internal HTTP (agent → retriever, retriever → LLM rewriter).
     "httpx>=0.28.1",
     # Structured logging — matches the agent + apps/api choice.
