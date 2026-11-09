@@ -9,7 +9,7 @@
     "preview": "vite preview --host"
   },
   "dependencies": {
-    "@livekit/components-react": "^2.9.24",
+    "@livekit/components-react": "^2.9.25",
     "@livekit/components-styles": "^1.1.4",
     "livekit-client": "^2.23.0",
     "react": "^19.3.1",
@@ -18,8 +18,8 @@
   "devDependencies": {
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^6.1.2",
+    "@vitejs/plugin-react": "^6.2.1",
     "typescript": "^6.0.3",
-    "vite": "^8.3.5"
+    "vite": "^8.3.6"
   }
 }
