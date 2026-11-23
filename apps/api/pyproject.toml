@@ -7,7 +7,7 @@ dependencies = [
     "fastapi==0.165.0",
     "uvicorn[standard]==0.54.0",
     "pydantic-settings==2.16.3",
-    "livekit-api==1.2.2",
+    "livekit-api==2.0.1",
     # Per-tenant rate limiting. See Phase 1 PRD — key_func resolves to
     # tenant_id from the X-API-Key header so one noisy tenant can't starve
     # others.
